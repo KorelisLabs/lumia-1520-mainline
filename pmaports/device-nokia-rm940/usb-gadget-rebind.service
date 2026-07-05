@@ -1,0 +1,9 @@
+[Unit]
+Description=Create USB gadget (NCM net + ACM serial) - Lumia 1520 bring-up
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/lumia-usb-gadget.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

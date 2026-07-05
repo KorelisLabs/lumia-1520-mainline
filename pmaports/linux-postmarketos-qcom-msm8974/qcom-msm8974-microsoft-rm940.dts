@@ -1,0 +1,99 @@
+/dts-v1/;
+#include "qcom-msm8974-microsoft-common.dtsi"
+/ {
+	model = "Nokia Lumia 1520";
+	compatible = "microsoft,rm940", "qcom,msm8974";
+
+	aliases {
+		display0 = &framebuffer0;
+	};
+
+	chosen {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		stdout-path = "display0";
+
+		framebuffer0: framebuffer@400000 {
+			compatible = "simple-framebuffer";
+			reg = <0x00400000 0x00800000>;
+			width = <1080>;
+			height = <1920>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+			clocks = <&mmcc MDSS_AHB_CLK>,
+				 <&mmcc MDSS_AXI_CLK>,
+				 <&mmcc MDSS_BYTE0_CLK>,
+				 <&mmcc MDSS_MDP_CLK>,
+				 <&mmcc MDSS_PCLK0_CLK>,
+				 <&mmcc MDSS_VSYNC_CLK>;
+			power-domains = <&mmcc MDSS_GDSC>;
+		};
+	};
+};
+
+/* microSD slot (1520-specific; the 930 has none). Card-detect GPIO still
+ * unknown -> broken-cd polls for the card. Supplies TODO (WP firmware
+ * leaves the SD rail up; clk/pd_ignore_unused keeps it that way). */
+&sdhc_2 {
+	status = "okay";
+	broken-cd;
+};
+
+/* Stage-2 probing: enable every BLSP I2C bus that has default pinctrl in the
+ * SoC dtsi, so the touch controller (and sensors) can be located live with
+ * i2cdetect. Trim to the buses actually used once mapped. */
+&blsp1_i2c1 { status = "okay"; };
+&blsp1_i2c2 { status = "okay"; };
+&blsp1_i2c3 { status = "okay"; };
+&blsp1_i2c6 { status = "okay"; };
+&blsp2_i2c2 { status = "okay"; };
+&blsp2_i2c5 { status = "okay"; };
+&blsp2_i2c6 { status = "okay"; };
+
+/* Touchscreen -- wiring extracted from the stock WP ACPI DSDT (PLAT
+ * partition, Device TSC1 "NOKIA_TOUCH"):
+ *   bus \_SB.I2C2 = 0xF9924000 = blsp1_i2c2, addr 0x4B, 400 kHz
+ *   GpioInt: tlmm 61, edge active-low, pull-up
+ *   GpioIo:  tlmm 60 (enable/reset -- hogged high below)
+ * Controller family guess: Synaptics RMI4 (Lumia-era standard at 0x4b);
+ * if probe rejects, switch compatible to atmel,maxtouch. */
+&blsp1_i2c2 {
+	clock-frequency = <400000>;
+
+	touchscreen@4b {
+		compatible = "syna,rmi4-i2c";
+		reg = <0x4b>;
+		vdd-supply = <&pm8941_l22>;
+		vio-supply = <&pm8941_l6>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <61 2>;	/* IRQ_TYPE_EDGE_FALLING */
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		rmi4-f01@1 {
+			reg = <0x1>;
+			syna,nosleep-mode = <1>;
+		};
+
+		rmi4-f11@11 {
+			reg = <0x11>;
+			syna,sensor-type = <1>;
+		};
+
+		rmi4-f12@12 {
+			reg = <0x12>;
+			syna,sensor-type = <1>;
+		};
+	};
+};
+
+&tlmm {
+	touch-enable-hog {
+		gpio-hog;
+		gpios = <60 0>;		/* GPIO_ACTIVE_HIGH */
+		output-high;
+		line-name = "touch-enable";
+	};
+};

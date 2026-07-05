@@ -1,0 +1,63 @@
+maintainer="Scott <info@korelislabs.com>"
+pkgname=device-nokia-rm940
+pkgdesc="Nokia Lumia 1520"
+pkgver=1
+pkgrel=6
+url="https://postmarketos.org"
+license="MIT"
+arch="armv7"
+options="!check !archcheck"
+depends="
+	linux-postmarketos-qcom-msm8974
+	lk2nd-msm8974
+	mkbootimg
+	postmarketos-base
+"
+makedepends="devicepkg-dev"
+source="
+	deviceinfo
+	kernel-cmdline.conf
+	modules-initfs
+	lumia-usb-gadget.sh
+	usb-gadget-rebind.service
+	usb0.nmconnection
+	lumia1520-modules.conf
+"
+build() {
+	devicepkg_build $startdir $pkgname
+}
+package() {
+	devicepkg_package $startdir $pkgname
+
+	install -Dm755 "$srcdir"/lumia-usb-gadget.sh \
+		"$pkgdir"/usr/sbin/lumia-usb-gadget.sh
+	install -Dm644 "$srcdir"/usb-gadget-rebind.service \
+		"$pkgdir"/usr/lib/systemd/system/usb-gadget-rebind.service
+	install -Dm600 "$srcdir"/usb0.nmconnection \
+		"$pkgdir"/etc/NetworkManager/system-connections/usb0.nmconnection
+	install -Dm644 "$srcdir"/lumia1520-modules.conf \
+		"$pkgdir"/etc/modules-load.d/lumia1520.conf
+
+	mkdir -p "$pkgdir"/etc/systemd/system/multi-user.target.wants
+	ln -s /usr/lib/systemd/system/usb-gadget-rebind.service \
+		"$pkgdir"/etc/systemd/system/multi-user.target.wants/usb-gadget-rebind.service
+	mkdir -p "$pkgdir"/etc/systemd/system/getty.target.wants
+	ln -s /usr/lib/systemd/system/serial-getty@.service \
+		"$pkgdir"/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service
+
+	# The WP TrustZone cannot survive any suspend path (USB PHY never
+	# re-powers, pre-fix boots hard-reset into Windows): mask ALL sleep.
+	for t in sleep.target suspend.target hibernate.target \
+			hybrid-sleep.target systemd-suspend.service sleep-inhibitor.service; do
+		ln -s /dev/null "$pkgdir"/etc/systemd/system/$t
+	done
+}
+sha512sums="
+3f31d224c16efca2f4b8b8fd05393198465b90063f35235a61b675a576f28c9fdd54d6393c19510c82e0f7858ef4b7965821fc270625215bfb61807190bc9aa3  deviceinfo
+c0fe8dbea89e19073ac18f5c9ff5f4131c4441e0ea42bbb7e1f2c99c8b9283b81111f9d7fff981d32c85ad902cb177c965c6b7d2ff9a50748d5bbc58d20b120e  kernel-cmdline.conf
+cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e  modules-initfs
+4a86796324f2f2f1ee4761cc713c0dfc382eb645a534610b30ee14b2a07623d6ecb4ff9eb7bf2bd887c234d64745278c5b585662e4e3c40ac0585e1d7139ab02  lumia-usb-gadget.sh
+7767d5713aeec4467278fbbd928bf3af3a0e0c7dcbefa08f05ea5d36e91b8f0ade013241e7bc9bca8187160b95b687f4d789cd37b6e49540b1e221684ba3106e  usb-gadget-rebind.service
+da42d8c5e7e292566d2bd0a0c614dea4d4a050b516ef685179357cbbbeaa10e72b698e3fcc3ec682078d8238550cd1f26eaf9943da23a24a80548f0fe7282217  usb0.nmconnection
+3d34873cba970d4947de85a75a5c66f1b22f1fc39c4e5a6299180efeefca0748ffe3a0dace20c1186c13b0f9939ba32ce428e6fd26f07ef095af190e76d8f8e5  lumia1520-modules.conf
+"

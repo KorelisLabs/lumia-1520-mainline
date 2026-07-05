@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Nokia Lumia 1520 (RM-937 / RM-938 / RM-939 / RM-940) — codename "bandit".
+ *
+ * Sibling of the Nokia Lumia 930 ("martini"): same MSM8974 (non-pro, AB),
+ * same Windows-phone bring-up quirks. This entry is intentionally minimal —
+ * lk2nd auto-detects panel/battery, so only identity + match are needed.
+ *
+ * Build (lk1st single-device — required for quirky Windows phones, mirrors 930):
+ *   make TOOLCHAIN_PREFIX=arm-none-eabi- DEBUG=1 DEBUG_FBCON=0 \
+ *        LK2ND_BUNDLE_DTB=msm8974-nokia-bandit.dtb lk1st-msm8974
+ *
+ *   cat build-lk1st-msm8974/lk_s.elf \
+ *       build-lk1st-msm8974/lk2nd/device/dts/msm8974/msm8974-nokia-bandit.dtb \
+ *       > emmc_appsboot.mbn
+ *
+ * The resulting emmc_appsboot.mbn is the unsigned bootloader payload to flash
+ * to the (already WPInternals-unlocked) RM-940.
+ *
+ * DEBUG=1 DEBUG_FBCON=0 makes lk1st print platform-id + cmdline over the
+ * Lumia UART/debug console at boot. Read the two VERIFY values below off that
+ * log on the real RM-940 and lock them in — same methodology we used for the
+ * kernel framebuffer reg.
+ */
+
+#include <skeleton64.dtsi>
+#include <lk2nd.dtsi>
+
+/ {
+	/*
+	 * VERIFY on real RM-940 (lk1st DEBUG log prints the reported platform id).
+	 * Start = Lumia 930 (martini) value. The 1520 shares the MSM8974 SoC id
+	 * (126 = QCOM_ID_MSM8974); the board/version cells may differ per RM-94x
+	 * variant — RM-940 is the AT&T (nam_att, P6081_ATT) board.
+	 */
+	qcom,msm-id = <QCOM_ID_MSM8974 0x96 0x20002 0xb>;
+};
+
+&lk2nd {
+	model = "Nokia Lumia 1520";
+	compatible = "nokia,bandit";
+
+	/*
+	 * VERIFY on real RM-940. The Lumia UEFI emits a device tag in the
+	 * kernel cmdline; the 930 emits "Nokia-martini". The 1520 should emit
+	 * its own codename — confirm the exact substring from the lk1st log
+	 * before trusting multi-device (non-lk1st) detection.
+	 */
+	lk2nd,match-cmdline = "*Nokia-bandit*";
+
+	/*
+	 * Kernel dtb to hand off to (our mainline bring-up dtb). Only consumed
+	 * by multi-device lk2nd; harmless for lk1st. Keep aligned with the
+	 * kernel package (linux-postmarketos-qcom-msm8974 -> rm940 dtb).
+	 */
+	lk2nd,dtb-files = "qcom-msm8974-microsoft-rm940";
+};

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Common base for Microsoft/Nokia MSM8974 Lumias (Lumia 930, Lumia 1520).
+ * mainline bring-up. Stage-1: SoC includes + aliases + fb reservation
+ * + eMMC/USB enables. No regulator supplies yet: the boot firmware leaves
+ * the rails on and the cmdline carries clk_ignore_unused pd_ignore_unused;
+ * the mmc/phy drivers treat missing supplies as optional.
+ * Copyright (c) 2026, Korelis Labs LLC
+ */
+#include "qcom-msm8974.dtsi"
+#include "pm8841.dtsi"
+#include "pm8941.dtsi"
+#include <dt-bindings/input/input.h>
+/ {
+	aliases {
+		mmc0 = &sdhc_1;   /* eMMC */
+	};
+
+	reserved-memory {
+		fb_region: framebuffer@400000 {
+			reg = <0x00400000 0x00800000>;
+			no-map;
+		};
+	};
+};
+
+/* eMMC -- without this the kernel sees no internal storage and the
+ * initramfs can never find pmos_root_uuid. */
+&sdhc_1 {
+	status = "okay";
+	vmmc-supply = <&pm8941_l20>;
+	vqmmc-supply = <&pm8941_s3>;
+};
+
+/* USB gadget -- pmOS initramfs debug (USB network/telnet) rides this.
+ * Forced peripheral: no extcon/usb_id source is wired up yet, so OTG
+ * detection is impossible; hammerhead's phy-select applies (same SoC). */
+&usb {
+	status = "okay";
+	phys = <&usb_hs1_phy>;
+	phy-select = <&tcsr 0xb000 0>;
+	dr_mode = "peripheral";
+};
+
+&usb_hs1_phy {
+	status = "okay";
+	v1p8-supply = <&pm8941_l6>;
+	v3p3-supply = <&pm8941_l24>;
+	qcom,init-seq = /bits/ 8 <0x1 0x64>;
+};
+
+/* --- pm8941 regulators (ported verbatim from mainline nexus5-hammerhead,
+ *     same PM8941 -- voltages are upstream-verified, not invented). Only the
+ *     pm8941 LDO tree is added; pm8841 CPU SMPS are left to RPM/SAW. --------- */
+/ {
+	vreg_vph_pwr: vreg-vph-pwr {
+		compatible = "regulator-fixed";
+		regulator-name = "vph-pwr";
+		regulator-min-microvolt = <3600000>;
+		regulator-max-microvolt = <3600000>;
+		regulator-always-on;
+	};
+
+	vreg_boost: vreg-boost {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg-boost";
+		regulator-min-microvolt = <3150000>;
+		regulator-max-microvolt = <3150000>;
+		regulator-always-on;
+		regulator-boot-on;
+		gpio = <&pm8941_gpios 21 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&boost_bypass_n_pin>;
+	};
+};
+
+&pm8941_gpios {
+	boost_bypass_n_pin: boost-bypass-state {
+		pins = "gpio21";
+		function = "normal";
+	};
+};
+
+&rpm_requests {
+	regulators-1 {
+		compatible = "qcom,rpm-pm8941-regulators";
+		vdd_l1_l3-supply = <&pm8941_s1>;
+		vdd_l2_lvs1_2_3-supply = <&pm8941_s3>;
+		vdd_l4_l11-supply = <&pm8941_s1>;
+		vdd_l5_l7-supply = <&pm8941_s2>;
+		vdd_l6_l12_l14_l15-supply = <&pm8941_s2>;
+		vdd_l8_l16_l18_l19-supply = <&vreg_vph_pwr>;
+		vdd_l9_l10_l17_l22-supply = <&vreg_boost>;
+		vdd_l13_l20_l23_l24-supply = <&vreg_boost>;
+		vdd_l21-supply = <&vreg_boost>;
+
+		pm8941_s1: s1 { regulator-min-microvolt = <1300000>; regulator-max-microvolt = <1300000>; regulator-always-on; regulator-boot-on; };
+		pm8941_s2: s2 { regulator-min-microvolt = <2150000>; regulator-max-microvolt = <2150000>; regulator-boot-on; regulator-always-on; };
+		pm8941_s3: s3 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; regulator-boot-on; };
+		pm8941_l1: l1 { regulator-min-microvolt = <1225000>; regulator-max-microvolt = <1225000>; regulator-always-on; regulator-boot-on; };
+		pm8941_l2: l2 { regulator-min-microvolt = <1200000>; regulator-max-microvolt = <1200000>; regulator-always-on; };
+		pm8941_l3: l3 { regulator-min-microvolt = <1225000>; regulator-max-microvolt = <1225000>; regulator-always-on; };
+		pm8941_l4: l4 { regulator-min-microvolt = <1225000>; regulator-max-microvolt = <1225000>; regulator-always-on; };
+		pm8941_l5: l5 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
+		pm8941_l6: l6 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-boot-on; regulator-always-on; };
+		pm8941_l7: l7 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-boot-on; regulator-always-on; };
+		pm8941_l8: l8 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
+		pm8941_l9: l9 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <2950000>; regulator-always-on; };
+		pm8941_l10: l10 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <2950000>; regulator-always-on; };
+		pm8941_l11: l11 { regulator-min-microvolt = <1300000>; regulator-max-microvolt = <1300000>; regulator-always-on; };
+		pm8941_l12: l12 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; regulator-boot-on; };
+		pm8941_l13: l13 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <2950000>; regulator-boot-on; regulator-always-on; };
+		pm8941_l14: l14 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
+		pm8941_l15: l15 { regulator-min-microvolt = <2050000>; regulator-max-microvolt = <2050000>; regulator-always-on; };
+		pm8941_l16: l16 { regulator-min-microvolt = <2700000>; regulator-max-microvolt = <2700000>; regulator-always-on; };
+		pm8941_l17: l17 { regulator-min-microvolt = <2850000>; regulator-max-microvolt = <2850000>; regulator-always-on; };
+		pm8941_l18: l18 { regulator-min-microvolt = <2850000>; regulator-max-microvolt = <2850000>; regulator-always-on; };
+		pm8941_l19: l19 { regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3300000>; regulator-always-on; };
+		pm8941_l20: l20 { regulator-min-microvolt = <2950000>; regulator-max-microvolt = <2950000>; regulator-system-load = <200000>; regulator-allow-set-load; regulator-boot-on; regulator-always-on; };
+		pm8941_l21: l21 { regulator-min-microvolt = <2950000>; regulator-max-microvolt = <2950000>; regulator-boot-on; regulator-always-on; };
+		pm8941_l22: l22 { regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3300000>; regulator-always-on; };
+		pm8941_l23: l23 { regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3000000>; regulator-always-on; };
+		pm8941_l24: l24 { regulator-min-microvolt = <3075000>; regulator-max-microvolt = <3075000>; regulator-boot-on; regulator-always-on; };
+		pm8941_lvs1: lvs1 { regulator-always-on; };
+		pm8941_lvs3: lvs3 { regulator-always-on; };
+	};
+};
