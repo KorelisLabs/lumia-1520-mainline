@@ -20,10 +20,12 @@ left intact.
 | USB gadget (network + SSH) | ✅ | NCM at `172.16.42.1`, plus ACM serial |
 | PMIC regulators (pm8941) | ✅ | ported from mainline hammerhead (same PMIC) |
 | microSD | ⚠️ enabled | polling card-detect; not yet validated with a card |
+| Buttons (volume, 2-stage camera) | ✅ | wiring from stock ACPI, verified by press test |
 | SMP (4 cores) | ❌ | WP TrustZone rejects SCM bring-up — **`nosmp` mandatory** |
 | Suspend/resume | ❌ | masked; USB PHY never re-powers (see quirks doc) |
-| Wi-Fi / BT (wcnss) | ❌ | not started |
-| Modem / telephony | ❌ | not started |
+| Wi-Fi (wcnss) | ❌ blocked | Pronto times out after PAS reports success; see quirks doc |
+| Bluetooth (wcnss) | ❌ blocked | shares the WCNSS remoteproc with Wi-Fi |
+| Modem / telephony | ⚠️ at risk | PAS-compatibility risk (shared secure-firmware path); **not yet tested** |
 | Sensors, camera, audio | ❌ | not started |
 
 Read [docs/trustzone-quirks.md](docs/trustzone-quirks.md) **before** changing

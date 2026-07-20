@@ -147,3 +147,19 @@
 	status = "okay";
 	linux,code = <KEY_VOLUMEDOWN>;
 };
+
+/*
+ * WCNSS/Pronto is intentionally disabled on RM-940.
+ *
+ * The firmware loads and PAS auth-and-reset returns success, but the
+ * remote processor never signals ready and qcom-wcnss-pil times out.
+ * Allowing wcn36xx to probe after the failed startup has caused full
+ * device resets.
+ *
+ * Keep disabled until the PAS/ready path is further instrumented or
+ * an alternative remoteproc startup method is implemented.
+ * (Experimental enabled config: branch research/pronto-pas-timeout.)
+ */
+&pronto {
+	status = "disabled";
+};
