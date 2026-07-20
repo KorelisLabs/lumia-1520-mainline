@@ -148,18 +148,30 @@
 	linux,code = <KEY_VOLUMEDOWN>;
 };
 
-/*
- * WCNSS/Pronto is intentionally disabled on RM-940.
- *
- * The firmware loads and PAS auth-and-reset returns success, but the
- * remote processor never signals ready and qcom-wcnss-pil times out.
- * Allowing wcn36xx to probe after the failed startup has caused full
- * device resets.
- *
- * Keep disabled until the PAS/ready path is further instrumented or
- * an alternative remoteproc startup method is implemented.
- * (Experimental enabled config: branch research/pronto-pas-timeout.)
- */
+/* Wi-Fi / BT: integrated WCNSS (wcn3680) via Pronto PIL. Supplies from the
+ * mainline OnePlus Bacon (msm8974pro, same PMIC). Firmware = the stock WP
+ * qcwcnss8974.mbn split to wcnss.mdt/.bNN, placed in /lib/firmware.
+ * EXPERIMENTAL: if Pronto's PIL needs SCM/PAS auth, this WP TrustZone will
+ * block it the way it blocks SMP -- boot and read dmesg to find out. */
 &pronto {
-	status = "disabled";
+	vddmx-supply = <&pm8841_s1>;
+	vddpx-supply = <&pm8941_s3>;
+	status = "okay";
+	firmware-name = "wcnss.mdt";
+
+	iris {
+		vddxo-supply = <&pm8941_l6>;
+		vddrfa-supply = <&pm8941_l11>;
+		vddpa-supply = <&pm8941_l19>;
+		vdddig-supply = <&pm8941_s3>;
+	};
+
+	smd-edge {
+		qcom,remote-pid = <4>;
+		label = "pronto";
+
+		wcnss {
+			status = "okay";
+		};
+	};
 };
