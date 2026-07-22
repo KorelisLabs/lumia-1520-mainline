@@ -15,6 +15,8 @@ left intact.
 |---|---|---|
 | Boot (BootShim → lk1st → fastboot) | ✅ | see [docs/boot-chain.md](docs/boot-chain.md) |
 | Display (framebuffer console) | ✅ | SimpleDRM on the UEFI framebuffer @ `0x00400000` |
+| Backlight (brightness + off) | ✅ | PM8941 WLED; `/sys/class/backlight/backlight`, 0 = off |
+| Battery telemetry (voltage/temp) | ✅ | via PM8941 VADC; `tools/batstat.py` (~3.86 V, ~37 °C) |
 | Touchscreen | ✅ | Synaptics PLG0175-02, RMI4, full multitouch |
 | eMMC | ✅ | all stock partitions visible; pmOS runs from `Data` |
 | USB gadget (network + SSH) | ✅ | NCM at `172.16.42.1`, plus ACM serial |
@@ -22,7 +24,8 @@ left intact.
 | microSD | ⚠️ enabled | polling card-detect; not yet validated with a card |
 | Buttons (volume, 2-stage camera) | ✅ | wiring from stock ACPI, verified by press test |
 | SMP (4 cores) | ❌ | WP TrustZone rejects SCM bring-up — **`nosmp` mandatory** |
-| Suspend/resume | ❌ | masked; USB PHY never re-powers (see quirks doc) |
+| Display panel PM (DPMS/DSI) | ❌ | no DSI panel driver; simpledrm can't power the panel |
+| Suspend/resume | ❌ | masked; USB PHY does not re-power (`-22`, root cause open) |
 | Wi-Fi (wcnss) | ❌ blocked | Pronto times out after PAS reports success; see quirks doc |
 | Bluetooth (wcnss) | ❌ blocked | shares the WCNSS remoteproc with Wi-Fi |
 | Modem / telephony | ⚠️ at risk | PAS-compatibility risk (shared secure-firmware path); **not yet tested** |

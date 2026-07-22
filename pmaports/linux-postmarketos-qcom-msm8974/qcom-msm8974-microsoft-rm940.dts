@@ -163,3 +163,42 @@
 &pronto {
 	status = "disabled";
 };
+
+/*
+ * PM8941 SMBB charger.
+ *
+ * Enabling this gives full charge telemetry (battery present/health, charge
+ * status, USB-power detection) and works -- BUT on this device it also hands
+ * the charger control of the USB "usbin"/VBUS detection, which shares the
+ * physical connector with our USB network/SSH gadget. That perturbs the USB
+ * HS PHY, which cannot re-power (the same "phy poweron failed -22" limit that
+ * blocks suspend), and the gadget dies until a cold power cycle. So SMBB is
+ * left disabled by default -- we are a USB-accessed device.
+ *
+ * Battery VOLTAGE and TEMPERATURE telemetry do NOT need SMBB: the PM8941 VADC
+ * (already enabled) exposes VBAT_SNS and the battery thermistor. See
+ * tools/batstat.py for a self-calibrating readout.
+ *
+ * TODO: a telemetry-only SMBB config that leaves usbin/OTG-VBUS to the USB
+ * stack (drop otg-vbus / usbin wiring) may give charge status without the PHY
+ * fight. Charge limits when re-enabled (conservative, from mainline FP2 /
+ * same PM8941): usb+fast 1.5A, safe-voltage 4.35V, high-threshold 4.30V.
+ */
+&smbb {
+	status = "disabled";
+};
+
+/*
+ * Backlight -- PM8941 WLED (WLED3, 3 strings). This drives the 1520's IPS
+ * LCD backlight: brightness 0 = backlight OFF (verified: physical panel
+ * tracks brightness, 30 off/on cycles clean, ~24mV VBAT rise when off).
+ * Creates /sys/class/backlight/backlight (max 4095). The "IRQ ovp not found"
+ * dmesg warning is benign (over-voltage-protection interrupt is optional and
+ * not wired in the base pm8941.dtsi node).
+ * This is the only working display power control on the simpledrm setup --
+ * there is no DSI panel driver, so DRM DPMS does not power the panel.
+ */
+&pm8941_wled {
+	status = "okay";
+	default-brightness = <2048>;
+};
