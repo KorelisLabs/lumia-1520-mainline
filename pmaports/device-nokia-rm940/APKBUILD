@@ -2,7 +2,7 @@ maintainer="Scott <info@korelislabs.com>"
 pkgname=device-nokia-rm940
 pkgdesc="Nokia Lumia 1520"
 pkgver=1
-pkgrel=6
+pkgrel=7
 url="https://postmarketos.org"
 license="MIT"
 arch="armv7"
@@ -45,12 +45,15 @@ package() {
 	ln -s /usr/lib/systemd/system/serial-getty@.service \
 		"$pkgdir"/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service
 
-	# The WP TrustZone cannot survive any suspend path (USB PHY never
-	# re-powers, pre-fix boots hard-reset into Windows): mask ALL sleep.
-	for t in sleep.target suspend.target hibernate.target \
-			hybrid-sleep.target systemd-suspend.service sleep-inhibitor.service; do
-		ln -s /dev/null "$pkgdir"/etc/systemd/system/$t
-	done
+	# System suspend (s2idle) works on this device -- but only once the
+	# USB HS PHY can actually power back on (the l24/l6 regulator fix).
+	# Verified: repeated systemctl-suspend cycles resume cleanly with USB,
+	# networking and SSH intact. So sleep/suspend targets are NOT masked.
+	#
+	# sleep-inhibitor IS still masked: it auto-suspends an idle device,
+	# and on a USB-attached bring-up box (with an ageing battery) suspend
+	# should stay a deliberate, explicit action.
+	ln -s /dev/null "$pkgdir"/etc/systemd/system/sleep-inhibitor.service
 }
 sha512sums="
 3f31d224c16efca2f4b8b8fd05393198465b90063f35235a61b675a576f28c9fdd54d6393c19510c82e0f7858ef4b7965821fc270625215bfb61807190bc9aa3  deviceinfo

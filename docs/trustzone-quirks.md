@@ -17,21 +17,66 @@ Until someone implements an alternate enable-method, the device runs
 single-core. Removing `nosmp` produces a boot that dies in the first
 fraction of a second and usually falls through to Windows.
 
-## 2. Suspend permanently kills the USB PHY → all sleep paths masked
+## 2. The USB PHY `-22` — *not* a TrustZone problem (SOLVED)
 
-The `qcom,usb-hs-phy` on this device powers **off** fine but its power-on
-path fails (`phy poweron failed --> -22`) — once anything suspends the
-controller, USB is dead until a cold boot. Worse, the full suspend path also
-goes through the TZ and (pre-`cpuidle.off`) hard-reset the phone.
+For a long time this device looked like it had a hardware/firmware wall:
 
-postmarketOS's `sleep-inhibitor` auto-suspends an idle phone about two
-minutes after boot, which manifested as "USB mysteriously dies at +2min."
-The device package therefore masks `sleep.target`, `suspend.target`,
-`hibernate.target`, `hybrid-sleep.target`, `systemd-suspend.service` and
-`sleep-inhibitor.service`.
+```
+phy phy-ci_hdrc.0.ulpi.0: phy poweron failed --> -22
+```
 
-Do not re-enable suspend until the PHY power-on failure is root-caused
-(likely candidates: ULPI init sequencing or the por reset on re-power).
+USB would die whenever the PHY was powered down — after a suspend, or when
+the SMBB charger touched the shared USB connector — and only a cold boot
+brought it back. It was tempting to blame the Windows-Phone TrustZone along
+with everything else in this document. **That was wrong.**
+
+The real cause was a device-tree constraint of our own making. The kernel
+logs it plainly, one line, at every boot:
+
+```
+l24: voltage operation not allowed
+```
+
+`qcom_usb_hs_phy_power_on()` calls `regulator_set_voltage_triplet()` on its
+v3p3 supply (pm8941 **l24**) and `regulator_set_load()` on both v1p8 (l6) and
+v3p3. Our regulator hardening had pinned every rail to a *fixed* voltage
+(`regulator-min-microvolt == regulator-max-microvolt`); the regulator core
+only grants `REGULATOR_CHANGE_VOLTAGE` when min ≠ max, so it refused the
+request and the PHY power-on returned `-EINVAL`.
+
+USB appeared to work anyway **only because the Windows firmware leaves the
+PHY powered** — the driver had never actually initialised it, so the PHY
+could never be brought back up once something powered it down.
+
+The fix is two lines: give l24 a 3.05–3.3 V *range* instead of a fixed
+3.075 V, and allow `set_load` on both rails. With that in place the PHY
+survives repeated `phy_power_off`/`phy_power_on` cycles (verified by
+unbinding and rebinding `ci_hdrc`), and both of the "blocked" subsystems
+below came back to life on their own.
+
+**Lesson worth repeating:** a fixed-voltage regulator constraint silently
+disables voltage operations for every consumer of that rail. If a driver
+reports `-EINVAL` from a power-on path, check for
+`voltage operation not allowed` before blaming firmware.
+
+## 2a. Suspend/resume — works
+
+`systemctl suspend` (s2idle) resumes cleanly: 10/10 cycles with an RTC wake,
+`suspend_stats` success with zero failures, no resets, and USB, networking,
+SSH, udevd and NetworkManager all intact afterwards.
+
+Two things had masked this. The PHY bug above was one. The other was
+self-inflicted: driving suspend with a raw `echo mem > /sys/power/state`
+*while systemd's sleep targets were masked* leaves systemd's 3-minute
+service watchdogs running across the sleep, so on resume systemd SIGABRTs
+`journald`, `udevd` and `NetworkManager` — which is what actually killed the
+USB network. Use `systemctl suspend`, not `echo mem`.
+
+The device package no longer masks the sleep/suspend targets. It *does*
+still mask `sleep-inhibitor.service`, so an idle device will not suspend
+itself — on a USB-attached bring-up box suspend should stay a deliberate
+action. Make sure a wake source is armed (the PM8941 RTC wakealarm works)
+before suspending, or the device will sleep until you press power.
 
 ## 3. Deep CPU idle goes through the TZ → `cpuidle.off=1`
 

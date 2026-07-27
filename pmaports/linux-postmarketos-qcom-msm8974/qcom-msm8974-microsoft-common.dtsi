@@ -110,7 +110,7 @@
 		pm8941_l3: l3 { regulator-min-microvolt = <1225000>; regulator-max-microvolt = <1225000>; regulator-always-on; };
 		pm8941_l4: l4 { regulator-min-microvolt = <1225000>; regulator-max-microvolt = <1225000>; regulator-always-on; };
 		pm8941_l5: l5 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
-		pm8941_l6: l6 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-boot-on; regulator-always-on; };
+		pm8941_l6: l6 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-boot-on; regulator-allow-set-load; regulator-always-on; };
 		pm8941_l7: l7 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-boot-on; regulator-always-on; };
 		pm8941_l8: l8 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
 		pm8941_l9: l9 { regulator-min-microvolt = <1800000>; regulator-max-microvolt = <2950000>; regulator-always-on; };
@@ -128,7 +128,14 @@
 		pm8941_l21: l21 { regulator-min-microvolt = <2950000>; regulator-max-microvolt = <2950000>; regulator-boot-on; regulator-always-on; };
 		pm8941_l22: l22 { regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3300000>; regulator-always-on; };
 		pm8941_l23: l23 { regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3000000>; regulator-always-on; };
-		pm8941_l24: l24 { regulator-min-microvolt = <3075000>; regulator-max-microvolt = <3075000>; regulator-boot-on; regulator-always-on; };
+		/* l24 = USB HS PHY v3p3. Must be a RANGE, not a fixed voltage:
+		 * the regulator core only grants REGULATOR_CHANGE_VOLTAGE when
+		 * min != max, and qcom_usb_hs_phy_power_on() calls
+		 * regulator_set_voltage_triplet(3.05-3.3V). With min==max the
+		 * core answers "voltage operation not allowed" and the PHY
+		 * power-on fails (-EINVAL), leaving the PHY running on
+		 * whatever state the Windows firmware left behind. */
+		pm8941_l24: l24 { regulator-min-microvolt = <3050000>; regulator-max-microvolt = <3300000>; regulator-allow-set-load; regulator-boot-on; regulator-always-on; };
 		pm8941_lvs1: lvs1 { regulator-always-on; };
 		pm8941_lvs3: lvs3 { regulator-always-on; };
 	};

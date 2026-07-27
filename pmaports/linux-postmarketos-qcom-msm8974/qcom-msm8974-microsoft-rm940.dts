@@ -165,27 +165,23 @@
 };
 
 /*
- * PM8941 SMBB charger.
+ * PM8941 SMBB charger -- battery presence/health, charge status and
+ * USB/DC power detection (/sys/class/power_supply/smbb-*).
  *
- * Enabling this gives full charge telemetry (battery present/health, charge
- * status, USB-power detection) and works -- BUT on this device it also hands
- * the charger control of the USB "usbin"/VBUS detection, which shares the
- * physical connector with our USB network/SSH gadget. That perturbs the USB
- * HS PHY, which cannot re-power (the same "phy poweron failed -22" limit that
- * blocks suspend), and the gadget dies until a cold power cycle. So SMBB is
- * left disabled by default -- we are a USB-accessed device.
+ * History: enabling this used to kill the USB gadget a couple of minutes
+ * into boot, because the charger also drives the USB "usbin"/VBUS
+ * detection that shares the connector with our USB-network/SSH link, and
+ * the HS PHY could not be powered back up. That turned out to be the
+ * l24/l6 regulator-constraint bug (see the PHY note in the common dtsi):
+ * phy_power_on() was failing with -EINVAL, so the PHY only ever ran on
+ * whatever state the Windows firmware left behind. With that fixed the
+ * PHY re-powers cleanly and SMBB and USB coexist.
  *
- * Battery VOLTAGE and TEMPERATURE telemetry do NOT need SMBB: the PM8941 VADC
- * (already enabled) exposes VBAT_SNS and the battery thermistor. See
- * tools/batstat.py for a self-calibrating readout.
- *
- * TODO: a telemetry-only SMBB config that leaves usbin/OTG-VBUS to the USB
- * stack (drop otg-vbus / usbin wiring) may give charge status without the PHY
- * fight. Charge limits when re-enabled (conservative, from mainline FP2 /
- * same PM8941): usb+fast 1.5A, safe-voltage 4.35V, high-threshold 4.30V.
+ * Battery VOLTAGE and TEMPERATURE do not need SMBB at all -- the VADC
+ * provides them; see tools/batstat.py.
  */
 &smbb {
-	status = "disabled";
+	status = "okay";
 };
 
 /*
