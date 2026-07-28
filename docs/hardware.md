@@ -66,3 +66,37 @@ unlock.
 - `qcom,msm-id` in the bandit lk2nd dts is seeded from the Lumia 930 and has
   a wrong cell count (LK warns "(16) not a multiple of (12)") — harmless for
   the single-device lk1st build, fix before multi-device lk2nd use.
+
+## Sensors
+
+Scanning the enabled I²C buses is an effective way to find undriven
+hardware on this device: a device already claimed by a driver does *not*
+answer (the touchscreen at `0x4b` stays invisible), so anything that does
+answer has no driver bound yet.
+
+Four devices turned up:
+
+| Bus | Label | Address | Identity |
+|---|---|---|---|
+| i2c-2 | `blsp1_i2c3` | 0x39 | **APDS-9930** ambient light + proximity ✅ |
+| i2c-2 | `blsp1_i2c3` | 0x68 | unidentified (reg 0x00=0xd8, 0x01=0x11, 0x02=0x52; *not* an MPU-6050) |
+| i2c-6 | `blsp2_i2c6` | 0x0f | unidentified (reg 0x0f=0x49, reg 0x0c=0x55) |
+| i2c-6 | `blsp2_i2c6` | 0x1e | unidentified (reg 0x0f=0x41, reg 0x20=0x07, reg 0xd0=0x21) |
+
+The APDS-9930 is confirmed rather than guessed: the part is addressed with
+the command bit set, so its ID register 0x12 is read as 0x92, and it
+returns 0x39. Mainline's `tsl2772` driver handles it. Both channels were
+checked against physical stimulus — proximity moves 270 → 1023 when
+covered and returns to baseline; the visible channel moves 66 → 4830 under
+a lamp.
+
+Two practical notes. The default gain of 1 reads **zero** through this
+phone's dark glass, so raise `in_intensity0_calibscale` (8 works well
+indoors). And `in_illuminance0_input` reports 0 until a device-specific
+lux table is calibrated, so use the raw intensity channels for now. The
+interrupt line has not been identified, so the sensor is polled.
+
+The other three are deliberately left disabled rather than guessed at.
+Note that Windows drives these parts through the ADSP (its driver package
+is named `qcSensors`), so the stock configuration is not a direct guide to
+an AP-side device tree.

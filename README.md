@@ -23,7 +23,7 @@ left intact.
 | eMMC | ✅ | all stock partitions visible; pmOS runs from `Data` |
 | USB gadget (network + SSH) | ✅ | NCM at `172.16.42.1`, plus ACM serial |
 | PMIC regulators (pm8941) | ✅ | ported from mainline hammerhead (same PMIC) |
-| microSD | ⚠️ enabled | polling card-detect; not yet validated with a card |
+| microSD | ⚠️ partial | controller (`mmc1`) initialises; no card available to test media |
 | Buttons (volume, 2-stage camera) | ✅ | wiring from stock ACPI, verified by press test |
 | SMP (4 cores) | ❌ | WP TrustZone rejects SCM bring-up — **`nosmp` mandatory** |
 | Display panel PM (DPMS/DSI) | ❌ | no DSI panel driver; simpledrm can't power the panel |
@@ -33,7 +33,9 @@ left intact.
 | Audio DSP (ADSP + APR + q6core) | ✅ | DSP boots, `aprbus` up, `qcom-q6core` bound to the DSP service |
 | Audio output (speaker/headset) | ❌ blocked | no WCD9320 codec or msm8974 machine driver exists upstream |
 | Modem / telephony | ⬜ untested | uses the same PAS path, which works; separate firmware/sequence |
-| Sensors, camera, audio output | ❌ | not started (ADSP is up, so audio is unblocked) |
+| Ambient light / proximity | ✅ | APDS-9930 via `tsl2772`; both channels verified physically |
+| Other sensors | ⬜ | three more undriven I²C devices found; parts not yet identified |
+| Camera | ❌ | not started |
 
 Read [docs/trustzone-quirks.md](docs/trustzone-quirks.md) **before** changing
 anything boot-related — this device's Windows-flavored TrustZone hard-resets

@@ -224,3 +224,26 @@
 	status = "okay";
 	default-brightness = <2048>;
 };
+
+/*
+ * Ambient-light / proximity sensor: APDS-9930 on blsp1_i2c3 (i2c-2) @ 0x39,
+ * driven by the mainline tsl2772 driver.
+ *
+ * Identified from its ID register -- the APDS-9930 is addressed with the
+ * command bit set, so register 0x12 is read as 0x92, and it returns 0x39.
+ * Both channels verified against physical stimulus: proximity 270 -> 1023
+ * when covered, and ch0 66 -> 4830 under a lamp.
+ *
+ * Two caveats. The interrupt line has not been identified, so this is
+ * polled only; threshold events would need it. And the default gain of 1
+ * reads zero through this phone's dark glass -- userspace should raise
+ * in_intensity0_calibscale (8 works well indoors). in_illuminance0_input
+ * still reports 0 because the lux table has not been calibrated for this
+ * device; the raw intensity channels are the usable ones for now.
+ */
+&blsp1_i2c3 {
+	light-sensor@39 {
+		compatible = "amstaos,apds9930";
+		reg = <0x39>;
+	};
+};
