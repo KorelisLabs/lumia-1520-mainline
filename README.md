@@ -30,7 +30,8 @@ left intact.
 | Suspend/resume (s2idle) | ✅ | `systemctl suspend` + a wake source; 10/10 clean cycles |
 | Wi-Fi (wcnss) | ❌ blocked | Pronto times out after PAS reports success; see quirks doc |
 | Bluetooth (wcnss) | ❌ blocked | shares the WCNSS remoteproc with Wi-Fi |
-| Audio DSP (ADSP/Q6) | ✅ boots | `remoteproc` up; `apr_audio_svc` present — audio stack not yet wired |
+| Audio DSP (ADSP + APR + q6core) | ✅ | DSP boots, `aprbus` up, `qcom-q6core` bound to the DSP service |
+| Audio output (speaker/headset) | ❌ blocked | no WCD9320 codec or msm8974 machine driver exists upstream |
 | Modem / telephony | ⬜ untested | uses the same PAS path, which works; separate firmware/sequence |
 | Sensors, camera, audio output | ❌ | not started (ADSP is up, so audio is unblocked) |
 
@@ -47,6 +48,7 @@ lk2nd/                    lk1st device entry + required load-address patch
 tools/check-bootimg.py    pre-flight verifier for built boot images
 tools/patch-cmdline.py    edit a boot.img cmdline in place (no repack)
 tools/pil-split.py        split stock .mbn DSP firmware into .mdt/.bNN
+tools/verify-dtb.py       assert a built boot.img's DTB contains expected nodes
 tools/batstat.py          battery voltage/temperature readout
 docs/                     boot chain, hardware facts, TrustZone quirks
 ```
