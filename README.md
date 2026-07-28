@@ -18,6 +18,7 @@ left intact.
 | Backlight (brightness + off) | ✅ | PM8941 WLED; `/sys/class/backlight/backlight`, 0 = off |
 | Battery telemetry (voltage/temp) | ✅ | via PM8941 VADC; `tools/batstat.py` (~3.86 V, ~37 °C) |
 | Charger / battery status (SMBB) | ✅ | `power_supply/smbb-*`: present, health, status, USB/DC detect |
+| Battery charging | ⚠️ partial | engages briefly at boot then latches off; see docs |
 | Touchscreen | ✅ | Synaptics PLG0175-02, RMI4, full multitouch |
 | eMMC | ✅ | all stock partitions visible; pmOS runs from `Data` |
 | USB gadget (network + SSH) | ✅ | NCM at `172.16.42.1`, plus ACM serial |

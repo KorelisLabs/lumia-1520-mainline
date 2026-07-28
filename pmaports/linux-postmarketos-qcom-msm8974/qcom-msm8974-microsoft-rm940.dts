@@ -181,6 +181,32 @@
  * provides them; see tools/batstat.py.
  */
 &smbb {
+	/*
+	 * Charge parameters for the Nokia BV-4BW (3400 mAh, 3.8 V nominal).
+	 *
+	 * DELIBERATELY CONSERVATIVE. A 3.8 V-nominal cell is usually a 4.35 V
+	 * high-voltage type (mainline Fairphone 2, same PM8941, uses 4.35 V),
+	 * but this pack's rating is unconfirmed and the hardware is over a
+	 * decade old. The risk is asymmetric: charging a 4.35 V cell to only
+	 * 4.2 V merely loses capacity, while charging a 4.2 V cell to 4.35 V
+	 * is a thermal hazard. So we target 4.15 V with a 4.2 V hard clamp.
+	 *
+	 * Current is 1 A (~0.3C) rather than the 1.5 A the hardware allows.
+	 * usb-charge-current-limit is the USB-spec 500 mA for a configured
+	 * device; without it the driver sits at the 100 mA default and the
+	 * pack never actually charges.
+	 *
+	 * Raise these only against a real BV-4BW datasheet.
+	 */
+	usb-charge-current-limit = <500000>;
+	qcom,fast-charge-safe-current = <1500000>;
+	qcom,fast-charge-current-limit = <1000000>;
+	qcom,fast-charge-safe-voltage = <4200000>;
+	qcom,fast-charge-high-threshold-voltage = <4150000>;
+	qcom,fast-charge-low-threshold-voltage = <3400000>;
+	qcom,auto-recharge-threshold-voltage = <4000000>;
+	qcom,minimum-input-voltage = <4450000>;
+
 	status = "okay";
 };
 
