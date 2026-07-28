@@ -30,8 +30,9 @@ left intact.
 | Suspend/resume (s2idle) | ✅ | `systemctl suspend` + a wake source; 10/10 clean cycles |
 | Wi-Fi (wcnss) | ❌ blocked | Pronto times out after PAS reports success; see quirks doc |
 | Bluetooth (wcnss) | ❌ blocked | shares the WCNSS remoteproc with Wi-Fi |
-| Modem / telephony | ⚠️ at risk | PAS-compatibility risk (shared secure-firmware path); **not yet tested** |
-| Sensors, camera, audio | ❌ | not started |
+| Audio DSP (ADSP/Q6) | ✅ boots | `remoteproc` up; `apr_audio_svc` present — audio stack not yet wired |
+| Modem / telephony | ⬜ untested | uses the same PAS path, which works; separate firmware/sequence |
+| Sensors, camera, audio output | ❌ | not started (ADSP is up, so audio is unblocked) |
 
 Read [docs/trustzone-quirks.md](docs/trustzone-quirks.md) **before** changing
 anything boot-related — this device's Windows-flavored TrustZone hard-resets
@@ -45,6 +46,8 @@ pmaports/                 postmarketOS packages (drop into a pmaports checkout,
 lk2nd/                    lk1st device entry + required load-address patch
 tools/check-bootimg.py    pre-flight verifier for built boot images
 tools/patch-cmdline.py    edit a boot.img cmdline in place (no repack)
+tools/pil-split.py        split stock .mbn DSP firmware into .mdt/.bNN
+tools/batstat.py          battery voltage/temperature readout
 docs/                     boot chain, hardware facts, TrustZone quirks
 ```
 

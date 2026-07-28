@@ -127,12 +127,18 @@ and unwinds the power domains — which is why the CX power domain reads
 
 **Stated conclusion:** WCNSS startup is blocked after the PAS
 authentication/reset call reports success — Pronto never raises its ready
-interrupt. The **leading hypothesis** is an incompatibility or incomplete
-implementation in the Windows-Phone TrustZone/PAS path (consistent with the
-`SCM call ... failed` / `Failed to initialize SCM` messages lk2nd prints at
-boot). Other possibilities have **not** been eliminated: immediate firmware
-failure after release, a WP-specific startup requirement, or an incorrect
-`ready`-interrupt wiring in the device tree.
+interrupt.
+
+> **Correction (see §5): the earlier "the WP TrustZone's PAS path is
+> broken" hypothesis is DISPROVEN.** The ADSP boots through the very same
+> `qcom_scm_pas_auth_and_reset()` path on this device. PAS works. Whatever
+> stops Pronto is specific to WCNSS, not a platform-wide secure-world
+> limitation.
+
+Remaining candidates, none yet eliminated: an immediate firmware failure
+after release, a WP-specific Pronto/iris startup requirement (clocks,
+regulators or the iris XO), or incorrect `ready`-interrupt wiring in the
+device tree.
 
 Ruled out along the way: the device-tree supplies match a known-working
 mainline board (Fairphone 2, msm8974pro) almost line-for-line; the reserved
@@ -145,8 +151,67 @@ triggered full device resets — hence disabled, not merely non-functional.
 The experimental enabled configuration lives on the `research/pronto-pas-timeout`
 branch of the pmaports tree for anyone continuing the investigation.
 
-**Modem outlook (unconfirmed):** the cellular modem (MSS / Q6V5) also relies
-on secure firmware services and its own PAS path, so a platform-wide
-limitation is plausible — but it is a *separate* processor, PAS ID, firmware
-package and startup sequence. The WCNSS result is a strong warning, not a
-completed modem diagnosis. Do not record the modem as blocked until tested.
+**Modem outlook:** the cellular modem (MSS / Q6V5) uses the same PAS
+mechanism, which §5 shows works on this device. That is encouraging rather
+than conclusive: the modem is a *separate* processor with its own PAS ID,
+firmware package and startup sequence, and it additionally needs the
+modem filesystem partitions. Untested — do not record it as either working
+or blocked.
+
+## 5. PAS *does* work — the ADSP boots
+
+The Q6 audio DSP (ADSP) starts cleanly on this device:
+
+```
+remoteproc remoteproc0: Booting fw image adsp.mdt, size 9280
+remoteproc remoteproc0: remote processor adsp is now up
+```
+
+`/sys/class/remoteproc/remoteproc0/state` reads `running`, and the SMD
+edge brings up `apr`, `apr_apps2`, `apr_audio_svc`, `DIAG`, `IPCRTR`,
+`fastrpcsmd-apps-dsp` and `sys_mon`.
+
+This matters twice over. It proves `qcom_scm_pas_auth_and_reset()` and the
+full ready handshake work on the Windows-Phone TrustZone — so the WCNSS
+timeout in §4 is a WCNSS problem, not a secure-world one. And
+`apr_audio_svc` is the channel the Q6 audio stack binds to, so audio is a
+matter of enabling the APR/Q6 drivers rather than fighting firmware.
+
+Enabling it is one line — everything else (cx power domain, xo clock,
+`adsp_region`, smp2p) is inherited from `qcom-msm8974.dtsi`:
+
+```
+&remoteproc_adsp {
+	status = "okay";
+};
+```
+
+### Getting the firmware (you must extract it yourself)
+
+The DSP firmware is Nokia/Microsoft property and is **not** redistributed
+here. It is already on your device, in the stock Windows install:
+
+| File (on MainOS, `/Windows/system32/`) | Processor |
+|---|---|
+| `qcadsp8974.mbn`  | ADSP (audio DSP) |
+| `qcwcnss8974.mbn` | WCNSS (Wi-Fi/BT) |
+| `qcdsp1v28974.mbn`, `qcdsp28974.mbn`, `qcvss8974.mbn` | other DSPs |
+
+Mount the Windows partition read-only and copy the blob out:
+
+```
+mount -t ntfs3 -o ro /dev/disk/by-partlabel/MainOS /mnt/mainos
+cp /mnt/mainos/Windows/system32/qcadsp8974.mbn /tmp/
+```
+
+Then split it into the `.mdt` + `.bNN` files the mainline loader expects
+and install them:
+
+```
+python3 tools/pil-split.py /tmp/qcadsp8974.mbn /lib/firmware adsp
+```
+
+(`.bNN` is program header N's file data; `.mdt` is `b00`, the ELF header
+and program-header table, concatenated with `b01`, the hash segment. The
+tool was validated by re-splitting `qcwcnss8974.mbn` and checking it
+reproduces a known-good `wcnss.mdt`/`.bNN` set byte for byte.)
