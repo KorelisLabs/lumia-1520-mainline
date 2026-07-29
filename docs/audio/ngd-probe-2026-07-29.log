@@ -1,0 +1,79 @@
+Lumia 1520 (RM-940) — SLIMbus NGD transport validation
+Kernel 6.16.12 #112-postmarketos-qcom-msm8974, boot-1520-audio-ngd-probe.img
+2026-07-29
+
+Device tree: ADSP enabled; slimbam dma-controller@fe104000 (0x20000, SPI 164,
+qcom,bam-v1.4.0, qcom,controlled-remotely, qcom,ee=1); slim-ngd@fe12f000
+(0x2c000, SPI 163, qcom,slim-ngd-v1.5.0, dmas <&slimbam 3>/<&slimbam 4>,
+child ngd@1). NO codec child — nothing powered the WCD9320.
+
+--------------------------------------------------------------------------
+ADSP probe at boot FAILED — firmware not reachable from the initramfs.
+CONFIG_QCOM_Q6V5_PAS=y moves the probe before the rootfs is mounted:
+--------------------------------------------------------------------------
+
+[    3.087221] remoteproc remoteproc0: adsp is available
+[    3.087839] remoteproc remoteproc0: Direct firmware load for adsp.mdt failed with error -2
+[    3.087934] remoteproc remoteproc0: powering up adsp
+[    3.088162] remoteproc remoteproc0: Direct firmware load for adsp.mdt failed with error -2
+[    3.088247] remoteproc remoteproc0: request_firmware failed: -2
+
+(/lib/firmware/adsp.mdt exists, 9280 bytes, but lives on the rootfs.)
+
+--------------------------------------------------------------------------
+ADSP started manually once userspace was up
+  # echo start > /sys/class/remoteproc/remoteproc0/state
+--------------------------------------------------------------------------
+
+[  252.509655] remoteproc remoteproc0: powering up adsp
+[  252.511604] remoteproc remoteproc0: Booting fw image adsp.mdt, size 9280
+[  253.295068] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM NGD: LPASS SSR AFTER_POWERUP
+[  253.295170] remoteproc remoteproc0: remote processor adsp is now up
+[  253.301629] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM NGD: QMI service 0x0301 discovered (version 1 instance 0) at node 5 port 3
+[  253.312456] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM SAT: Rcvd master capability
+[  253.312999] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM controller Registered
+
+--------------------------------------------------------------------------
+State afterwards
+--------------------------------------------------------------------------
+
+/sys/class/remoteproc/remoteproc0/state   : running
+/sys/class/remoteproc/remoteproc0/name    : adsp
+platform driver qcom,slim-ngd-ctrl bound  : fe12f000.slim-ngd
+platform driver qcom,slim-ngd bound       : qcom,slim-ngd.1
+/sys/bus/slimbus/devices/                 : (empty — no codec child, codec
+                                             held in reset, never announces)
+
+SMD channels exposed by the ADSP:
+  remoteproc0:smd-edge.IPCRTR
+  remoteproc0:smd-edge.apr
+  remoteproc0:smd-edge.apr_apps2
+  remoteproc0:smd-edge.apr_audio_svc
+  remoteproc0:smd-edge.DIAG / DIAG_CNTL / sys_mon / fastrpcsmd-apps-dsp
+
+--------------------------------------------------------------------------
+Findings
+--------------------------------------------------------------------------
+
+1. The Windows Phone ADSP firmware DOES expose the SLIMbus satellite control
+   QMI service and DOES accept APPS satellite control.
+
+2. The service publishes at VERSION 1, INSTANCE 0 — packing to exactly 1,
+   which is what upstream's SLIMBUS_QMI_SVC_V1 / SLIMBUS_QMI_INS_ID already
+   request. Upstream's exact-match lookup is CORRECT for this firmware; the
+   research wildcard lookup was unnecessary.
+
+3. Startup was triggered by LPASS SSR AFTER_POWERUP, 6 ms before the QMI
+   service was discovered — the ordering in which the stock path works,
+   because the ADSP was started after the driver had registered its notifier.
+   The PDR (avs/audio) path and the late-registration path are therefore
+   still UNPROVEN and need a cold boot with the ADSP coming up first.
+
+4. Exactly one "SLIM controller Registered" despite two triggers firing:
+   the idempotency guard behaved as intended.
+
+5. Benign noise — the eMMC rootfs still carries .ko files for subsystems this
+   build makes built-in:
+     qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+     qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+     qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)

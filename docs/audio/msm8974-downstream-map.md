@@ -264,7 +264,94 @@ calls `qcom_slim_qmi_init(ctrl, false)`, and that function sends
 mode field describes the *ADSP's* role. Mainline already tells the ADSP it
 is the master, which is exactly the architecture §1 establishes.
 
-## 9. Open questions after this survey
+## 9. PROBE RESULT — the transport works (2026-07-29)
+
+One boot of `boot-1520-audio-ngd-probe.img` (kernel r111, `#112`) settled it.
+The ADSP had to be started by hand (see the regression below), after which:
+
+```
+remoteproc0: Booting fw image adsp.mdt, size 9280
+slim-ngd: SLIM NGD: LPASS SSR AFTER_POWERUP
+remoteproc0: remote processor adsp is now up
+slim-ngd: SLIM NGD: QMI service 0x0301 discovered (version 1 instance 0)
+                                                   at node 5 port 3
+slim-ngd: SLIM SAT: Rcvd master capability
+slim-ngd: SLIM controller Registered
+```
+
+Answering the seven probe questions [LIVE]:
+
+| # | Question | Result |
+|---|---|---|
+| 1 | ADSP boots? | **Yes** — `state = running` |
+| 2 | QRTR announces `0x0301`? | **Yes** |
+| 3 | Version / instance? | **version 1, instance 0** |
+| 4 | QMI select-instance succeeds? | **Yes** |
+| 5 | Remote power request succeeds? | **Yes** |
+| 6 | BAM initialises? | **Yes** — no DMA errors; messaging works |
+| 7 | Controller registers, capabilities exchange? | **Yes** — "Rcvd master capability" |
+
+**The APPS-to-ADSP NGD architecture is validated on this device.** The
+2013 Windows Phone ADSP firmware exposes the SLIMbus satellite control
+service and accepts APPS satellite control.
+
+### Correction: the wildcard lookup was not needed
+
+The service publishes at **version 1, instance 0**, which packs to exactly
+`1` — precisely what upstream's `SLIMBUS_QMI_SVC_V1` / `SLIMBUS_QMI_INS_ID`
+already request. **Upstream's exact-match lookup would have matched.** The
+concern in §8 (defect 1) that downstream's `SLIMBUS_QMI_INS_ID 1` implied
+a packed `0x101` did not materialise on this firmware. The wildcard change
+is harmless but unnecessary, and should be dropped before this work goes
+anywhere near upstream.
+
+### Which trigger actually started the controller
+
+`LPASS SSR AFTER_POWERUP` fired first (at 253.295), because the ADSP was
+started *after* the driver had registered its notifier — the one ordering
+in which the stock path works. The QMI-arrival fallback fired 6 ms later
+and the idempotency guard did its job: exactly one "SLIM controller
+Registered". So §8 defects 2 and 3 remain unproven *on this path* — they
+would bite on a boot where the ADSP comes up before the driver probes,
+which is exactly what happens when the remoteproc is built in.
+
+### Regression found: PAS built-in loses its firmware
+
+Making `CONFIG_QCOM_Q6V5_PAS=y` moved the ADSP probe to **t=3.08 s**, before
+the rootfs is mounted:
+
+```
+remoteproc0: Direct firmware load for adsp.mdt failed with error -2
+remoteproc0: request_firmware failed: -2
+```
+
+`/lib/firmware/adsp.mdt` exists (9280 bytes) but lives on the rootfs, which
+the initramfs has not yet mounted. As a module it used to probe after
+switch_root and worked. Fix for the next image: either revert
+`QCOM_Q6V5_PAS` to `=m`, or ship the ADSP firmware in the initramfs. This
+is also the boot ordering that would finally exercise defects 2 and 3.
+
+### Cosmetic: stale modules for now-built-in code
+
+```
+qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+```
+
+The eMMC rootfs still carries `.ko` files for subsystems this build makes
+built-in. Harmless — the loads are rejected — and it clears when a rootfs
+built from the same config is installed.
+
+### No codec enumerated (expected)
+
+`/sys/bus/slimbus/devices/` is empty. The bus is up and the controller is
+registered, but nothing reported itself. That is the expected result with
+no codec child in the DT: the WCD9320's reset line (TLMM 63) is never
+driven, so the part stays in reset and never announces. Enumerating it is
+the next image's job.
+
+## 10. Open questions after this survey
 
 | Question | Status |
 |---|---|
