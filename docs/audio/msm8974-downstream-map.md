@@ -351,7 +351,61 @@ no codec child in the DT: the WCD9320's reset line (TLMM 63) is never
 driven, so the part stays in reset and never announces. Enumerating it is
 the next image's job.
 
-## 10. Open questions after this survey
+## 10. Automatic startup test (2026-07-29, second boot)
+
+Second image: focused patch (late-registration recovery + idempotency guard
++ trigger logging only — wildcard lookup and QMI-arrival fallback removed
+after the first boot disproved the need for them), `QCOM_Q6V5_PAS=y` kept
+deliberately, ADSP firmware injected into the initramfs locally, no codec
+child.
+
+```
+[ 3.339936] remoteproc0: powering up adsp
+[ 3.340142] remoteproc0: Booting fw image adsp.mdt, size 9280
+[ 4.773340] slim-ngd: SLIM NGD: trigger = live SSR AFTER_POWERUP
+[ 4.773446] remoteproc0: remote processor adsp is now up
+[ 4.778375] slim-ngd: QMI service 0x0301 discovered (version 1 instance 0)
+[ 4.819160] slim-ngd: SLIM SAT: Rcvd master capability
+[ 4.819525] slim-ngd: SLIM controller Registered
+```
+
+**Achieved.** No manual `echo start`, no module reloads, ADSP `running`,
+**exactly one** "SLIM controller Registered", no `QMI wait timeout`, no
+"already enabled, skipping". The firmware regression is fixed: `adsp.mdt`
+loads at t=3.34 s from the initramfs with no `-2`.
+
+**Not achieved — and this matters.** The trigger was **`live SSR
+AFTER_POWERUP`**, not the late-registration recovery. The ADSP took ~1.43 s
+to boot (3.34 → 4.77) and the NGD driver probed inside that window, so the
+notifier was already registered when the event fired. That is the *easy*
+ordering. Concretely:
+
+- `qcom_ssr_last_status()` **never fired** and remains unexercised. Defect 3
+  is still unproven on hardware.
+- The success is ordering-dependent. It is probably *deterministic* on this
+  device — a ~1.4 s PAS boot will reliably outlast a built-in driver's probe
+  — but "reliably wins a race" is not the same as "does not race".
+
+**PDR: no event, no error, no message.** Nothing from `servreg`/`pdr`
+appears in dmesg at all. Consistent with the predicted silent-pending
+behaviour on firmware with no `avs/audio` protection domain, so the
+late-status patch is *not* made unnecessary. Note this is consistent with
+defect 2 rather than proof of it: absence of any message is what both the
+"locator never appears" and "locator answers -ENXIO" paths look like.
+
+**How to actually test the difficult ordering:** build
+`SLIM_QCOM_NGD_CTRL=m`, boot, let the ADSP come up, then `modprobe` the
+controller. That guarantees the driver registers its notifier long after
+AFTER_POWERUP was emitted, which is precisely the case
+`qcom_ssr_last_status()` exists to handle. One cheap boot, and it is the
+only way to close defect 3.
+
+**Incidental, non-blocking:** enabling `QCOM_BAM_DMA` makes the i2c QUP
+driver attempt DMA and log `tx channel not available` on six buses. It
+falls back to PIO and i2c still works (the tsl2772 probes normally), but it
+is new noise introduced by this config.
+
+## 11. Open questions after this survey
 
 | Question | Status |
 |---|---|

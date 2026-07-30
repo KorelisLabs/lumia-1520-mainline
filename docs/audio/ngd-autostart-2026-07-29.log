@@ -1,0 +1,61 @@
+### Lumia 1520 -- automatic NGD startup ordering test -- Wed Jul 29 20:11:56 EDT 2026
+Linux nokia-rm940 6.16.12 #113-postmarketos-qcom-msm8974 SMP PREEMPT Thu Jul 30 00:04:40 U armv7l Linux
+
+### === THE ANSWER: did it start, and from which trigger? ===
+[    4.773340] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM NGD: trigger = live SSR AFTER_POWERUP
+[    4.778375] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM NGD: QMI service 0x0301 discovered (version 1 instance 0) at node 5 port 3
+[    4.819160] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM SAT: Rcvd master capability
+[    4.819525] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM controller Registered
+
+### remoteproc (did ADSP boot automatically?)
+running
+adsp
+
+### firmware load from initramfs
+[    0.000000] OF: reserved mem: 0x0dc00000..0x0f4fffff (25600 KiB) nomap non-reusable adsp@dc00000
+[    2.501950] qcom-rpm-proc remoteproc: Failed to create device link (0x180) with supplier vreg-boost for /remoteproc/smd-edge/rpm-requests/regulators-1
+[    3.329660] remoteproc remoteproc0: adsp is available
+[    3.339936] remoteproc remoteproc0: powering up adsp
+[    3.340142] remoteproc remoteproc0: Booting fw image adsp.mdt, size 9280
+[    4.773446] remoteproc remoteproc0: remote processor adsp is now up
+[   26.114863] systemd[1]: Clear SysFail Entry If The Boot Is Successful skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/LoaderEntrySysFail-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+
+### PDR / servreg / QMI / QRTR
+[    4.778375] qcom,slim-ngd-ctrl fe12f000.slim-ngd: SLIM NGD: QMI service 0x0301 discovered (version 1 instance 0) at node 5 port 3
+[   47.704976] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   48.123091] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+
+### how many times did the controller register?
+1
+
+### any QMI wait timeout / already-enabled?
+
+### slimbus bus
+devices:
+ngd bound:
+bind
+qcom,slim-ngd.1
+uevent
+unbind
+
+### errors
+[    2.574281] PM: genpd: Not disabling unused power domains
+[    3.201611] i2c_qup f9923000.i2c: 
+                tx channel not available
+[    3.203325] i2c_qup f9924000.i2c: 
+                tx channel not available
+[    3.205317] i2c_qup f9925000.i2c: 
+                tx channel not available
+[    3.206766] tsl2772 2-0039: supply vdd not found, using dummy regulator
+[    3.207315] tsl2772 2-0039: supply vddio not found, using dummy regulator
+[    3.260146] i2c_qup f9928000.i2c: 
+                tx channel not available
+[    3.261823] i2c_qup f9964000.i2c: 
+                tx channel not available
+[    3.291007] i2c_qup f9968000.i2c: 
+                tx channel not available
+[    3.294803] failed to register cpuidle driver
+[    3.294940] failed to register cpuidle driver
+[    3.295042] failed to register cpuidle driver
+[    3.295145] failed to register cpuidle driver
+[   56.809313] rcu: blocking rcu_node structures (internal RCU debug):
