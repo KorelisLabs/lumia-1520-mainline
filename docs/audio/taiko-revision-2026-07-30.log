@@ -1,0 +1,62 @@
+Lumia 1520 (RM-940) -- WCD9320 identified from its own registers
+Kernel 6.16.12 #117-postmarketos-qcom-msm8974, boot-1520-taiko-rev.img (r116)
+2026-07-30
+
+Fresh boot. Transport up automatically, ADSP running, codec module not
+loaded, no cached logical address.
+
+[ 103.831523] WCD9320: probe (hold_reset=0)
+[ 103.831943] WCD9320: expected (from DT) EA = 00 01 a0 00 17 02
+[ 103.839809] WCD9320: 7 supplies enabled, reset asserted
+[ 103.899173] WCD9320: reset released (low 20 ms, settle 20 ms)
+[ 103.900128] WCD9320: *** device_up *** codec is present on the bus
+[ 103.900512] WCD9320: reported (from silicon) EA = 00 01 a0 00 17 02
+[ 103.901164] WCD9320: assigned logical address = 0xcb
+[ 103.901725] WCD9320: raw value elements 0x804..0x808 = 01 00 02 01 00
+[ 103.902105] WCD9320: id_major = 0x0102, id_minor = 0x0001, chip version = 0x00
+[ 103.902510] WCD9320: *** identified from silicon as Taiko (major 0x0102),
+                        id_minor 0x0001, version 0x00 ***
+
+  device_up                  : 1
+  logical address assigned   : 1 (0xcb)
+  raw element read           : 1
+  all-zero "not responding"  : 0
+  identified as Taiko        : 1
+  read errors                : 0
+  driver bound               : wcd9320-enum
+  ADSP after                 : running
+
+--------------------------------------------------------------------------
+Result
+--------------------------------------------------------------------------
+
+id_major = 0x0102 is TAIKO_MAJOR exactly (include/linux/mfd/wcd9xxx/core.h:
+TAIKO_MAJOR = cpu_to_le16(0x102)). The part is a WCD9320, identified from
+its own identification registers rather than inferred from its enumeration
+address and board wiring.
+
+id_minor = 0x0001. The downstream wcd9xxx_codecs table carries two Taiko
+entries, TAIKO_MAJOR with minor 0x0 and with minor 0x1, so 0x1 is a valid
+Taiko variant; downstream treats it as the later revision. Recorded as read
+rather than relabelled.
+
+--------------------------------------------------------------------------
+Notes
+--------------------------------------------------------------------------
+
+- The previous all-zero read is now fully explained. The only change was
+  adding WCD9XXX_REGISTER_START_OFFSET (0x800): the register map begins
+  0x800 into the SLIMbus value-element space, so chip id is at 0x804..0x807
+  and version at 0x808. Reading raw 0x04..0x08 hit an unimplemented region.
+- The chip version element at 0x808 reads 0x00, whereas
+  WCD9XXX_A_CHIP_VERSION__POR in the downstream header is 0x20. Downstream
+  identifies parts by id_major/id_minor and does not use this register for
+  that purpose, so it is recorded as an observation, not a discrepancy that
+  affects identification.
+- The bytes also differ from the header's power-on-reset defaults
+  (0,0,0,1), which would decode to major 0x0100. The silicon reports its
+  real identity rather than those generic defaults.
+- The logical address was 0xcb here and in the previous session, and 0x00 in
+  the first. It is assigned by the manager and is not stable across boots.
+- Still no regmap, DAI, mixer, DAPM, MBHC or sound card. Nothing was played
+  or captured.
