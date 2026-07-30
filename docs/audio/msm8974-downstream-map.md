@@ -405,7 +405,74 @@ driver attempt DMA and log `tx channel not available` on six buses. It
 falls back to PIO and i2c still works (the tsl2772 probes normally), but it
 is new noise introduced by this config.
 
-## 11. Open questions after this survey
+## 11. Forced late-probe test — defect 3 CONFIRMED (2026-07-30)
+
+Third image, one config change only: `CONFIG_SLIM_QCOM_NGD_CTRL=m`. Verified
+before boot that `qcom,slim-ngd-v1.5.0` and the trigger strings were absent
+from vmlinux and present in `slim-qcom-ngd-ctrl.ko` (note the Makefile
+renames the object, so the module is *not* `qcom_slim_ngd_ctrl.ko`), and
+that the module was **not** in the initramfs so nothing could load it early.
+
+Preconditions confirmed on the running device before loading anything:
+ADSP `running` (booted t=4.47 s), uptime 99 s, no slim module, no slim
+platform driver, **zero** SLIM messages in dmesg. Then `insmod` at t=156 s —
+about 152 seconds after `AFTER_POWERUP` was emitted.
+
+```
+[156.439832] slim-ngd: SLIM NGD: QMI service 0x0301 discovered (version 1 instance 0)
+[156.440054] qcom,slim-ngd.1: SLIM NGD: trigger = late-registration recovery
+                                          (LPASS already up at probe)
+[156.451196] slim-ngd: SLIM SAT: Rcvd master capability
+[156.451971] slim-ngd: SLIM controller Registered
+```
+
+| Check | Result |
+|---|---|
+| trigger = late-registration recovery | **1** |
+| new SSR `AFTER_POWERUP` after insertion | **0** |
+| PDR responsible / any `servreg`,`pdr_` line | **0** |
+| `QMI wait timeout` | **0** |
+| `already enabled, skipping` | **0** |
+| `SLIM controller Registered` | **exactly 1** |
+
+**`qcom_ssr_last_status("lpass")` is confirmed load-bearing.** Without it a
+module-loaded (or simply late-probing) NGD controller never starts on this
+device, because `QCOM_SSR_AFTER_POWERUP` had already been emitted and is not
+replayed. Defect 3 in §8 is proven on hardware; the subsystem-name
+assumption (`"lpass"`) is also validated.
+
+### Separate defect found: the child platform device is leaked on remove
+
+`of_qcom_slim_ngd_register()` calls `platform_device_add(ngd->pdev)`, but the
+remove path never calls `platform_device_unregister()`/`_del()` — only
+`platform_device_put()` on error paths — and `qcom_slim_ngd_remove()` does
+`kfree(ctrl->ngd)` while the device stays registered on the platform bus.
+
+Observed exactly that on an unload/reload cycle:
+
+```
+rmmod  -> OK, but /sys/bus/platform/devices/qcom,slim-ngd.1 remains
+insmod -> kobject_add_internal failed for qcom,slim-ngd.1 with -EEXIST
+          probe with driver qcom,slim-ngd-ctrl failed with error -17
+```
+
+Worth noting the reload is messier than a plain failure: because
+`platform_driver_register()` runs before `of_qcom_slim_ngd_register()`, the
+newly registered driver first matched the **stale leaked device** and probed
+it (the late-registration trigger fired a second time) before the duplicate
+add failed. Despite that, `SLIM controller Registered` stayed at **1** — no
+double registration — and the system remained healthy: ADSP still `running`,
+no panic, no reset.
+
+Per the agreed decision tree this is a **cleanup issue, not a transport
+blocker**. It does mean the module cannot currently be reloaded without a
+reboot, which is worth knowing during codec bring-up. It also looks like a
+genuine upstream bug independent of this port.
+
+Minor: `pstore: backend (ramoops) writing error (-28)` — the ramoops area is
+full; unrelated, and it only affects crash capture.
+
+## 12. Open questions after this survey
 
 | Question | Status |
 |---|---|
