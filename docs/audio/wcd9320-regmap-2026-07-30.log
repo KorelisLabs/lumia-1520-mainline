@@ -1,0 +1,77 @@
+Lumia 1520 (RM-940) -- read-only WCD9320 regmap transport
+Kernel 6.16.12 #118-postmarketos-qcom-msm8974, boot-1520-taiko-rev.img (r117)
+2026-07-30
+
+Fresh boot. Transport up automatically, ADSP running, no codec or regmap
+modules loaded. Modules loaded in dependency order:
+
+  insmod regmap-slimbus.ko      (wcd9320-enum.ko has depends=regmap-slimbus)
+  insmod wcd9320-enum.ko hold_reset=0
+
+[ 108.529921] WCD9320: *** device_up *** codec is present on the bus
+[ 108.530138] WCD9320: assigned logical address = 0xcb
+[ 108.531181] WCD9320: raw value elements 0x804..0x808 = 01 00 02 01 00
+[ 108.531282] WCD9320: id_major = 0x0102, id_minor = 0x0001, chip version = 0x00
+[ 108.531580] WCD9320: regmap ready (reg_bits 16, val_bits 8, reg_base 0x800,
+                       max_register 0x3ff, cache off)
+[ 108.532812] WCD9320: direct = 01 00 02 01 00 | regmap = 01 00 02 01 00
+[ 108.532916] WCD9320: regmap matches direct slim_read -- reg_base 0x800
+                       translation confirmed
+[ 108.596239] WCD9320: 256 repeated reads -- 0 errors, 0 mismatches,
+                       major stayed 0x0102
+[ 108.596718] WCD9320: *** read-only regmap proven -- stable identity over
+                       256 reads ***
+
+  device_up             : 1
+  regmap ready          : 1
+  regmap == direct read : 1
+  regmap DISAGREE       : 0
+  read-only proven      : 1
+  regmap NOT proven     : 0
+  regmap init failed    : 0
+  modules               : regmap_slimbus 1 <- wcd9320_enum
+  ADSP after            : running
+
+--------------------------------------------------------------------------
+What this establishes
+--------------------------------------------------------------------------
+
+- regmap_config.reg_base carries the 0x800 value-element offset, so no
+  custom regmap_bus is needed. The mainline SLIMbus backend already provides
+  the 16-bit-register / 8-bit-value format this part requires.
+- The translation is confirmed by comparison, not assumption: regmap and a
+  direct slim_read of the same registers return identical bytes.
+- 256 consecutive reads produced no errors and no drift.
+- regmap is created inside device_status(UP), never in probe, because it
+  rides on the logical address that device_up announces. A DOWN
+  notification drops the reference.
+
+This also exercises the regmap-slimbus backport. With the unfixed code the
+managed path passes &slimbus -- the address of a stack parameter -- as the
+bus context, so post-probe register access would dereference a dead stack
+slot. Reads matching the direct path exactly is evidence the fix is doing
+its job.
+
+--------------------------------------------------------------------------
+Notes and limits
+--------------------------------------------------------------------------
+
+- Kconfig cannot honour CONFIG_REGMAP_SLIMBUS=y here: SLIM_WCD9320_ENUM is
+  a module and `select` from a tristate=m symbol forces the selected symbol
+  to m. regmap-slimbus is therefore a module, and wcd9320-enum.ko records
+  depends=regmap-slimbus. On a rootfs that predates it the dependency must
+  be inserted first; the config has been corrected to =m so the file matches
+  what is actually built.
+- Caching is deliberately off. Volatility, power-on defaults and what
+  survives a codec reset are still unmapped, and a cache that guesses any of
+  those wrong is worse than none.
+- NO write test was performed and no scratch register was invented. A write
+  target must be demonstrably writable, unrelated to power, clocks, reset,
+  interrupt acknowledgement and analog routing, not write-one-to-clear, and
+  safe to restore. Writing a value back to an arbitrary control register is
+  not automatically harmless.
+- Two items from the milestone's proof list are NOT covered here: that a
+  codec reset produces clean absence and re-enumeration, and that regmap is
+  safely recreated afterwards. The DOWN path depends on
+  slim_report_absent(), which nothing currently calls, so that needs a
+  deliberate mechanism rather than a module unload.
