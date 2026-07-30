@@ -1,0 +1,76 @@
+Lumia 1520 (RM-940) -- WCD9320 "Taiko" SLIMbus enumeration
+Kernel 6.16.12 #115-postmarketos-qcom-msm8974, boot-1520-taiko-enum.img
+2026-07-30
+
+Transport came up automatically first, with no intervention:
+
+[   4.232156] slim-ngd: SLIM NGD: trigger = live SSR AFTER_POWERUP
+[   4.237104] slim-ngd: QMI service 0x0301 discovered (version 1 instance 0)
+[   4.248732] slim-ngd: SLIM SAT: Rcvd master capability
+[   4.250312] slim-ngd: SLIM controller Registered
+
+Before loading the codec probe:
+  ADSP                          : running
+  /sys/bus/slimbus/devices/     : 217:a0:1:0   (created FROM DEVICE TREE --
+                                  proves nothing about physical presence)
+  wcd9320-enum                  : not loaded
+  pstore records                : 0
+
+Then insmod wcd9320-enum.ko:
+
+[ 154.449406] wcd9320-enum 217:a0:1:0: WCD9320: expected (from DT) EA = 00 01 a0 00 17 02  (manf 0x217 prod 0x0a0 dev_index 1 instance 0)
+[ 154.451281] wcd9320-enum 217:a0:1:0: WCD9320: reset gpio acquired, asserted
+[ 154.459475] wcd9320-enum 217:a0:1:0: WCD9320: 7 supplies enabled
+[ 154.519222] wcd9320-enum 217:a0:1:0: WCD9320: reset released (low 20 ms, settle 20 ms) -- waiting for the codec to announce itself
+[ 154.520177] wcd9320-enum 217:a0:1:0: WCD9320: *** device_up *** codec is present on the bus
+[ 154.520563] wcd9320-enum 217:a0:1:0: WCD9320: reported (from silicon) EA = 00 01 a0 00 17 02  (manf 0x217 prod 0x0a0 dev_index 1 instance 0)
+[ 154.521216] wcd9320-enum 217:a0:1:0: WCD9320: assigned logical address = 0x00
+[ 154.521766] wcd9320-enum 217:a0:1:0: WCD9320: chip id byte0 = 0x00
+
+  device_up lines   : 1
+  reported EA lines : 1
+  laddr lines       : 1
+  driver bound      : wcd9320-enum
+  ADSP after        : running (no reset, no fault)
+
+--------------------------------------------------------------------------
+Why this is physical enumeration and not a device-tree artifact
+--------------------------------------------------------------------------
+
+slim_device_probe() calls the driver's probe, then slim_get_logical_addr().
+Only if that succeeds does it call slim_device_update_status(UP), which is
+what invokes the device_status callback. slim_get_logical_addr() ends up in
+slim_device_alloc_laddr(), which -- because the NGD controller supplies a
+->get_laddr op -- calls qcom_slim_ngd_get_laddr().
+
+qcom_slim_ngd_get_laddr() sends SLIM_USR_MC_ADDR_QUERY to the manager (on
+the ADSP) carrying the elemental address, and waits synchronously:
+
+	if (!memcmp(rbuf, failed_ea, 6))
+		return -ENXIO;
+	*laddr = rbuf[6];
+
+If the codec were not physically present the manager returns an all-zero
+elemental address, get_laddr returns -ENXIO, slim_device_probe logs
+"Failed to get logical address" and returns -EPROBE_DEFER, and
+device_status(UP) is never reached.
+
+device_up therefore required the part to answer an address query over the
+bus. Logical address 0x00 is a genuinely assigned address (first device on
+this bus), not a null read.
+
+--------------------------------------------------------------------------
+Notes
+--------------------------------------------------------------------------
+
+- Enumeration completed ~1 ms after reset release. The address query is a
+  fast synchronous transaction and the codec was already ready by the end of
+  the 20 ms settle.
+- chip id byte0 = 0x00 is a supplementary read, not part of the proof. It
+  returned without error; interpreting WCD9320 chip-id bytes belongs to the
+  next milestone.
+- Harmless at t=2.47s, before any of this:
+  "Failed to create device link (0x180) with supplier remoteproc for
+   /soc/slim-ngd@fe12f000/ngd@1/codec@1,0"
+- The interface device at 00 00 A0 00 17 02 is still not described.
+- Nothing was played or captured; no ASoC, DAI, mixer, DAPM or MBHC exists.
