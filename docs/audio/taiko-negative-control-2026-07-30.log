@@ -1,0 +1,95 @@
+Lumia 1520 (RM-940) -- WCD9320 enumeration negative control + revision read
+Kernel 6.16.12 #116-postmarketos-qcom-msm8974, boot-1520-taiko-enum.img (r115)
+2026-07-30
+
+Both tests run on ONE fresh boot. A fresh boot is mandatory: after a
+successful enumeration the SLIMbus core caches the logical address with
+is_laddr_valid = true, and only slim_report_absent() clears it -- an ordinary
+module unload does not. Reload alone would let slim_get_logical_addr()
+short-circuit, so a codec held in reset could appear to enumerate.
+
+Pre-test state: transport up automatically at t=4.53s, ADSP running,
+217:a0:1:0 present from DT with driver NONE, zero WCD messages.
+
+--------------------------------------------------------------------------
+TEST A -- hold_reset=1 : the codec MUST NOT enumerate
+--------------------------------------------------------------------------
+
+[ 139.088272] WCD9320: probe (hold_reset=1)
+[ 139.088696] WCD9320: expected (from DT) EA = 00 01 a0 00 17 02
+[ 139.096469] WCD9320: 7 supplies enabled, reset asserted
+[ 139.096570] WCD9320: NEGATIVE CONTROL -- reset deliberately held asserted; enumeration must FAIL
+[ 139.097343] wcd9320-enum 217:a0:1:0: Failed to get logical address
+[ 139.097473] WCD9320: cleanup -- reset asserted, 7 supplies disabled
+
+  device_up occurrences         : 0     (required 0)
+  Failed to get logical address : 1
+  assigned logical address      : 0     (required 0)
+  chip id reads                 : 0     (required 0)
+  driver bound                  : NONE
+  cleanup unwind ran            : 1
+  ADSP after                    : running
+
+The devm_add_action_or_reset() unwind fired correctly. That matters: the
+logical-address query runs inside slim_device_probe() AFTER the driver's
+probe() returned success, so the bus probe returns -EPROBE_DEFER and the
+driver never fully binds -- remove() would not have run.
+
+--------------------------------------------------------------------------
+TEST B -- hold_reset=0 : the codec MUST enumerate
+--------------------------------------------------------------------------
+
+[ 189.191405] WCD9320: probe (hold_reset=0)
+[ 189.196753] WCD9320: 7 supplies enabled, reset asserted
+[ 189.249110] WCD9320: reset released (low 20 ms, settle 20 ms)
+[ 189.250065] WCD9320: *** device_up *** codec is present on the bus
+[ 189.250452] WCD9320: reported (from silicon) EA = 00 01 a0 00 17 02
+[ 189.251105] WCD9320: assigned logical address = 0xcb
+
+  device_up occurrences    : 1
+  assigned logical address : 1
+  driver bound             : wcd9320-enum
+  ADSP after               : running
+
+--------------------------------------------------------------------------
+RESULT: enumeration is proven
+--------------------------------------------------------------------------
+
+Same boot, same code path, same supplies; only the reset line differs.
+Reset asserted -> no logical address, no device_up. Reset released ->
+EA answered, logical address assigned, device_up. This closes the gap that
+source analysis alone left open.
+
+Note the assigned logical address was 0xcb here and 0x00 in the previous
+session. A value that varies between boots is further evidence it is a real
+assignment from the manager rather than a constant or a null read.
+
+--------------------------------------------------------------------------
+REVISION READ: FAILED -- cause identified, not yet fixed
+--------------------------------------------------------------------------
+
+[ 189.251400] WCD9320: chip id bytes 0x04..0x08 = 00 00 00 00, version = 0x00
+[ 189.251492] WCD9320: id_major = 0x0000, id_minor = 0x0000
+[ 189.251570] WCD9320: major 0x0000 is not Taiko (expected 0x0102)
+
+slim_read() returned success, so the transaction completed and the data is
+genuinely zero. The cause is an addressing error in this probe, not a codec
+or bus problem:
+
+  downstream wcd9xxx_slim_read_device():
+      msg.start_offset = WCD9XXX_REGISTER_START_OFFSET + reg;
+  and
+      #define WCD9XXX_REGISTER_START_OFFSET 0x800
+
+The WCD9xxx register map is offset by 0x800 within the value-element space.
+This probe read raw value elements 0x04..0x08, which are 2 KB below the
+register map, so they read as zero. The chip id is at 0x804..0x807 and the
+version at 0x808.
+
+The part is therefore still NOT identified from its registers. Its identity
+rests on the enumeration address (manf 0x217, prod 0x0a0), which matches the
+downstream Taiko value exactly, and on the board wiring. Do not record the
+zeros as a revision.
+
+Unrelated and harmless, seen once: "failed while handling packet from
+1:16388" after the module unload.
