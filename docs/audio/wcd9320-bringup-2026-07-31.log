@@ -1,0 +1,90 @@
+Lumia 1520 (RM-940) -- WCD9320 codec core: both startup paths
+Kernel 6.16.12, boot-1520-wcd9320-bringup2.img (r123), module bringup-rc2
+2026-07-31
+
+Precondition: /lib/modules purged before the boot, so nothing autoloaded and
+the codec was neither powered nor enumerated. ADSP running, NGD registered,
+DT-created device present with no driver bound.
+
+--------------------------------------------------------------------------
+TEST 1 -- fresh bring-up (this driver owns power and reset)
+--------------------------------------------------------------------------
+
+  # modprobe wcd9320 handoff_on_remove=1
+
+[110.669214] fresh bring-up: 7 supplies enabled, reset released
+[110.669334] fresh bring-up: waiting for enumeration
+[110.670425] device UP (#1), logical address 0xcb
+
+  path=fresh online=1 adopted=0 power_owned=1
+  reset_transitions=2 supply_enables=1 supply_disables=0
+  identity_reads=1 identity_failures=0 stale_bus_state=0
+  identity: major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+Two reset transitions (assert, release) and one supply enable: the driver
+brought the part up itself, and the bus enumerated it.
+
+--------------------------------------------------------------------------
+STAGED HANDOFF -- unload leaving the hardware live
+--------------------------------------------------------------------------
+
+[120.759805] removing (fresh path, power_owned=1)
+[120.760200] handoff: leaving the codec powered for the next driver
+
+handoff_on_remove is research-only. It exists purely to construct the
+condition late adoption is supposed to handle: a physically live codec plus
+valid cached bus state. It must never become production behaviour.
+
+--------------------------------------------------------------------------
+TEST 2 -- late adoption (codec genuinely live)
+--------------------------------------------------------------------------
+
+  # modprobe wcd9320          (handoff_on_remove=N)
+
+[124.500324] bus reports enumerated (laddr 0xcb); verifying before adopting
+[124.514279] late adoption: codec responded, no power or reset touched
+
+  path=adopted online=1 adopted=1 power_owned=0
+  reset_transitions=0 supply_enables=0 supply_disables=0
+  identity_reads=1 identity_failures=0 stale_bus_state=0
+  identity: major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+All three hardware counters are zero: the driver adopted a running codec
+without touching power or reset. stale_bus_state=0 proves the verification
+succeeded on the first path rather than the fallback rescuing it -- a stale
+adoption could not have produced these numbers, because the fallback
+increments that counter and drives reset.
+
+--------------------------------------------------------------------------
+Health
+--------------------------------------------------------------------------
+
+  identity read failures : 0
+  not-Taiko              : 0
+  duplicate debugfs      : 0
+  slim bus errors        : 0
+  slim timeouts          : 0
+  regulator warnings     : 0
+  regmap debugfs entries : 1
+  ADSP                   : running
+
+Unrelated pre-existing noise: qrtr / qcom_common / qmi_helpers "exports
+duplicate symbol" from stale .ko files on the eMMC rootfs for subsystems this
+build makes built-in. Cosmetic; clears when a matching rootfs is installed.
+
+--------------------------------------------------------------------------
+What is NOT proven
+--------------------------------------------------------------------------
+
+Codec-only hot removal remains unsupported. Unbinding a power-owning driver
+powers the codec down while the SLIMbus core keeps reporting it UP, because
+the remove path clears neither the cached status nor the logical address.
+The driver now detects that on the next bind -- the identity read fails, the
+stale state is counted, and it falls back to a controlled fresh bring-up --
+but nothing client-side can make the remote ADSP manager forget its
+assignment, so the fallback is allowed to fail honestly rather than loop.
+
+Real re-enumeration belongs to controller-coordinated recovery: the NGD
+driver marks its children absent during subsystem restart and re-queries them
+after the master-capability exchange. Suspend/resume and an actual ADSP
+restart are the right vehicles. Standalone codec power cycling is deferred.

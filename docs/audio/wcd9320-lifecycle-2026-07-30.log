@@ -1,0 +1,67 @@
+Lumia 1520 (RM-940) -- WCD9320 codec core lifecycle test
+Kernel 6.16.12 #120-postmarketos-qcom-msm8974, boot-1520-wcd9320-core.img (r119)
+2026-07-30
+
+Modules installed into /lib/modules and depmod run, then:
+
+  # modprobe wcd9320
+  MODPROBE_OK
+  wcd9320                12288  0
+  regmap_slimbus         12288  1 wcd9320
+
+modules.dep carries the dependency, so no hand-ordered insmod is needed:
+  kernel/drivers/slimbus/wcd9320.ko: kernel/drivers/base/regmap/regmap-slimbus.ko
+
+Initial enumeration:
+  device UP (#1), logical address 0xcb
+  id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+
+--------------------------------------------------------------------------
+Lifecycle test: 10 cycles
+--------------------------------------------------------------------------
+
+  # echo 10 > /sys/bus/slimbus/devices/217:a0:1:0/lifecycle_test
+
+Each cycle: assert reset, slim_report_absent(), verify the cached logical
+address was invalidated, cycle the supplies, release reset, force a fresh
+address query, rebuild regmap on UP, re-read the identity.
+
+  lifecycle test: 10/10 cycles OK (up 11, down 10)
+
+  cycles OK             : 10
+  laddr NOT invalidated : 0
+  re-enumeration failed : 0
+  regmap not rebuilt    : 0
+  identity read failed  : 0
+  not-Taiko             : 0
+  map not responding    : 0
+  ADSP after            : running
+
+The logical address came back as 0xcb on every cycle. The driver tolerates
+it changing; on this hardware it happened not to.
+
+--------------------------------------------------------------------------
+DEFECT FOUND BY THIS TEST -- regmap leak (not yet fixed)
+--------------------------------------------------------------------------
+
+  debugfs: Directory '217:a0:1:0' with parent 'regmap' already present!
+
+repeated once per cycle from cycle 7 onward.
+
+The driver calls devm_regmap_init_slimbus() on every device_status(UP) and
+only sets wcd->regmap = NULL on DOWN. Setting a pointer to NULL does not
+free a devres allocation, so each cycle leaks a regmap; eleven now exist and
+each tries to create the same debugfs directory. Only the first succeeds.
+
+The design assumption behind that was wrong. regmap does not ride on the
+logical address -- it rides on the slim_device, which persists across
+absence. slim_read() reads sdev->laddr at call time, so one regmap stays
+valid through re-enumeration and only the reads fail while the device is
+down.
+
+Correct shape: create the regmap once in probe and keep it, rather than
+rebuilding it per UP. Reads attempted while the device is down will fail on
+their own.
+
+Functionally the test passed -- every read returned correct data -- but the
+resource handling is wrong and is recorded here as an open defect.
