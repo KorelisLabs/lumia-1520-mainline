@@ -235,14 +235,54 @@ should never assert. An assertion would itself be informative — it would mean
 either that the line is shared with something else, or that a source asserts
 despite being masked.
 
-Checkpoint on success: **`wcd9320-irq-parent-mapped`**. That names what it
-proves — parent-line plumbing and idle behaviour.
+### Why a purely interrupt-driven pass would be inconclusive
 
-**Not** `wcd9320-irq-proven`. That waits until one controlled physical source
-is safely unmasked and produces the expected status bit, parent IRQ, nested
-dispatch and clear sequence. On the evidence in §4, that source should come
-from the MBHC block, which is reachable now, rather than from anything behind
-the CDC sentinel.
+With `IRQ_TYPE_EDGE_RISING`, "no interrupt arrived" has two readings that
+cannot be separated: the line is correctly idle, or the codec is holding it
+high and Linux missed the transition because the source behaves as a level
+one. §6's trigger disagreement is exactly the condition that makes this
+plausible rather than theoretical.
+
+So the image also samples the pad's raw level directly, via
+`gpiod_get_value_cansleep()` on `irq-gpios` naming the same TLMM 72 pad.
+Sampling is **bounded and diagnostic, never permanent polling**: every 250 ms
+for 5 s, then every 1 s for 25 s, then it stops for good — 45 samples over
+~30 s. The driver logs a completion line and never reschedules.
+
+### Reading the result
+
+| observation | meaning |
+|---|---|
+| pad low, status clear, no IRQ | clean idle pass |
+| pad high, status pending, no IRQ | likely edge-versus-level mismatch |
+| pad high, status clear | polarity, routing, or a stale parent-line condition |
+| status pending, pad low | codec interrupt-output configuration or routing mismatch |
+| repeated IRQs with all sources masked | storm, or wrong trigger/polarity |
+| one edge during mask programming, then quiet | record it; likely transient init behaviour |
+
+The driver also records `irq_get_trigger_type()` after the request, so the
+artifact proves the edge configuration actually landed rather than assuming
+DT was honoured. All of it is exposed at
+`/sys/bus/slimbus/devices/217:a0:1:0/irq_observe`.
+
+Note the handler does **not** acknowledge unless a real source is pending
+(`status & ~mask & valid`, with the reserved bits excluded). Acknowledging a
+spurious assertion would destroy the evidence that it happened.
+
+### Milestone wording
+
+Checkpoint on success: **`wcd9320-irq-parent-idle-validated`**.
+
+> TLMM 72 was requested with the Lumia DSDT's rising-edge configuration;
+> codec interrupt sources were explicitly masked; the parent line remained
+> electrically idle with no pending status or interrupt storm during bounded
+> observation.
+
+**Not** `wcd9320-irq-proven`, and not "IRQ controller working". That waits
+until one controlled physical source is safely unmasked and produces the
+expected status bit, parent IRQ, nested dispatch and clear sequence. On the
+evidence in §4 that source should come from the MBHC block, which is
+reachable now, rather than from anything behind the CDC sentinel.
 
 ## 8. `volatile_reg`, from `taiko_volatile()`
 
