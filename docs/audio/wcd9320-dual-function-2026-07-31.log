@@ -1,0 +1,75 @@
+Lumia 1520 (RM-940) -- WCD9320 dual SLIMbus function, clean run
+Kernel 6.16.12, boot-1520-wcd9320-dual.img (r124), module dual-rc1
+2026-07-31
+
+Preconditions verified BEFORE any module was copied to the device:
+
+  wcd9320 loaded        : 0
+  regmap_slimbus loaded : 0
+  modules on disk       : 0   (all /lib/modules/*/ purged, initramfs clean)
+  adsp                  : running
+  ngd registered        : 1
+  217:a0:0:0 driver     : NONE
+  217:a0:1:0 driver     : NONE
+  prior codec activity  : 0
+  prior bus errors      : 0
+  prior timeouts        : 0
+
+Then a single `modprobe wcd9320`. No rmmod at any point.
+
+--------------------------------------------------------------------------
+Result
+--------------------------------------------------------------------------
+
+[120.674331] 217:a0:0:0 interface function: no power or reset taken, waiting
+[120.674986] 217:a0:0:0 Failed to get logical address
+[120.729269] 217:a0:1:0 fresh bring-up: 7 supplies enabled, reset released
+[120.729387] 217:a0:1:0 fresh bring-up: waiting for enumeration
+[120.730248] 217:a0:1:0 id_major 0x0102 id_minor 0x0001 version 0x00
+[120.730357] 217:a0:1:0 control function UP (#1), logical address 0xcb
+[120.740733] 217:a0:0:0 interface function: no power or reset taken, waiting
+[120.741514] 217:a0:0:0 interface function UP (#1), logical address 0xca
+
+  217:a0:1:0  function=pgd  path=fresh  online=1  power_owned=1
+              reset_transitions=2  supply_enables=1  supply_disables=0
+              identity_reads=1  identity_failures=0  stale_bus_state=0
+              identity: major 0x0102 minor 0x0001 version 0x00 laddr 0xcb
+
+  217:a0:0:0  function=ifd  path=fresh  online=1  power_owned=0
+              reset_transitions=0  supply_enables=0  supply_disables=0
+              identity_reads=0  identity_failures=0  stale_bus_state=0
+              identity: interface function: no chip id, laddr 0xca
+
+  devices bound to wcd9320 : 2
+  regmap debugfs entries   : 2
+  SLIM bus errors          : 0
+  SLIM timeouts            : 0
+  stale bus state          : 0
+  duplicate debugfs        : 0
+  regulator warnings       : 0
+  adsp                     : running
+  ngd                      : registered
+
+--------------------------------------------------------------------------
+On the one alarming-looking line
+--------------------------------------------------------------------------
+
+"Failed to get logical address" at 120.674 is the interface function's FIRST
+probe attempt, which ran before the control function had powered the codec.
+Its address query legitimately failed and the probe returned -EPROBE_DEFER.
+The control function then brought the part up at 120.729, and the deferred
+probe was retried at 120.740 and succeeded with laddr 0xca.
+
+This is correct behaviour, and it confirms the dependency is real rather than
+theoretical: the interface function genuinely cannot enumerate until the
+control function has powered the codec. The ordering resolves itself through
+the normal driver model, with no explicit sequencing in the driver.
+
+--------------------------------------------------------------------------
+Milestone
+--------------------------------------------------------------------------
+
+The Lumia 1520's WCD9320 exposes both PGD and IFD SLIMbus functions. Both
+enumerate with independent logical addresses; the PGD exclusively owns codec
+power and reset and identifies Taiko silicon, while the IFD binds without any
+regulator or reset activity.
