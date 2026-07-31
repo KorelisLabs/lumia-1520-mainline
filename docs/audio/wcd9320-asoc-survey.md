@@ -214,3 +214,42 @@ treated as safe merely because it is digital.
 
 Until 1 and 2 are answered, the correct next milestone is the dual-function
 topology, not register writes.
+
+---
+
+## Addendum: what the silicon dump has since answered
+
+`wcd9320-register-map.md` supersedes parts of sections 2 and 5. Recorded here
+so this survey is not read as still-current where it is not.
+
+**Answered:**
+
+- *"Register classification must be derived, not copied"* (§2) — derived, and
+  then confirmed against the part. The 673 documented addresses are exactly
+  the implemented set: every undocumented address reads `0x00` and every
+  documented one reads out.
+- *"Reset defaults as a table"* (§5) — collected for all 673 addresses and
+  confirmed against silicon at 152 of 154 in `0x000`–`0x1ff`.
+- *"`WCD9XXX_A_CHIP_VERSION__POR` is `0x20` while this device reads `0x00`"*
+  (§5) — no longer an isolated oddity. It belongs to a set of 124 registers
+  differing from `__POR`, most of which fall into two coherent groups: the
+  QFUSE readback and analog trims, and the dark digital core.
+- *"Whether the mandatory writes are restorable"* (§5) — still unanswered, but
+  now moot for `TAIKO_A_CDC_CLK_POWER_CTL`: `0x314` sits inside a region that
+  currently cannot report its own contents, so the readback verification every
+  previous milestone relied on is unavailable there.
+
+**Sharpened rather than answered:**
+
+- §8's caution about the two first writes stands and now has a second,
+  independent reason. `TAIKO_A_CHIP_CTL` (`0x000`) is outside the dark region
+  and does read back — it currently holds `0x08` against a `__POR` of `0x00`.
+  `TAIKO_A_CDC_CLK_POWER_CTL` (`0x314`) is inside it.
+- §6's implementation order is unchanged, but step 2 ("derive
+  readable/volatile/precious tables") is now partly done: `readable_reg` is
+  settled, `precious_reg` is empty for the interrupt block, and `volatile_reg`
+  cannot be established empirically until the digital core is clocked.
+
+**Still open, unchanged:** the `SB_PGD_*` port register offsets, the
+per-revision differences between Taiko minor `0x0` and `0x1`, and power
+sequencing beyond `wcd9xxx_reset()`.
