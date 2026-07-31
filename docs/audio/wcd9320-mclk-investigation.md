@@ -174,3 +174,67 @@ Nothing already proven depends on this. Register access, identity,
 enumeration and both bus functions all work with no MCLK present, because
 SLIMbus messaging is clocked by the bus rather than by the codec's reference
 clock.
+
+---
+
+## 7. Full PM8941 pad sweep — one bounded pass, no clock-function pin
+
+Section 6 covered only the four DIV_CLK-capable pins. Since a negative there
+does not exclude a route elsewhere, every PM8941 GPIO and MPP was swept once,
+read-only, from a single sequential capture of the SPMI regmap.
+
+Scope: GPIOs 1–36 (`0xc000` + n·`0x100`) and MPPs 1–8 (`0xa000` + n·`0x100`).
+Per pad: type (`+0x04`), subtype (`+0x05`), mode/function select (`+0x40`),
+output-source select (`+0x44`), output config (`+0x45`), enable (`+0x46`).
+The goal was not to decode every pad's purpose — only to find a positive
+clock candidate.
+
+### GPIOs
+
+All 36 blocks read `type = 0x10`, so every read landed on a real GPIO
+peripheral. **Function select is 0 (normal GPIO) on all 36 pins.** No pin is
+in function 1 (`DIV_CLK`) or function 2 (sleep clock).
+
+Thirty-one pads are idle inputs (`mode = 0x00`). Five are configured as
+outputs:
+
+| Pin | base | `+0x40` mode | direction | func sel | `+0x44` out-src | `+0x45` out cfg |
+|---|---|---|---|---|---|---|
+| GPIO 8 | `0xc700` | `10` | out | 0 | `00` | `03` |
+| GPIO 19 | `0xd200` | `11` | out | 0 | `00` | `02` |
+| GPIO 21 | `0xd400` | `21` | in/out | 0 | `00` | `01` |
+| GPIO 23 | `0xd600` | `11` | out | 0 | `00` | `03` |
+| GPIO 24 | `0xd700` | `11` | out | 0 | `00` | `03` |
+
+The output-source select is `0x00` on all five — and on all 36 pins. That
+field is what selects an alternate driver for the pad; a clock output would
+show up either there or as a non-zero function select. Both are zero
+everywhere, so these five are ordinary data-register-driven outputs.
+
+### MPPs
+
+All eight blocks read `type = 0x11`, confirming real MPP peripherals.
+
+| MPP | base | subtype | `+0x40` mode | `+0x46` en |
+|---|---|---|---|---|
+| MPP 1 | `0xa000` | `05` | `51` | `80` |
+| MPP 2–8 | `0xa100`–`0xa700` | `03`/`05` | `00` | `00` |
+
+Only MPP 1 is enabled; mode `0x51` decodes to direction field 5 = current
+sink, which is an LED or haptic drive, not a clock. MPPs 2–8 are disabled
+outright. The PM8941 MPP block has no clock alternate function in any case.
+
+### Result
+
+**No active PM8941 GPIO or MPP clock output was observed in the current idle
+inherited state.**
+
+Stated as narrowly as the evidence allows. This does **not** establish that
+MCLK is absent from the board, and it does **not** establish that the ADSP
+generates it. It closes one search: the PMIC pad complement, in this state,
+is not sourcing a codec reference clock, so no further PMIC pin hunting is
+warranted without new information.
+
+MCLK is therefore deferred rather than resolved. It is not a prerequisite for
+register classification, IRQ mapping, or ASoC component structure, all of
+which proceed without it.
