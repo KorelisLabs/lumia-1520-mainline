@@ -151,3 +151,66 @@ prerequisite rather than a DAI detail:
 
 Steps 1–3 need no new hardware capability — the transport, enumeration,
 identity and register access are all already proven.
+
+---
+
+## Addendum: port macros and the clock question
+
+### 7. The interface-function port registers
+
+From `include/linux/mfd/wcd9xxx/wcd9xxx-slimslave.h` and
+`wcd9320_registers.h`:
+
+| Macro / register | Value | Direction |
+|---|---|---|
+| `SB_PGD_PORT_BASE` | `0x000` | — |
+| `SB_PGD_PORT_CFG_BYTE_ADDR(offset, port_num)` | — | both |
+| `SB_PGD_TX_PORT_MULTI_CHANNEL_0(port_num)` | ports 0–7 | TX |
+| `SB_PGD_TX_PORT_MULTI_CHANNEL_1(port_num)` | ports 8+ | TX |
+| `SB_PGD_RX_PORT_MULTI_CHANNEL_0(offset, port_num)` | — | RX |
+| `TAIKO_SB_PGD_OFFSET_OF_RX_SLAVE_DEV_PORTS` | — | RX offset |
+| `TAIKO_SLIM_PGD_PORT_INT_EN0` | `0x30` | port IRQ enable |
+| `TAIKO_SLIM_PGD_PORT_INT_RX_SOURCE0` | `0x60` | — |
+
+**The 0x800 offset applies to the interface function too.** This was worth
+checking rather than assuming, because `SB_PGD_PORT_BASE` is `0x000` and it
+would be easy to conclude the interface space starts at zero. It does not:
+`wcd9xxx_slim_read_device()` computes
+`msg.start_offset = WCD9XXX_REGISTER_START_OFFSET + reg` *before* choosing
+between the two devices, so the `interface` flag selects only which
+slim_device is addressed. Both functions share the same `0x800` translation.
+
+So `TAIKO_SLIM_PGD_PORT_INT_EN0` is value element `0x830`, and the same
+`regmap_config` with `reg_base = 0x800` is correct for both functions.
+
+### 8. The first two writes are not yet safe to make
+
+Both proposed writes need more than the survey established.
+
+**`TAIKO_A_CHIP_CTL = 0x02`** selects the 9.6 MHz MCLK mode. But the codec
+does not generate that clock — downstream has an explicit
+`taiko_mclk_enable(codec, mclk_enable, dapm)` entry point, and the rate comes
+from board data (`pdata->mclk_rate == TAIKO_MCLK_CLK_9P6MHZ`). On MSM8974 the
+clock is supplied from the SoC side, which this port has not modelled at all.
+Selecting a 9.6 MHz mode without providing 9.6 MHz would fail in a way that
+looks like a codec problem and is not.
+
+**`TAIKO_A_CDC_CLK_POWER_CTL` is `0x314`, and its reset value is `0x00`.**
+Writing `0x03` is therefore a genuine state change, not the restoration of a
+default, despite living in a table called `taiko_reg_defaults[]`. The name
+says clock and power control; the header gives no bit definitions; nothing
+establishes whether it starts internal digital blocks, whether MCLK must be
+running first, or whether it must be undone on shutdown. It should not be
+treated as safe merely because it is digital.
+
+**Prerequisites before any write milestone**, restated concretely:
+
+1. Identify and model the 9.6 MHz MCLK source on this SoC, and its enable path
+2. Establish the bit semantics of `0x314`, from a datasheet or by tracing
+   every downstream user
+3. Establish ordering and any delay between the two writes
+4. Establish expected readback values (not assumed to equal what was written)
+5. Establish whether either register must be restored on shutdown
+
+Until 1 and 2 are answered, the correct next milestone is the dual-function
+topology, not register writes.
