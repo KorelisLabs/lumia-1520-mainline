@@ -50,6 +50,14 @@ called `SB_PGD_*` but are written *through the interface device*.
 
 ## 2. Register classification must be derived, not copied
 
+> **This section is wrong and is kept only for the record.** Downstream *does*
+> have both tables. The grep behind the claim below used
+> `taiko_readable_register` / `taiko_writeable`; the actual symbols are
+> `taiko_readable` and `taiko_volatile`, wired up at `wcd9320.c:6703-6704`,
+> with `taiko_reg_readable[]` defined in `sound/soc/codecs/wcd9320-tables.c`.
+> See `wcd9320-register-map.md` §2a and `wcd9320-irq-topology.md` §8 for what
+> they actually say and how they were reconciled against silicon.
+
 The deliverable asked for readable / writable / volatile / precious ranges.
 **Downstream does not have them.** `wcd9320.c` contains no
 `taiko_readable_register()`, `taiko_volatile()`, `taiko_writeable()` or
@@ -224,16 +232,19 @@ so this survey is not read as still-current where it is not.
 
 **Answered:**
 
-- *"Register classification must be derived, not copied"* (§2) — derived, and
-  then confirmed against the part. The 673 documented addresses are exactly
-  the implemented set: every undocumented address reads `0x00` and every
-  documented one reads out.
+- *"Register classification must be derived, not copied"* (§2) — **the premise
+  was wrong**; see the note on §2 above. Downstream supplies both
+  `taiko_reg_readable[]` and `taiko_volatile()`. They have since been used as
+  the semantic source, with the silicon dump as validation rather than as the
+  source. The 673 documented addresses are exactly the implemented address
+  set, but that is a different claim from readability.
 - *"Reset defaults as a table"* (§5) — collected for all 673 addresses and
   confirmed against silicon at 152 of 154 in `0x000`–`0x1ff`.
 - *"`WCD9XXX_A_CHIP_VERSION__POR` is `0x20` while this device reads `0x00`"*
-  (§5) — no longer an isolated oddity. It belongs to a set of 124 registers
-  differing from `__POR`, most of which fall into two coherent groups: the
-  QFUSE readback and analog trims, and the dark digital core.
+  (§5) — **disproven.** `0x008` reads `0x20` on this device, matching `__POR`
+  exactly. The original observation came from the pre-`0x800`-offset read that
+  also produced the wrong revision result, and it did not survive the corrected
+  addressing. It is not among the 124 registers differing from `__POR`.
 - *"Whether the mandatory writes are restorable"* (§5) — still unanswered, but
   now moot for `TAIKO_A_CDC_CLK_POWER_CTL`: `0x314` sits inside a region that
   currently cannot report its own contents, so the readback verification every
@@ -246,10 +257,29 @@ so this survey is not read as still-current where it is not.
   and does read back — it currently holds `0x08` against a `__POR` of `0x00`.
   `TAIKO_A_CDC_CLK_POWER_CTL` (`0x314`) is inside it.
 - §6's implementation order is unchanged, but step 2 ("derive
-  readable/volatile/precious tables") is now partly done: `readable_reg` is
-  settled, `precious_reg` is empty for the interrupt block, and `volatile_reg`
-  cannot be established empirically until the digital core is clocked.
+  readable/volatile/precious tables") is now done as desk work: `readable_reg`
+  is 669, `writeable_reg` must include the four write-only `INTR_CLEAR`
+  registers, `precious_reg` is empty, and `volatile_reg` comes from
+  `taiko_volatile()`. Empirical confirmation of volatility remains blocked
+  until the digital core is reachable.
 
 **Still open, unchanged:** the `SB_PGD_*` port register offsets, the
 per-revision differences between Taiko minor `0x0` and `0x1`, and power
 sequencing beyond `wcd9xxx_reset()`.
+
+**Revised sequence**, superseding §6 for everything after step 2:
+
+1. Reconcile readable/volatile tables with downstream semantics — *done*
+2. Map the complete IRQ controller — *done*, `wcd9320-irq-topology.md`
+3. Prove TLMM 72 parent-line behaviour with all sources masked
+4. Trace the exact CDC-core wake sequence and register `0x314`
+5. Establish or trigger the audio-reference-clock path
+6. Confirm the `0x200`–`0x3bf` sentinel becomes accessible
+7. Apply only documented initialisation writes
+8. Enable one safe IRQ source
+9. Register the minimal ASoC component and playback DAI
+
+The ASoC component is deliberately last. Registering a no-op one now would add
+no evidence, and its first meaningful operation needs digital-core registers
+that currently read as unreachable — so the callbacks would be designed around
+an unresolved clock/reset state.

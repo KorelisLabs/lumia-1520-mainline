@@ -50,13 +50,77 @@ weaker:
 | **undocumented (351), non-zero** | **0** |
 
 **All 351 addresses absent from the header read `0x00`, and all 673 present
-read out.** Neither direction has a single exception. The header's
-implemented set is the silicon's implemented set on this part.
+read out.** Neither direction has a single exception.
 
-Note the consequence for driver config: because unimplemented reads silently
-return `0x00` rather than erroring, a regmap without a `readable_reg`
+### What that does and does not license
+
+It establishes that the header's *documented address list* matches this part.
+It does **not** establish that all 673 are readable. A successful SLIMbus
+transaction is not permission to read: a write-only or inactive register can
+legally return zero, and 351 undocumented addresses did exactly that. The
+silicon dump can validate a semantic classification; it cannot be the source
+of one.
+
+The semantics come from downstream, which does supply them — see §2a. An
+earlier version of `wcd9320-asoc-survey.md` claimed it did not; that was a
+grep against the wrong symbol names and is corrected there.
+
+Note the separate consequence for driver config: because unimplemented reads
+silently return `0x00` rather than erroring, a regmap without a `readable_reg`
 callback presents 351 fabricated zero registers to userspace and to any
 future cache. The callback is not cosmetic.
+
+## 2a. `taiko_reg_readable[]` — and why it is not `readable_reg`
+
+`sound/soc/codecs/wcd9320-tables.c` defines
+`const u8 taiko_reg_readable[TAIKO_CACHE_SIZE]` as 666 designated
+initialisers, and `wcd9320.c` wires it up as the ASoC
+`.readable_register` callback alongside `.volatile_register = taiko_volatile`.
+
+Reconciled against the 673 header-defined addresses:
+
+| | count |
+|---|---|
+| header-defined | 673 |
+| table marks readable | 650 |
+| defined **and** readable | 650 |
+| defined but **not** in the table | 23 |
+| in the table but not defined | 0 |
+
+The 23 exclusions split into two very different groups, and conflating them
+would be a mistake:
+
+**Genuinely write-only — `0x09c`–`0x09f`, `INTR_CLEAR0-3`.** This is the
+useful find. Acknowledgement is a write of a 1 to the bit position; the
+register is not a readable latch. Our dump reads them as `0x00`, which is
+exactly the "legal zero that proves nothing" case. These belong in
+`writeable_reg` and must be kept out of `readable_reg` and any cache.
+
+**Excluded from the ASoC layer but demonstrably readable** — `0x000`–`0x00e`
+(`CHIP_CTL`, `CHIP_STATUS`, `CHIP_ID_BYTE_0-3`, `CHIP_VERSION`, `SB_VERSION`,
+`SLAVE_ID_1-3`), `0x080` `CDC_CTL`, `0x088` `LEAKAGE_CTL`, `0x2fa`/`0x2fb`,
+and `0x361`–`0x364` `PA_RAMP_B1-B4_CTL`.
+
+The identity registers are the proof that this table is not a bus-access
+permission list. `CHIP_ID_BYTE_0-3` at `0x004`–`0x007` are how this port
+identified the part as Taiko `major 0x0102`, and they read stable, correct,
+repeatable values (`0x007` reads `01` against `__POR 01`, `0x008`
+`CHIP_VERSION` reads `20` against `__POR 20`). They are excluded from
+`taiko_reg_readable[]` because downstream's *core* driver reads them directly
+through `wcd9xxx_reg_read`, beneath the ASoC layer that this callback governs.
+The table answers "should the ASoC cache treat this as a readable codec
+register", not "can this be read".
+
+So `readable_reg` for a mainline regmap is neither the 673 nor the 650. The
+defensible construction is: **the 673 documented addresses, minus the four
+`INTR_CLEAR` registers**, giving 669 — with the remaining 19 ASoC-layer
+exclusions retained as readable because they are read in practice by the core
+driver and their values are confirmed against `__POR`.
+
+That set is derived from downstream semantics and validated against the dump,
+which is the right order. It is recorded as provisional in one respect: no
+attempt has been made to find registers that are readable in principle but
+write-only in effect outside the `INTR_CLEAR` block.
 
 ## 3. The `__POR` table is accurate — in the region that is awake
 
@@ -131,18 +195,29 @@ surprising: `TAIKO_A_RC_OSC_STATUS` (`0x1fc`) reads `0x18`, so the RC
 oscillator is alive, and headset detection is designed to run off it without
 the main clock.
 
-### This connects to the MCLK question from the other side
+### The CDC-core accessibility sentinel
 
-`wcd9320-mclk-investigation.md` looked for MCLK by inspecting the SoC and PMIC
-and found nothing. This is the same question seen from inside the codec, and
-it agrees: the part is fully responsive over SLIMbus while its digital core is
-dark.
+`0x200`–`0x3bf` reading all-zero is a **CDC-core accessibility sentinel**: a
+read-only, 87-register indicator of whether the digital core can be reached at
+all. If it ever stops reading zero and snaps to the documented reset values,
+that proves some missing prerequisite became active.
 
-It also supplies a far better MCLK test than probing PMIC pads. If a clock is
-ever supplied and the core enabled, `0x200`–`0x3bf` should stop reading zero
-and snap to the documented reset values. That is an unambiguous, read-only,
-87-register signal — a much stronger detector than any pin-state guess, and it
-needs no assumption about where the clock comes from.
+It is deliberately **not** called an MCLK detector. An earlier draft of this
+document did, and that was wrong. The transition would prove accessibility, not
+its cause. Internal clock gating, reset release, power sequencing, or writes
+around `0x308`/`0x309`/`0x311`/`0x314` could each produce exactly the same
+change, and the sentinel cannot tell them apart. `wcd9320-mclk-investigation.md`
+established that the external clock route is unknown, and this does not narrow
+it.
+
+What it does give, honestly stated: a cheap, unambiguous, read-only check on
+whether the core became reachable, usable after any attempt at step 4 or 5 of
+the sequence in `wcd9320-asoc-survey.md`. Isolating *which* prerequisite was
+missing needs a separate, deliberately varied experiment.
+
+Seen from the codec's side, though, it does agree with the MCLK investigation
+on the one thing both can speak to: the part is fully responsive over SLIMbus
+while its digital core is unreachable.
 
 ### And it constrains the first-writes milestone further
 
@@ -225,10 +300,10 @@ This also re-confirms the `0x800` offset applies to the interface function, as
 
 | field | decision | basis |
 |---|---|---|
-| `readable_reg` | the 673 documented addresses | §2, both directions exact |
-| `writeable_reg` | not established | no write has been attempted |
-| `volatile_reg` | provisional, semantics-derived | §5, empirical test blocked |
-| `precious_reg` | empty for the interrupt block | §6, ack is a write |
+| `readable_reg` | 669 = the 673 documented, minus `INTR_CLEAR0-3` | §2a |
+| `writeable_reg` | not established, but must include `INTR_CLEAR0-3` | §2a |
+| `volatile_reg` | derived from `taiko_volatile()` — see `wcd9320-irq-topology.md` | §5 |
+| `precious_reg` | empty; ack is a write to `CLEAR`, not a read of `STATUS` | §6 |
 | `cache_type` | **must stay `REGCACHE_NONE`** | §4 |
 | `reg_defaults` | do **not** populate from `__POR` yet | §4 |
 
