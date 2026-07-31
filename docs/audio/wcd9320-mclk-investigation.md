@@ -113,3 +113,64 @@ design cannot settle.
 
 Until then, no MCLK code should be written, and `TAIKO_A_CHIP_CTL` stays
 unwritten.
+
+---
+
+## 6. PM8941 GPIO 15–18: no DIV_CLK routing in the inherited state
+
+On PM8941, alternate function 1 on GPIOs 15–18 is `DIV_CLK` and function 2 is
+the sleep clock. Reference boards commonly use GPIO 15 for codec MCLK, so all
+four capable pins were read rather than only the reference one.
+
+Read-only, via the `pmic-spmi` regmap at `/sys/kernel/debug/regmap/0-00`
+(sid 0 = pm8941). Note `dd` seeking does not work on that debugfs file and
+unimplemented addresses print as `XX`; the block below was obtained by a
+single sequential pass and matched on address string, and `0x0100`–`0x0107`
+returning real revision values confirms reads succeed generally.
+
+| Pin | base | `+0x04` type | `+0x05` subtype | `+0x40` mode | `+0x42` pull | `+0x45` out | `+0x46` en |
+|---|---|---|---|---|---|---|---|
+| GPIO 15 | `0xce00` | `10` | `05` | `00` | `04` | `01` | `80` |
+| GPIO 16 | `0xcf00` | `10` | `05` | `00` | `04` | `01` | `80` |
+| GPIO 17 | `0xd000` | `10` | `05` | `00` | `04` | `01` | `80` |
+| GPIO 18 | `0xd100` | `10` | `05` | `00` | `04` | `01` | `80` |
+
+Mode `0x00` decodes as direction = input, function select = 0 = normal GPIO.
+**Not** function 1 (`DIV_CLK`), **not** function 2 (sleep clock). The
+`type = 0x10, subtype = 0x05` fields confirm these are GPIO peripheral blocks,
+so the reads landed on the intended registers.
+
+Linux's pinctrl reports no configuration for any of them
+(`pinconf-pins` entries are empty), consistent with nothing in the device tree
+claiming them.
+
+### What this does and does not establish
+
+**Establishes:** the PM8941 reference route for codec MCLK is not active on
+this device in its current state. The assumption that Nokia followed the
+reference design for this pin — reasonable given reset (TLMM 63) and MBHC
+(TLMM 72) both matched — is not supported for GPIO 15, nor for any of the
+other three DIV_CLK-capable pins.
+
+**Does not establish:** that the route is absent from the board. This is the
+*current inherited* PMIC state, not pristine Windows state. Two readings
+remain open:
+
+- Nokia routed MCLK somewhere else entirely, or the ADSP supplies it
+- the route exists on one of these pins but is demuxed while idle, since no
+  audio session is running and Windows is not booted
+
+Distinguishing those requires observing the pin state across an actual audio
+clock request, which cannot be done until something can make that request.
+That is circular for now, and worth naming as such rather than papering over.
+
+### Consequence
+
+`wcd9320-mclk-path-mapped` is not achieved and is not claimed. The
+reference-design assumption is removed, which is the useful outcome: no MCLK
+code should be written against GPIO 15 on the strength of hammerhead.
+
+Nothing already proven depends on this. Register access, identity,
+enumeration and both bus functions all work with no MCLK present, because
+SLIMbus messaging is clocked by the bus rather than by the codec's reference
+clock.
