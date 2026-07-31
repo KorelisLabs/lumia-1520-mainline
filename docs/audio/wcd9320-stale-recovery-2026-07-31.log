@@ -1,0 +1,62 @@
+Lumia 1520 (RM-940) -- stale-state detection and PGD recovery
+Kernel 6.16.12, boot-1520-wcd9320-dual.img (r124), module dual-rc1
+2026-07-31
+
+This run is recorded as RECOVERY evidence, not as the dual-function
+milestone. Its preconditions were dirty: the boot-autoloaded module had
+already run, and the test script's opening rmmod powered the codec down
+(handoff_on_remove was off), leaving the SLIMbus core reporting the control
+function UP while the hardware was unpowered and held in reset.
+
+  [107.110375] removing (fresh path, power_owned=1)
+  [107.110851] released power: reset asserted, supplies off
+  [109.678265] 217:a0:0:0 interface function: no power or reset taken, waiting
+  [109.682934] 217:a0:0:0 interface function UP (#1), logical address 0xca
+  [109.684860] 217:a0:1:0 bus reports enumerated (laddr 0xcb); verifying before adopting
+  [109.799293] 217:a0:1:0 identity read failed: -110
+  [109.949271] 217:a0:1:0 identity read failed: -110
+  [110.099266] 217:a0:1:0 identity read failed: -110
+  [110.129181] 217:a0:1:0 stale bus state: reported UP but unresponsive; falling back
+  [110.189150] 217:a0:1:0 fresh bring-up: 7 supplies enabled, reset released
+  [110.189693] 217:a0:1:0 id_major 0x0102 id_minor 0x0001 version 0x00
+  [110.189799] 217:a0:1:0 recovered after fresh bring-up
+
+--------------------------------------------------------------------------
+What this run does establish
+--------------------------------------------------------------------------
+
+The stale-state mechanism works end to end, and this is the first time that
+path has actually executed rather than merely being present:
+
+  - the cached bus state was correctly distrusted
+  - verification was bounded to three attempts, not retried indefinitely
+  - the failure was diagnosed as stale rather than reported as a dead codec
+  - ownership was taken, the part brought up properly, identity re-validated
+  - stale_bus_state=1 was recorded honestly instead of being masked by the
+    successful recovery that followed
+
+Final state, both functions bound to one module:
+
+  217:a0:0:0  function=ifd  laddr 0xca  power_owned=0
+              reset_transitions=0 supply_enables=0 supply_disables=0
+              identity: interface function: no chip id
+  217:a0:1:0  function=pgd  laddr 0xcb  power_owned=1
+              reset_transitions=3 supply_enables=1 stale_bus_state=1
+              identity: major 0x0102 minor 0x0001
+
+Two regmap debugfs entries, ADSP running, NGD registered.
+
+--------------------------------------------------------------------------
+Why this is NOT the dual-function milestone
+--------------------------------------------------------------------------
+
+Three SLIMbus bus errors and three -110 timeouts occurred, all attributable
+to the stale precondition rather than to the interface function. A milestone
+tagged *-proven should not require explaining away errors, even understood
+ones. The clean run is performed separately, from a boot where no codec
+module is present to autoload.
+
+The interface function's counters are already clean here -- zero reset
+transitions and zero supply operations -- because it never acquires those
+resources. What the clean run adds is a control function that reaches
+identity by the ordinary fresh path, with no bus errors anywhere.
