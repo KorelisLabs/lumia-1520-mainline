@@ -99,16 +99,43 @@ The acceptance scripts no longer live in a scratchpad. They are in `tools/`:
 Every run gates on `/sys/module/wcd9320/version` before reading a single
 register, and writes **no evidence file at all** if it mismatches, so a stale
 `.ko` cannot produce a plausible-looking result. Exit codes are 0 PASS,
-1 FAIL, 2 INVALID RUN. Cold-boot and adoption outputs use different filenames
-and each refuses to overwrite the other mode's file.
+1 FAIL, 2 INVALID. Cold-boot and adoption outputs use different filenames and
+each refuses to overwrite the other mode's file.
 
-The self-test builds synthetic sysfs trees and dmesg logs and checks the
-verdict on ten cases, including the known bandgap failure signature
-(`0x17` reading back `0x16`), a swapped bring-up/RCO order, a stale module
-version, and a core-adopted-but-bus-fresh run. Its fixtures are transcribed
-from the driver's `printf` formats, so if those change the self-test is where
-it surfaces. Verified under `dash`; the constructs are plain POSIX, but it has
-not been run under busybox `ash` on the device itself.
+**Pull the cold-boot report before rebooting.** Reports are written to `/tmp`,
+which does not survive the reboot the adoption proof requires. The cold-boot
+script prints that reminder on exit; the command sequence puts the `scp`
+between the two proofs.
+
+Both runs prove their own starting condition from the raw `sentinel_before`
+dump — an independent recount of the non-zero registers plus the `0x320` byte
+read straight out of the hex — rather than trusting the driver's counters.
+Cold expects `0` non-zero and `0x320 = 00`; adoption expects ≥ 48 and
+`0x320 = e4`.
+
+That matters most on the adoption side. A reboot that does not physically
+remove power is **not** the same as a reboot that preserved codec state: the
+rails can still drop, or the bootloader can reset the part, and rc2 will then
+correctly run the fresh path again. Read only from the outcome, that is
+indistinguishable from rc2 failing to adopt. So the adoption script classifies
+before it judges:
+
+- codec still initialised → run the gate
+- codec came up dark, fresh path ran → **INVALID SETUP**, exit 2, filename
+  marked `-INVALID-`. Recorded as a fact about the test method, not against
+  rc2, with the rebind/reload alternatives spelled out in the report.
+- accessible at probe but *not* adopted → a genuine contradiction, so this
+  still FAILs rather than being excused as bad setup.
+
+The self-test builds synthetic sysfs trees, sentinel dumps and dmesg logs and
+checks the verdict on twelve cases, including the known bandgap failure
+signature (`0x17` reading back `0x16`), a swapped bring-up/RCO order, a stale
+module version, a counter claiming the part was dark while the dump says
+otherwise, a core-adopted-but-bus-fresh run, and the codec-was-reset case that
+must exit 2 rather than 1. Its fixtures are transcribed from the driver's
+`printf` formats, so if those change the self-test is where it surfaces.
+Verified under `dash`; the constructs are plain POSIX, but it has not been run
+under busybox `ash` on the device itself.
 
 1. `pmbootstrap build --force linux-postmarketos-qcom-msm8974` — **the agent
    cannot run this**; it needs interactive sudo. Verify by artifact, never by

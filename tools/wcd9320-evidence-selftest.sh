@@ -24,7 +24,28 @@ FAILED=0
 
 # ------------------------------------------------------------------ fixtures --
 
-mkdev() {	# mkdev <root> <rco_wake body> <bringup body>
+# A 448-register sentinel dump with exactly <nz> non-zero bytes, laid out 32
+# per line the way the driver emits it. Index 288 is register 0x320, which the
+# accessibility check reads: it carries 0xe4 whenever the block is alive.
+mkdump() {	# mkdump <nz> <file>
+	awk -v nz="$1" 'BEGIN {
+		n = 448
+		for (i = 0; i < n; i++) v[i] = "00"
+		if (nz > 0) {
+			v[288] = "e4"; c = 1
+			for (i = 0; i < n && c < nz; i++)
+				if (i != 288) { v[i] = "3c"; c++ }
+		}
+		s = ""
+		for (i = 0; i < n; i++) {
+			s = s v[i]
+			if ((i % 32) == 31) { print s; s = "" }
+		}
+		if (s != "") print s
+	}' > "$2"
+}
+
+mkdev() {	# mkdev <root> <rco_wake> <bringup> <nz before> <nz after|->
 	_r="$1"
 	mkdir -p "$_r/devices/sb:217:a0:1:0" "$_r/devices/sb:217:a0:0:0"
 	printf '%s\n' "$2" > "$_r/devices/sb:217:a0:1:0/rco_wake"
@@ -33,8 +54,12 @@ mkdev() {	# mkdev <root> <rco_wake body> <bringup body>
 		> "$_r/devices/sb:217:a0:1:0/identity"
 	echo 'irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0' \
 		> "$_r/devices/sb:217:a0:1:0/irq_observe"
-	: > "$_r/devices/sb:217:a0:1:0/sentinel_before"
-	: > "$_r/devices/sb:217:a0:1:0/sentinel_after"
+	mkdump "$4" "$_r/devices/sb:217:a0:1:0/sentinel_before"
+	if [ "$5" = "-" ]; then
+		echo 'not captured' > "$_r/devices/sb:217:a0:1:0/sentinel_after"
+	else
+		mkdump "$5" "$_r/devices/sb:217:a0:1:0/sentinel_after"
+	fi
 	echo 'not captured' > "$_r/devices/sb:217:a0:1:0/sentinel_teardown"
 	echo 'interface function: not applicable' \
 		> "$_r/devices/sb:217:a0:0:0/rco_wake"
@@ -117,14 +142,16 @@ ADOPT_BRINGUP='function=pgd path=adopted online=1 adopted=1 power_owned=0 reset_
 # ----------------------------------------------------------------- harness --
 
 # run_case <name> <script> <version> <rco_wake> <bringup> <log> <want-exit>
+#           <nz before> <nz after|->
 run_case() {
 	_name="$1"; _script="$2"; _ver="$3"
 	_rcow="$4"; _bring="$5"; _log="$6"; _want="$7"
+	_nzb="$8"; _nza="$9"
 
 	_c="$WORK/$_name"
 	mkdir -p "$_c/bin" "$_c/out"
 	mkver "$_c/sys" "$_ver"
-	mkdev "$_c/sys/bus/slimbus" "$_rcow" "$_bring"
+	mkdev "$_c/sys/bus/slimbus" "$_rcow" "$_bring" "$_nzb" "$_nza"
 	printf '%s\n' "$_log" > "$_c/dmesg.txt"
 	printf '#!/bin/sh\ncat "%s/dmesg.txt"\n' "$_c" > "$_c/bin/dmesg"
 	chmod +x "$_c/bin/dmesg"
@@ -150,30 +177,48 @@ echo
 
 echo "cold-boot script:"
 run_case cold-good        wcd9320-coldboot-evidence.sh core-init-rc2 \
-	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 0
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 0 0 95
 run_case cold-bandgap-16  wcd9320-coldboot-evidence.sh core-init-rc2 \
-	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 16)" 1
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 16)" 1 0 95
 run_case cold-swapped     wcd9320-coldboot-evidence.sh core-init-rc2 \
-	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17 swapped)" 1
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17 swapped)" 1 0 95
 run_case cold-stale-ko    wcd9320-coldboot-evidence.sh core-init-rc1 \
-	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 2
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 2 0 95
 run_case cold-is-adoption wcd9320-coldboot-evidence.sh core-init-rc2 \
-	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 1
+	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 1 95 -
+# The counter says the part was dark but the raw dump says otherwise: the
+# independent recount must catch it rather than trusting nonzero_before.
+run_case cold-not-dark    wcd9320-coldboot-evidence.sh core-init-rc2 \
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 1 95 95
 
 echo
 echo "adoption script:"
 run_case adopt-good       wcd9320-adoption-evidence.sh core-init-rc2 \
-	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 0
-run_case adopt-is-cold    wcd9320-adoption-evidence.sh core-init-rc2 \
-	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 1
+	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 0 95 -
 run_case adopt-stale-ko   wcd9320-adoption-evidence.sh core-init-rc1 \
-	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 2
+	"$ADOPT_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 2 95 -
+
+# The codec did NOT survive the reboot: it came up dark and rc2 correctly ran
+# the fresh path again. That is an invalid adoption setup, not an rc2 failure,
+# so it must exit 2 and say so -- never exit 1.
+run_case adopt-codec-reset wcd9320-adoption-evidence.sh core-init-rc2 \
+	"$COLD_RCO" "$COLD_BRINGUP" "$(cold_log 17)" 2 0 95
 
 # A run whose core was adopted but whose bus came up fresh: the gate must fail
 # on the reset and supply counters rather than passing on core_adopted alone.
 MIXED_BRINGUP='function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0'
 run_case adopt-mixed      wcd9320-adoption-evidence.sh core-init-rc2 \
-	"$ADOPT_RCO" "$MIXED_BRINGUP" "$(adopt_log)" 1
+	"$ADOPT_RCO" "$MIXED_BRINGUP" "$(adopt_log)" 1 95 -
+
+# Accessible at probe but the driver did not adopt it. That contradiction is a
+# genuine rc2 failure, so it must FAIL rather than be excused as bad setup.
+CONTRA_RCO='core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=-1 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=95 nonzero_after_bringup=95 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0'
+run_case adopt-not-adopted wcd9320-adoption-evidence.sh core-init-rc2 \
+	"$CONTRA_RCO" "$ADOPT_BRINGUP" "$(adopt_log)" 1 95 95
 
 echo
 echo "missing-module case:"

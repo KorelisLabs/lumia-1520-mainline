@@ -132,6 +132,65 @@ count_lines() {
 	echo "$_n"
 }
 
+# ------------------------------------------------- raw sentinel arithmetic --
+#
+# The driver reports nonzero_before/nonzero_after as counters. These recount
+# the same thing straight off the raw dump, so the precondition rests on the
+# register bytes themselves rather than on a counter that could be stale or
+# carried over. The dump is 448 registers as hex pairs, 32 per line, starting
+# at WCD9320_CDC_FIRST (0x200).
+
+CDC_FIRST_DEC=512	# 0x200
+
+# sentinel_index <reg-hex-no-prefix> -- byte index within the dump
+sentinel_index() {
+	awk -v r="$1" -v f="$CDC_FIRST_DEC" 'BEGIN {
+		n = 0
+		r = tolower(r)
+		for (i = 1; i <= length(r); i++) {
+			c = index("0123456789abcdef", substr(r, i, 1)) - 1
+			if (c < 0) { print -1; exit }
+			n = n * 16 + c
+		}
+		print n - f
+	}'
+}
+
+# sentinel_byte <dump-file> <index> -- the hex pair at that index, or empty
+sentinel_byte() {
+	[ -r "$1" ] || return 0
+	awk -v i="$2" '
+		/^[0-9a-f][0-9a-f]*$/ { s = s $0 }
+		END {
+			if (i >= 0 && length(s) >= (i + 1) * 2)
+				print substr(s, i * 2 + 1, 2)
+		}
+	' "$1" 2>/dev/null
+}
+
+# sentinel_nonzero <dump-file> -- independent recount of non-zero registers
+sentinel_nonzero() {
+	[ -r "$1" ] || { echo ""; return 0; }
+	awk '
+		/^[0-9a-f][0-9a-f]*$/ { s = s $0 }
+		END {
+			if (length(s) == 0) { print ""; exit }
+			n = 0
+			for (i = 1; i <= length(s); i += 2)
+				if (substr(s, i, 2) != "00") n++
+			print n
+		}
+	' "$1" 2>/dev/null
+}
+
+# num <value> <default> -- guard arithmetic against an unreadable attribute
+num() {
+	case "$1" in
+	'' | *[!0-9]*) echo "$2" ;;
+	*) echo "$1" ;;
+	esac
+}
+
 # ------------------------------------------------------------- collection --
 
 # Everything the run can observe, written verbatim before any judgement is
@@ -237,6 +296,17 @@ emit_verdict() {
 	fi
 	say "VERDICT: FAIL ($MODE)"
 	return 1
+}
+
+# An invalid *setup* is not a driver failure, and conflating the two would put
+# a black mark against rc2 for something rc2 never did. Distinct verdict,
+# distinct exit code, distinct filename.
+emit_invalid_setup() {	# emit_invalid_setup <one-line reason>
+	hdr "verdict"
+	say "mode   : $MODE"
+	say "reason : $1"
+	say "VERDICT: INVALID SETUP ($MODE) -- not an rc2 failure"
+	return 2
 }
 
 # Refuse to clobber the other mode's evidence. The filenames already differ,

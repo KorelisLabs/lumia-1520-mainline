@@ -33,13 +33,32 @@ find_devices
 snap_dmesg
 open_output "$OUTDIR/wcd9320-coldboot-$STAMP.txt"
 
+CANARY_IDX=$(sentinel_index 320)
+NZB_RECOUNT=$(sentinel_nonzero "$PGD/sentinel_before")
+NZA_RECOUNT=$(sentinel_nonzero "$PGD/sentinel_after")
+CANARY_BEFORE=$(sentinel_byte "$PGD/sentinel_before" "$CANARY_IDX")
+CANARY_AFTER=$(sentinel_byte "$PGD/sentinel_after" "$CANARY_IDX")
+
 {
 	collect_evidence
+
+	hdr "precondition: was the codec dark?"
+	say "nonzero_before     : $(kv "$PGD/rco_wake" nonzero_before)          (driver counter)"
+	say "nonzero recounted  : $NZB_RECOUNT          (independent, from sentinel_before)"
+	say "0x320 as-found     : $CANARY_BEFORE          (POR 0xe4; must read 00 on a cold part)"
 
 	hdr "acceptance checks: COLD BOOT"
 
 	check_version
 	check_core_ready
+
+	# --- fresh precondition -------------------------------------------------
+	# The cold run's premise is that the part came up dark. Proved from the raw
+	# as-found dump, not only from the counter, so a stale or carried-over
+	# value cannot pass for a cold start.
+	check "nonzero_before" "$(kv "$PGD/rco_wake" nonzero_before)" "0"
+	check "as-found recount" "$NZB_RECOUNT" "0"
+	check "0x320 as-found (dark)" "$CANARY_BEFORE" "00"
 
 	# --- fresh path, not adoption ------------------------------------------
 	check "core_adopted" "$(kv "$PGD/rco_wake" core_adopted)" "0"
@@ -47,8 +66,9 @@ open_output "$OUTDIR/wcd9320-coldboot-$STAMP.txt"
 	note  "init_calls" "$(kv "$PGD/rco_wake" init_calls) -- >1 is fine, extra entries are no-ops"
 
 	# --- automatic 0 -> 95 --------------------------------------------------
-	check "nonzero_before" "$(kv "$PGD/rco_wake" nonzero_before)" "0"
 	check "nonzero_after" "$(kv "$PGD/rco_wake" nonzero_after)" "95"
+	check "post-RCO recount" "$NZA_RECOUNT" "95"
+	check "0x320 post-RCO" "$CANARY_AFTER" "e4"
 	note  "nonzero_after_bringup" "$(kv "$PGD/rco_wake" nonzero_after_bringup) -- stage split, not gated"
 	check_canary
 
@@ -120,6 +140,8 @@ RC=$?
 
 rm -f "$DMESG_FILE"
 
-sed -n '/=== acceptance checks/,$p' "$OUT"
+sed -n '/=== precondition/,$p' "$OUT"
 printf '\nevidence: %s\n' "$OUT"
+printf 'PULL THIS FILE OFF THE DEVICE NOW -- /tmp does not survive the reboot\n'
+printf 'that the adoption proof requires.\n'
 exit "$RC"
