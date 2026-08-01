@@ -11,11 +11,21 @@ State as of 2026-08-01. Everything below is on GitHub unless marked otherwise.
 | working branch | `research/audio-wcd9320-core-init` at `8372807` |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch, `164b6d6446` — **local only**, its origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` in this repo is the durable copy |
-| pkgrel | 129 — **bump before the next build** |
+| pkgrel | 130 — bumped and synced; ready for the next build |
 
 The kernel driver lives only as a patch. There is no checked-in `.c` file;
 `patches/` in this repo is the authoritative archive, since pmaports cannot
 be pushed.
+
+`pmaports/linux-postmarketos-qcom-msm8974/` mirrors the live package. It had
+drifted badly — it was still the pre-audio snapshot at `pkgrel=100`, with no
+patches in `source=` and `# CONFIG_SLIMBUS is not set` in the config, so the
+public repo held the driver but nothing that could build it. It is now synced
+from the live clone and internally consistent: the positional checksums verify
+against `patches/`, and the `RegenX-AE` → `mainline` substitution in the
+APKBUILD comment and the dtsi header is preserved, with the dtsi's own sha512
+recomputed to match the de-branded file. Keep that substitution on any future
+sync.
 
 ## What is proven on hardware
 
@@ -79,8 +89,26 @@ Only after both: tag `wcd9320-core-init-proven`.
 
 ## Build and test loop
 
-Scripts live in a session scratchpad and do **not** survive. Rebuild them
-from `patches/` and the notes below.
+The acceptance scripts no longer live in a scratchpad. They are in `tools/`:
+
+- `wcd9320-coldboot-evidence.sh` — proof 1
+- `wcd9320-adoption-evidence.sh` — proof 2
+- `wcd9320-evidence-lib.sh` — shared collection and assertions
+- `wcd9320-evidence-selftest.sh` — offline self-test, no hardware needed
+
+Every run gates on `/sys/module/wcd9320/version` before reading a single
+register, and writes **no evidence file at all** if it mismatches, so a stale
+`.ko` cannot produce a plausible-looking result. Exit codes are 0 PASS,
+1 FAIL, 2 INVALID RUN. Cold-boot and adoption outputs use different filenames
+and each refuses to overwrite the other mode's file.
+
+The self-test builds synthetic sysfs trees and dmesg logs and checks the
+verdict on ten cases, including the known bandgap failure signature
+(`0x17` reading back `0x16`), a swapped bring-up/RCO order, a stale module
+version, and a core-adopted-but-bus-fresh run. Its fixtures are transcribed
+from the driver's `printf` formats, so if those change the self-test is where
+it surfaces. Verified under `dash`; the constructs are plain POSIX, but it has
+not been run under busybox `ash` on the device itself.
 
 1. `pmbootstrap build --force linux-postmarketos-qcom-msm8974` — **the agent
    cannot run this**; it needs interactive sudo. Verify by artifact, never by
