@@ -1,0 +1,709 @@
+### uname ###
+Linux nokia-rm940 6.16.12 #126-postmarketos-qcom-msm8974 SMP PREEMPT Sat Aug  1 01:10:31 U armv7l Linux
+### uptime ###
+1463
+
+### full RCU stall records, with surrounding context ###
+43:[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+44:[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+45:[    0.000000] 	Rude variant of Tasks RCU enabled.
+46:[    0.000000] 	Tracing variant of Tasks RCU enabled.
+47:[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+48:[    0.000000] RCU Tasks: Setting shift to 2 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=4.
+49:[    0.000000] RCU Tasks Rude: Setting shift to 2 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=4.
+50:[    0.000000] RCU Tasks Trace: Setting shift to 2 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=4.
+52:[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+68:[    0.005062] rcu: Hierarchical SRCU implementation.
+69:[    0.005088] rcu: 	Max phase no-delay instances is 1000.
+450:[   29.229111] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P389 } 3 jiffies s: 85 root: 0x0/T
+451:[   29.233687] rcu: blocking rcu_node structures (internal RCU debug):
+453:[   29.999135] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P392 } 3 jiffies s: 97 root: 0x0/T
+454:[   30.003862] rcu: blocking rcu_node structures (internal RCU debug):
+477:[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+478:[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+480:[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+481:[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+485:[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+486:[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+488:[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+489:[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+490:[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+491:[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+492:[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+493:[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+494:[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+495:[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+500:[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+501:[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+502:[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+503:[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+504:[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+505:[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+
+### verbatim window around every stall line ###
+----- lines 438 .. 490 -----
+[   27.871799] systemd[1]: Finished Remount Root and Kernel File Systems.
+[   27.969490] systemd[1]: Finished Apply Kernel Variables.
+[   28.071200] systemd[1]: Finished Load udev Rules from Credentials.
+[   28.155874] systemd[1]: Reached target Preparation for Network.
+[   28.299461] systemd[1]: Mounting FUSE Control File System...
+[   28.349602] systemd[1]: Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[   28.354718] systemd[1]: Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+[   28.470810] zram0: detected capacity change from 0 to 5384192
+[   28.499428] systemd[1]: Starting Load/Save OS Random Seed...
+[   28.639494] systemd[1]: Starting Create Static Device Nodes in /dev gracefully...
+[   28.648851] systemd[1]: TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os
+[   28.708523] systemd[1]: Started Journal Service.
+[   29.229111] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P389 } 3 jiffies s: 85 root: 0x0/T
+[   29.233687] rcu: blocking rcu_node structures (internal RCU debug):
+[   29.510471] systemd-journald[340]: Received client request to flush runtime journal.
+[   29.999135] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P392 } 3 jiffies s: 97 root: 0x0/T
+[   30.003862] rcu: blocking rcu_node structures (internal RCU debug):
+[   30.499140] random: crng init done
+[   30.646367] Adding 2692092k swap on /dev/zram0.  Priority:-2 extents:1 across:2692092k SS
+[   32.128916] tun: Universal TUN/TAP device driver, 1.6
+[   45.545478] rmi4_i2c 1-004b: registering I2C-connected sensor
+[   46.537171] input: pm8941_pwrkey as /devices/platform/soc/fc4cf000.spmi/spmi-0/0-00/fc4cf000.spmi:pm8941@0:pon@800/fc4cf000.spmi:pm8941@0:pon@800:pwrkey/input/input1
+[   46.621501] input: pm8941_resin as /devices/platform/soc/fc4cf000.spmi/spmi-0/0-00/fc4cf000.spmi:pm8941@0:pon@800/fc4cf000.spmi:pm8941@0:pon@800:resin/input/input2
+[   46.711581] rmi4_f34 rmi4-00.fn34: rmi_f34v7_probe: Unrecognized bootloader version: 29 (\x1d) 16 (\x10)
+[   46.711709] rmi4_f34 rmi4-00.fn34: probe with driver rmi4_f34 failed with error -22
+[   46.730790] rmi4_f01 rmi4-00.fn01: found RMI device, manufacturer: Synaptics, product: PLG0175-02, fw id: 1554007
+[   46.849662] input: Synaptics PLG0175-02 as /devices/platform/soc/f9924000.i2c/i2c-1/1-004b/rmi4-00/input/input3
+[   47.331395] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.434522] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.435159] wcd9320 217:a0:0:0: Failed to get logical address
+[   47.499187] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   47.499306] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   47.505085] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   47.513892] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   47.515275] wcd9320 217:a0:1:0: masks written ff ff ff 7f, read back ff ff 3f 7f  MISMATCH
+[   47.556006] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   47.556135] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   47.556219] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+
+----- lines 441 .. 493 -----
+[   28.155874] systemd[1]: Reached target Preparation for Network.
+[   28.299461] systemd[1]: Mounting FUSE Control File System...
+[   28.349602] systemd[1]: Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[   28.354718] systemd[1]: Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+[   28.470810] zram0: detected capacity change from 0 to 5384192
+[   28.499428] systemd[1]: Starting Load/Save OS Random Seed...
+[   28.639494] systemd[1]: Starting Create Static Device Nodes in /dev gracefully...
+[   28.648851] systemd[1]: TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-os
+[   28.708523] systemd[1]: Started Journal Service.
+[   29.229111] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P389 } 3 jiffies s: 85 root: 0x0/T
+[   29.233687] rcu: blocking rcu_node structures (internal RCU debug):
+[   29.510471] systemd-journald[340]: Received client request to flush runtime journal.
+[   29.999135] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P392 } 3 jiffies s: 97 root: 0x0/T
+[   30.003862] rcu: blocking rcu_node structures (internal RCU debug):
+[   30.499140] random: crng init done
+[   30.646367] Adding 2692092k swap on /dev/zram0.  Priority:-2 extents:1 across:2692092k SS
+[   32.128916] tun: Universal TUN/TAP device driver, 1.6
+[   45.545478] rmi4_i2c 1-004b: registering I2C-connected sensor
+[   46.537171] input: pm8941_pwrkey as /devices/platform/soc/fc4cf000.spmi/spmi-0/0-00/fc4cf000.spmi:pm8941@0:pon@800/fc4cf000.spmi:pm8941@0:pon@800:pwrkey/input/input1
+[   46.621501] input: pm8941_resin as /devices/platform/soc/fc4cf000.spmi/spmi-0/0-00/fc4cf000.spmi:pm8941@0:pon@800/fc4cf000.spmi:pm8941@0:pon@800:resin/input/input2
+[   46.711581] rmi4_f34 rmi4-00.fn34: rmi_f34v7_probe: Unrecognized bootloader version: 29 (\x1d) 16 (\x10)
+[   46.711709] rmi4_f34 rmi4-00.fn34: probe with driver rmi4_f34 failed with error -22
+[   46.730790] rmi4_f01 rmi4-00.fn01: found RMI device, manufacturer: Synaptics, product: PLG0175-02, fw id: 1554007
+[   46.849662] input: Synaptics PLG0175-02 as /devices/platform/soc/f9924000.i2c/i2c-1/1-004b/rmi4-00/input/input3
+[   47.331395] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.434522] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.435159] wcd9320 217:a0:0:0: Failed to get logical address
+[   47.499187] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   47.499306] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   47.505085] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   47.513892] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   47.515275] wcd9320 217:a0:1:0: masks written ff ff ff 7f, read back ff ff 3f 7f  MISMATCH
+[   47.556006] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   47.556135] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   47.556219] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+
+----- lines 465 .. 517 -----
+[   47.331395] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.434522] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.435159] wcd9320 217:a0:0:0: Failed to get logical address
+[   47.499187] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   47.499306] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   47.505085] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   47.513892] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   47.515275] wcd9320 217:a0:1:0: masks written ff ff ff 7f, read back ff ff 3f 7f  MISMATCH
+[   47.556006] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   47.556135] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   47.556219] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+
+----- lines 468 .. 520 -----
+[   47.499187] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   47.499306] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   47.505085] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   47.513892] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   47.515275] wcd9320 217:a0:1:0: masks written ff ff ff 7f, read back ff ff 3f 7f  MISMATCH
+[   47.556006] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   47.556135] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   47.556219] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+
+----- lines 473 .. 525 -----
+[   47.556006] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   47.556135] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   47.556219] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+
+----- lines 476 .. 528 -----
+[   47.607320] qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)
+[   47.699125] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P436 P425 P434 } 3 jiffies s: 213 root: 0x0/T
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+
+----- lines 478 .. 530 -----
+[   47.699297] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.722412] qrtr: exports duplicate symbol qrtr_endpoint_post (owned by kernel)
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+
+----- lines 480 .. 532 -----
+[   47.729102] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P427 } 3 jiffies s: 217 root: 0x0/T
+[   47.729243] rcu: blocking rcu_node structures (internal RCU debug):
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+[  673.150939] PM: suspend exit
+
+----- lines 482 .. 534 -----
+[   47.741165] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   47.741773] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   47.815183] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.099141] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P428 P430 } 3 jiffies s: 229 root: 0x0/T
+[   48.099302] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.147197] qmi_helpers: exports duplicate symbol qmi_add_lookup (owned by kernel)
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+[  673.150939] PM: suspend exit
+
+----- lines 488 .. 540 -----
+[   48.169103] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P424 } 3 jiffies s: 233 root: 0x0/T
+[   48.169251] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+[  673.150939] PM: suspend exit
+
+----- lines 490 .. 542 -----
+[   48.739106] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P430 } 3 jiffies s: 261 root: 0x0/T
+[   48.739259] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+[  673.150939] PM: suspend exit
+
+----- lines 492 .. 544 -----
+[   48.819100] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P432 P430 } 3 jiffies s: 265 root: 0x0/T
+[   48.819263] rcu: blocking rcu_node structures (internal RCU debug):
+[   48.899097] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P425 P434 } 3 jiffies s: 269 root: 0x0/T
+[   48.899257] rcu: blocking rcu_node structures (internal RCU debug):
+[   54.173306] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   54.559679] EXT4-fs (loop0p1): mounting ext2 file system using the ext4 subsystem
+[   54.562328] EXT4-fs (loop0p1): warning: mounting unchecked fs, running e2fsck is recommended
+[   54.564553] EXT4-fs (loop0p1): mounted filesystem a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 r/w without journal. Quota mode: disabled.
+[   56.689105] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P482 } 3 jiffies s: 649 root: 0x0/T
+[   56.693961] rcu: blocking rcu_node structures (internal RCU debug):
+[   56.899156] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P486 } 3 jiffies s: 665 root: 0x0/T
+[   56.904092] rcu: blocking rcu_node structures (internal RCU debug):
+[   58.759269] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P528 } 3 jiffies s: 793 root: 0x0/T
+[   58.764195] rcu: blocking rcu_node structures (internal RCU debug):
+[   79.772575] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  114.726079] PM: suspend entry (s2idle)
+[  114.728020] Filesystems sync: 0.001 seconds
+[  114.732055] Freezing user space processes
+[  114.734841] Freezing user space processes completed (elapsed 0.002 seconds)
+[  114.735185] OOM killer disabled.
+[  114.735404] Freezing remaining freezable tasks
+[  114.736936] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  114.737029] printk: Suspending console(s) (use no_console_suspend to debug)
+[  126.138865] OOM killer enabled.
+[  126.139184] Restarting tasks: Starting
+[  126.148568] Restarting tasks: Done
+[  126.149354] PM: suspend exit
+[  159.994511] failed while handling packet from 1:16388
+[  661.827714] PM: suspend entry (s2idle)
+[  661.829677] Filesystems sync: 0.001 seconds
+[  661.832735] Freezing user space processes
+[  661.834978] Freezing user space processes completed (elapsed 0.001 seconds)
+[  661.835337] OOM killer disabled.
+[  661.835557] Freezing remaining freezable tasks
+[  661.837111] Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+[  661.837463] printk: Suspending console(s) (use no_console_suspend to debug)
+[  673.141622] OOM killer enabled.
+[  673.141928] Restarting tasks: Starting
+[  673.149895] Restarting tasks: Done
+[  673.150939] PM: suspend exit
+
+### what was running: P532/P528 identity if still resolvable ###
+  pid 528: gone (short-lived, likely a boot-time worker)
+  pid 532: gone (short-lived, likely a boot-time worker)
+
+### RCU config ###
+  rcu_cpu_stall_cputime = 0
+  rcu_cpu_stall_ftrace_dump = 0
+  rcu_cpu_stall_suppress = 0
+  rcu_cpu_stall_suppress_at_boot = 0
+  rcu_cpu_stall_timeout = 21
+  rcu_exp_cpu_stall_timeout = 20
+  rcu_exp_stall_task_details = N
+  rcu_expedited = 0
+  rcu_normal = 0
+  rcu_normal_after_boot = 0
+  rcu_task_collapse_lim = 10
+  rcu_task_contend_lim = 100
+  rcu_task_enqueue_lim = 1
+  rcu_task_ipi_delay = 0
+  rcu_task_lazy_lim = 32
+  rcu_task_stall_info = 1000
+  rcu_task_stall_info_mult = 3
+  rcu_task_stall_timeout = 60000
+  rcu_tasks_lazy_ms = -1
+  rcu_tasks_trace_lazy_ms = -1
+  CONFIG (from /proc/config.gz if present):
+    CONFIG_PREEMPT_BUILD=y
+    CONFIG_PREEMPT=y
+    CONFIG_PREEMPT_COUNT=y
+    CONFIG_PREEMPTION=y
+    CONFIG_PREEMPT_RCU=y
+    CONFIG_RCU_STALL_COMMON=y
+    CONFIG_RCU_NEED_SEGCBLIST=y
+    CONFIG_SMP=y
+    CONFIG_SMP_ON_UP=y
+    CONFIG_NR_CPUS=4
+    CONFIG_RCU_CPU_STALL_TIMEOUT=21
+    CONFIG_RCU_EXP_CPU_STALL_TIMEOUT=20
+
+### cpu topology (nosmp maxcpus=1) ###
+  online: 0
+  present: 0-3
+  cmdline: console=tty0 ignore_loglevel nosmp maxcpus=1 cpuidle.off=1 clk_ignore_unused pd_ignore_unused lk2nd.pass-simplefb=relocate lk2nd.pass-ramoops ramoops.mem_address=0x30fc0000 ramoops.mem_size=0x80000 ramoops.console_size=0x40000 ramoops.record_size=0x2000  pmos_boot_uuid=a9d9c6cd-eda8-4246-8a5d-2ff04682aa95 pmos_root_uuid=de214b3a-0811-4b22-a5f7-095ac1f8d676 pmos_rootfsopts=defaults
