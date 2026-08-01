@@ -247,3 +247,178 @@
 		reg = <0x39>;
 	};
 };
+
+/*
+ * ------------------------------------------------------------------
+ * AUDIO NGD DISCOVERY PROBE (experimental)
+ * ------------------------------------------------------------------
+ *
+ * MSM8974's SLIMbus is mastered by the ADSP; the APPS side is only an NGD
+ * satellite. Nothing here programs the LPASS clock tree -- a live register
+ * read on this device showed SLIMBUS_CMD_RCGR has never been configured by
+ * the APPS side, and downstream maps the controller's core_clk to a dummy.
+ *
+ * Deliberately no codec child node: the point of this image is to find out
+ * whether the bus enumerates at all, and adding the WCD9320 would mix an
+ * untested codec into an untested transport.
+ */
+
+/* The Q6 audio DSP. Required: it owns the SLIMbus framer and publishes the
+ * SLIMbus QMI service the NGD driver talks to. Firmware must be extracted
+ * from the stock Windows install (see docs/trustzone-quirks.md). */
+&remoteproc_adsp {
+	status = "okay";
+};
+
+&soc {
+	/*
+	 * SLIMbus BAM. qcom,controlled-remotely because the ADSP initialises
+	 * the BAM -- the APPS side must not reset it.
+	 *
+	 * IRQ 164 and the 0x20000 window are confirmed against this device's
+	 * own ACPI tables (\_SB.BAM6, GSIV 0xC4 = SPI 164). NOTE: the DSDT
+	 * declares that interrupt Edge-triggered, but every in-tree msm8974
+	 * BAM and msm8996's slimbam use LEVEL_HIGH; following the in-tree
+	 * convention here. If BAM init misbehaves this is the first thing to
+	 * flip.
+	 */
+	slimbam: dma-controller@fe104000 {
+		compatible = "qcom,bam-v1.4.0";
+		qcom,controlled-remotely;
+		reg = <0xfe104000 0x20000>;
+		num-channels = <31>;
+		interrupts = <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <2>;
+	};
+
+	/*
+	 * SLIMbus NGD satellite controller.
+	 *
+	 * Window size 0x2c000 is what this device's DSDT declares (\_SB.ADSP
+	 * .SLM1) -- downstream hammerhead says 0x35000, but msm8996's
+	 * slim-ngd, which is the same IP family, also uses 0x2c000. IRQ 163
+	 * level-high matches both the DSDT and the driver's IRQF_TRIGGER_HIGH.
+	 *
+	 * BAM pipes 3 (rx) and 4 (tx) follow msm8996; downstream uses the SPS
+	 * API and does not express them as DT channel numbers, so this is the
+	 * least-assumption choice and an explicit thing to re-check if DMA
+	 * setup fails.
+	 */
+	slim_msm: slim-ngd@fe12f000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0xfe12f000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* ngd->base = ctrl->base + id * 0x1000, matching downstream
+		 * NGD_BASE_V2(1) = 0x1000 for cell-index 1. */
+		ngd@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			/*
+			 * WCD9320 "Taiko" audio codec -- ENUMERATION PROBE ONLY.
+			 *
+			 * This node exists so the SLIMbus core can create a
+			 * device with the right enumeration address and bind a
+			 * driver that can power the part and release its reset.
+			 * The node existing is NOT evidence the codec is
+			 * present; only a device_status(UP) callback after the
+			 * manager assigns a logical address proves that.
+			 *
+			 * of_register_slim_devices() requires the compatible in
+			 * "slim<manf_id>,<prod_code>" form and reg as
+			 * <device_index instance>. manf 0x217, prod 0x0a0,
+			 * dev_index 1, instance 0 reproduces the downstream
+			 * elemental address 00 01 A0 00 17 02 exactly.
+			 *
+			 * The codec also exposes an interface device (IFD) at
+			 * 00 00 A0 00 17 02 (same manf/prod, dev_index 0). It is
+			 * deliberately not described yet -- one device at a time.
+			 *
+			 * Supplies and reset are taken from the downstream
+			 * hammerhead taiko_codec node (same SoC, same codec).
+			 * All three rails already exist at exactly the required
+			 * voltages and are always-on, so no voltage operation is
+			 * requested -- see trustzone-quirks.md for why fixed
+			 * regulator constraints matter on this device.
+			 *
+			 * No MBHC interrupt, no DAIs, no routing, no sound card.
+			 */
+			/*
+			 * Interface function of the SAME physical codec.
+			 * dev_index 0 rather than 1, so EA 00 00 A0 00 17 02.
+			 *
+			 * This is where SLIMbus port and channel configuration
+			 * is written -- downstream routes
+			 * SB_PGD_RX/TX_PORT_MULTI_CHANNEL and
+			 * SB_PGD_PORT_CFG_BYTE_ADDR through it, despite the
+			 * "PGD" in those macro names. Audio transport cannot be
+			 * configured without it.
+			 *
+			 * Deliberately no supplies and no reset-gpios: this
+			 * function must never power or reset the codec. The
+			 * control function (codec@1,0) is the sole power owner.
+			 */
+			wcd9320_ifd: codec@0,0 {
+				compatible = "slim217,a0";
+				reg = <0 0>;
+			};
+
+			wcd9320: codec@1,0 {
+				compatible = "slim217,a0";
+				reg = <1 0>;
+
+				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
+				 * driven low 20 ms then high 20 ms -- active low. */
+				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * Parent interrupt, TLMM 72. The trigger type is
+				 * the Lumia's own, read out of its DSDT:
+				 *
+				 *   Device (MBHC)   \_SB.ADSP.SLM1.ADCM.AUDD.MBHC
+				 *     GpioInt (Edge, ActiveHigh, Exclusive,
+				 *              PullDown, ..., "\\_SB.GIO0", ...)
+				 *       { 0x0048 }        -- pin 72
+				 *
+				 * Note this disagrees with downstream hammerhead,
+				 * which requests the same line as IRQF_TRIGGER_HIGH.
+				 * The measured value is used here on purpose; the
+				 * disagreement is one of the things the first image
+				 * is meant to detect.
+				 *
+				 * Whether this pin is the codec's shared top-level
+				 * interrupt output or a narrower headset-only line
+				 * is NOT established. The DSDT labels it MBHC and
+				 * marks it Exclusive, but it is also the only
+				 * audio-related GpioInt in the whole table and AUDD
+				 * itself declares none -- an argument from absence
+				 * of alternatives, not proof.
+				 *
+				 * irq-gpios names the same pad so the driver can
+				 * read its raw level. Under a rising-edge request,
+				 * "no interrupt arrived" is otherwise ambiguous
+				 * between an idle line and a missed level assertion.
+				 */
+				interrupts-extended = <&tlmm 72 IRQ_TYPE_EDGE_RISING>;
+				irq-gpios = <&tlmm 72 GPIO_ACTIVE_HIGH>;
+
+				/* downstream qcom,cdc-static-supplies, in order */
+				vdd-buck-supply = <&pm8941_s2>;    /* 2.15 V  */
+				vdd-tx-h-supply = <&pm8941_s3>;    /* 1.8 V   */
+				vdd-rx-h-supply = <&pm8941_s3>;    /* 1.8 V   */
+				vddpx-1-supply = <&pm8941_s3>;     /* 1.8 V   */
+				vdd-a-1p2v-supply = <&pm8941_l1>;  /* 1.225 V */
+				vddcx-1-supply = <&pm8941_l1>;     /* 1.225 V */
+				vddcx-2-supply = <&pm8941_l1>;     /* 1.225 V */
+			};
+		};
+	};
+};
