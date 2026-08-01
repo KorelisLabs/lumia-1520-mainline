@@ -1,0 +1,45 @@
+From: Lumia 1520 mainline port <none@localhost>
+Subject: [BACKPORT] regmap: slimbus: pass slim_device as the bus context
+
+The regmap-slimbus bus callbacks take their context as a struct slim_device:
+
+	static int regmap_slimbus_read(void *context, ...)
+	{
+		struct slim_device *sdev = context;
+
+but this kernel passes something else in both paths.
+
+__regmap_init_slimbus() passes &slimbus->dev. That happens to work only
+because struct device dev is the first member of struct slim_device, so the
+two addresses are numerically equal -- it is type confusion that survives by
+layout accident.
+
+__devm_regmap_init_slimbus() passes &slimbus, the address of the function's
+own parameter. Once the function returns, every register access dereferences
+a dead stack slot as if it were a slim_device.
+
+Pass slimbus itself in both cases, which is what current upstream does. This
+is a backport of that fix to the msm8974 tree, kept separate from any codec
+work so it can be dropped once the tree catches up.
+---
+diff -urN orig/drivers/base/regmap/regmap-slimbus.c new/drivers/base/regmap/regmap-slimbus.c
+--- a/drivers/base/regmap/regmap-slimbus.c	2026-07-30 18:37:15.541824579 -0400
++++ b/drivers/base/regmap/regmap-slimbus.c	2026-07-30 18:37:15.541875045 -0400
+@@ -48,7 +48,7 @@
+ 	if (IS_ERR(bus))
+ 		return ERR_CAST(bus);
+ 
+-	return __regmap_init(&slimbus->dev, bus, &slimbus->dev, config,
++	return __regmap_init(&slimbus->dev, bus, slimbus, config,
+ 			     lock_key, lock_name);
+ }
+ EXPORT_SYMBOL_GPL(__regmap_init_slimbus);
+@@ -63,7 +63,7 @@
+ 	if (IS_ERR(bus))
+ 		return ERR_CAST(bus);
+ 
+-	return __devm_regmap_init(&slimbus->dev, bus, &slimbus, config,
++	return __devm_regmap_init(&slimbus->dev, bus, slimbus, config,
+ 				  lock_key, lock_name);
+ }
+ EXPORT_SYMBOL_GPL(__devm_regmap_init_slimbus);

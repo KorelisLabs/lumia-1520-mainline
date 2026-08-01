@@ -1,0 +1,1639 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH 2/3] slimbus: WCD9320 codec core
+
+Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
+observation, and a manually triggered CDC-core wake experiment. The core
+release and the RCO clock sequence are separate tables, because they answer
+different questions: one takes the digital core out of reset, the other
+clocks it. Registers no sound card and configures no audio path.
+
+diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
+--- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
++++ new/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716597973 -0400
+@@ -34,4 +34,18 @@ config SLIM_QCOM_NGD_CTRL
+ 	  communicating with slave HW directly over the bus using messaging
+ 	  interface, and communicating with master component residing on ADSP
+ 	  for bandwidth and data-channel management.
++
++config SLIM_WCD9320
++	tristate "WCD9320 (Taiko) codec core"
++	depends on GPIOLIB && REGULATOR
++	select REGMAP
++	select REGMAP_SLIMBUS
++	help
++	  Core support for the Qualcomm WCD9320 "Taiko" audio codec attached
++	  over SLIMbus: regulators, reset sequencing, SLIMbus device up/down
++	  handling, register map and identity validation.
++
++	  This registers no sound card and implements no audio paths yet.
++
++	  If unsure, say N.
+ endif
+diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
+--- orig/drivers/slimbus/Makefile	2026-07-31 16:05:21.716681882 -0400
++++ new/drivers/slimbus/Makefile	2026-07-31 16:05:21.716822880 -0400
+@@ -11,3 +11,7 @@ slim-qcom-ctrl-y			:= qcom-ctrl.o
+ 
+ obj-$(CONFIG_SLIM_QCOM_NGD_CTRL)	+= slim-qcom-ngd-ctrl.o
+ slim-qcom-ngd-ctrl-y			:= qcom-ngd-ctrl.o
++
++#Codecs
++obj-$(CONFIG_SLIM_WCD9320)		+= wcd9320.o
++wcd9320-y				:= wcd9320-core.o
+diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
+--- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 09:09:48.359147094 -0400
+@@ -0,0 +1,1593 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
++ *
++ * Everything the codec needs before any audio exists. It registers no sound
++ * card, implements no audio paths, and performs no register writes.
++ *
++ * Two supported startup paths, both ending in a validated identity:
++ *
++ *   fresh bring-up   the codec is not yet enumerated. This driver owns the
++ *                    supplies and the reset line, powers the part, releases
++ *                    reset, and waits for the bus to enumerate it.
++ *
++ *   late adoption    the codec is already enumerated with a valid logical
++ *                    address, because the driver bound onto a running bus.
++ *                    The driver takes no power votes, never touches reset,
++ *                    and adopts the existing state.
++ *
++ * The distinction between "hardware is powered" and "this driver enabled and
++ * owns the power" is tracked explicitly as power_owned. Nothing disables a
++ * regulator or asserts reset that this driver did not turn on in the first
++ * place, on any path including probe failure and remove.
++ *
++ * Established on this hardware:
++ *   - EA 00 01 a0 00 17 02; identifies as major 0x0102 (Taiko), minor 0x0001
++ *   - register map begins 0x800 into the SLIMbus value-element space
++ *   - regmap over that offset matches a direct slim_read, stable over reads
++ *
++ * Hardware values from LineageOS/android_kernel_lge_hammerhead cm-11.0:
++ * msm8974.dtsi (taiko_codec), wcd9xxx-core.c (wcd9xxx_reset,
++ * wcd9xxx_check_codec_type), wcd9xxx_registers.h, wcd9xxx/core.h.
++ *
++ * On codec-only power cycling: there is deliberately no local
++ * absence/re-enumeration test here. slim_report_absent() only clears Linux's
++ * own view -- it sends nothing to the ADSP-side manager that actually owns
++ * the logical-address assignment -- so using it to force a power cycle leaves
++ * the two sides disagreeing, and the following address query fails with
++ * -ETIMEDOUT or -ENXIO. That was observed deterministically. Real recovery
++ * has to be driven by the controller, which already marks its children absent
++ * during subsystem restart and re-queries them after the master-capability
++ * exchange.
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/jiffies.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_irq.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slimbus.h>
++#include <linux/workqueue.h>
++
++/*
++ * RESEARCH ONLY. Leaves the codec powered and out of reset when this
++ * driver unbinds, so a following driver can be shown adopting a codec
++ * that is genuinely live. Normal unbinding of a power-owning driver
++ * desynchronises the SLIMbus core -- it keeps reporting the device UP
++ * because nothing invalidates its cached state -- so this exists purely
++ * to construct a valid handoff for testing. Never production behaviour.
++ */
++static bool handoff_on_remove;
++module_param(handoff_on_remove, bool, 0444);
++MODULE_PARM_DESC(handoff_on_remove,
++		 "Leave the codec powered on unbind, to stage a handoff (research)");
++
++/* qcom,cdc-static-supplies, in the order downstream enables them. */
++static const char * const wcd9320_supplies[] = {
++	"vdd-buck",	/* pm8941 s2, 2.15 V, 650 mA */
++	"vdd-tx-h",	/* pm8941 s3, 1.8 V,   25 mA */
++	"vdd-rx-h",	/* pm8941 s3, 1.8 V,   25 mA */
++	"vddpx-1",	/* pm8941 s3, 1.8 V,   10 mA */
++	"vdd-a-1p2v",	/* pm8941 l1, 1.225 V, 10 mA */
++	"vddcx-1",	/* pm8941 l1, 1.225 V, 10 mA */
++	"vddcx-2",	/* pm8941 l1, 1.225 V, 10 mA */
++};
++
++#define WCD9320_NUM_SUPPLIES	ARRAY_SIZE(wcd9320_supplies)
++
++/* wcd9xxx_reset(): drive low, msleep(20), drive high, msleep(20). */
++#define WCD9320_RESET_ASSERT_MS		20
++#define WCD9320_RESET_SETTLE_MS		20
++
++/* Register offsets. 0x00 is CHIP_CTL, not an identification register. */
++#define WCD9320_A_CHIP_ID_BYTE_0	0x04
++#define WCD9320_A_CHIP_VERSION		0x08
++#define WCD9320_ID_LEN			5	/* 0x04..0x08 inclusive */
++
++/* The register map starts 0x800 into the value-element space. */
++#define WCD9320_REGISTER_START_OFFSET	0x800
++#define WCD9320_MAX_REGISTER		0x3ff
++
++/* core.h: TAIKO_MAJOR = 0x102; this device reports minor 0x0001. */
++#define TAIKO_ID_MAJOR			0x0102
++
++/*
++ * Interrupt block. Four bytes each, all outside the unreachable CDC region
++ * (0x200-0x3bf) and all confirmed at their documented reset values on this
++ * device. See docs/audio/wcd9320-irq-topology.md.
++ */
++#define WCD9320_A_INTR_MODE		0x090
++#define WCD9320_A_INTR_MASK0		0x094
++#define WCD9320_A_INTR_STATUS0		0x098
++#define WCD9320_A_INTR_CLEAR0		0x09c
++#define WCD9320_A_INTR_LEVEL0		0x0a0
++#define WCD9320_NUM_IRQ_REGS		4
++#define WCD9320_NUM_IRQ_LEVEL_REGS	3
++
++/*
++ * Mask polarity is inverted from the intuitive reading: 1 = masked.
++ * wcd9xxx-irq.c unmasks with "irq_masks_cur[byte] &= ~BIT", masks with "|=".
++ *
++ * MASK2 and MASK3 reset to 0x3f, not 0xff, so bits 6-7 of both are UNMASKED
++ * out of reset -- and MASK3 bit 6 is IRQ 30, VBAT_MONITOR_RELEASE, a real
++ * source. The reset state must therefore never be trusted; these are written
++ * explicitly before the parent line is requested.
++ *
++ * The last byte is 0x7f rather than 0xff because downstream's init loop runs
++ * over 0..TAIKO_NUM_IRQS-1 = 0..30, so it never sets bit 7. Bit 7 would be
++ * IRQ 31, which does not exist.
++ *
++ * MASK2 is 0x3f, not 0xff, and that is a measured value rather than a copied
++ * one. Writing 0xff there reads back 0x3f on this silicon: bits 6-7 are
++ * IRQ 22 and 23, WCD9XXX_IRQ_RESERVED_0/1, and they are read-only zero. They
++ * cannot be masked because there is nothing behind them to mask -- 45
++ * samples confirmed the corresponding status bits never assert.
++ *
++ * Downstream writes 0xff and never reads back, so it never notices. Writing
++ * the achievable value instead keeps the readback check meaningful: a
++ * mismatch now means something is actually wrong, rather than being expected
++ * noise that would hide a real fault later.
++ */
++static const u8 wcd9320_irq_mask_all[WCD9320_NUM_IRQ_REGS] = {
++	0xff, 0xff, 0x3f, 0x7f
++};
++
++/*
++ * Which bits correspond to a real source, for deciding whether anything is
++ * genuinely pending. Byte 2 bits 6-7 are RESERVED_0/1; byte 3 bit 7 is past
++ * the end of the enum.
++ */
++static const u8 wcd9320_irq_valid[WCD9320_NUM_IRQ_REGS] = {
++	0xff, 0xff, 0x3f, 0x7f
++};
++
++/*
++ * Bounded diagnostic sampling window. Deliberately finite: this exists to
++ * turn "no interrupt fired" from an ambiguous observation into a positive
++ * one, and then to stop. It is not polling logic and must never become any.
++ *
++ * With IRQ_TYPE_EDGE_RISING, silence alone cannot distinguish a correctly
++ * idle line from a codec holding the line high whose transition was missed
++ * because the source behaves as level. Sampling the raw pad settles that.
++ */
++#define WCD9320_SAMPLE_FAST_MS		250
++#define WCD9320_SAMPLE_FAST_COUNT	20	/* 20 x 250ms = 5 s  */
++#define WCD9320_SAMPLE_SLOW_MS		1000
++#define WCD9320_SAMPLE_SLOW_COUNT	25	/* 25 x 1000ms = 25 s */
++#define WCD9320_SAMPLE_TOTAL \
++	(WCD9320_SAMPLE_FAST_COUNT + WCD9320_SAMPLE_SLOW_COUNT)
++
++/*
++ * ---- CDC-core accessibility experiment, research only ----------------------
++ *
++ * 0x200-0x3bf reads all-zero on this device regardless of documented reset
++ * value, at 87 of 87 registers with a non-zero __POR. The block is unclocked
++ * or held in reset. This is the sequence downstream uses to make it
++ * accessible, traced in docs/audio/wcd9320-cdc-wake-sequence.md.
++ *
++ * It runs ONLY when written to explicitly. Nothing here happens at probe.
++ *
++ * The route used is WCD9XXX_CLK_RCO -- the codec's on-die RC oscillator --
++ * not external MCLK. wcd9xxx_enable_clock_block() takes a mode argument and
++ * downstream switches between the two at runtime; the two differ only in
++ * which source the clock buffer selects. That matters here because this
++ * device's external MCLK route is unresolved, and RCO needs none.
++ */
++#define WCD9320_A_CDC_CTL		0x080
++#define WCD9320_A_LEAKAGE_CTL		0x088
++#define WCD9320_A_BIAS_CENTRAL_BG_CTL	0x101
++#define WCD9320_A_BIAS_OSC_BG_CTL	0x105
++#define WCD9320_A_CLK_BUFF_EN1		0x108
++#define WCD9320_A_CLK_BUFF_EN2		0x109
++#define WCD9320_A_RC_OSC_FREQ		0x1fa
++#define WCD9320_A_RC_OSC_TEST		0x1fb
++#define WCD9320_A_RC_OSC_STATUS		0x1fc
++#define WCD9320_A_CDC_CLK_MCLK_CTL	0x311
++
++/* The sentinel region: the CDC digital block's register file. */
++#define WCD9320_CDC_FIRST		0x200
++#define WCD9320_CDC_LAST		0x3bf
++#define WCD9320_CDC_COUNT		(WCD9320_CDC_LAST - WCD9320_CDC_FIRST + 1)
++
++struct wcd9320_wake_step {
++	u16 reg;
++	u8 mask;		/* 0 means a plain write of val */
++	u8 val;
++	u32 delay_us;
++	bool verify;		/* readback must equal the requested bits */
++	const char *note;
++};
++
++/*
++ * wcd9xxx_resmgr_enable_config_mode(codec, 1) followed by
++ * wcd9xxx_enable_clock_block(resmgr, config_mode=1). Masks, values and delays
++ * are transcribed from that path verbatim.
++ *
++ * The 0x17 written to BIAS_OSC_BG_CTL is an EMPIRICALLY INHERITED MAGIC VALUE.
++ * It is copied from the exact downstream resource-manager path and is not
++ * understood at bit level; no datasheet has been consulted. It is acceptable
++ * here only because this is a research experiment reproducing a known-good
++ * sequence, and it must not be presented as understood semantics.
++ *
++ * Steps 1-10 are in 0x100-0x1ff, which reads correctly on this device, so
++ * each is verified by readback as it is applied and a failure localises to a
++ * step. Step 11 targets the dark region and cannot be verified -- detecting
++ * its effect is the entire point of the experiment.
++ */
++/*
++ * Stage 1: wcd9xxx_bring_up(), from drivers/mfd/wcd9xxx-core.c:335.
++ *
++ * Split out from the clock sequence because it is a different thing: it
++ * releases the codec's digital core from reset, and downstream runs it at
++ * wcd9xxx-core.c:468 -- immediately after reset and BEFORE
++ * wcd9xxx_check_codec_type(), so before the chip id is even read.
++ */
++static const struct wcd9320_wake_step wcd9320_bring_up_seq[] = {
++	{ WCD9320_A_LEAKAGE_CTL, 0x00, 0x04,    0, false,
++	  "bring_up: LEAKAGE_CTL = 0x04" },
++	{ WCD9320_A_CDC_CTL,     0x00, 0x00, 5000, false,
++	  "bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms" },
++	{ WCD9320_A_CDC_CTL,     0x00, 0x03,    0, false,
++	  "bring_up: CDC_CTL = 3 (release digital core)" },
++	{ WCD9320_A_LEAKAGE_CTL, 0x00, 0x03,    0, false,
++	  "bring_up: LEAKAGE_CTL = 0x03" },
++};
++
++/*
++ * Stage 2: the bandgap and RCO clock block. Runs only after stage 1, and
++ * separately from it, because the two answer different questions -- stage 1
++ * releases the core, stage 2 clocks it.
++ */
++static const struct wcd9320_wake_step wcd9320_rco_wake[] = {
++	/*
++	 * Phase A: the central bandgap, from wcd9xxx_enable_bg().
++	 *
++	 * This is a prerequisite, not an optional extra. taiko_mclk_enable()
++	 * calls wcd9xxx_resmgr_get_bandgap(WCD9XXX_BANDGAP_AUDIO_MODE) before
++	 * get_clk_block(), and that routes here.
++	 *
++	 * Omitting it was measured to fail: with BIAS_CENTRAL_BG_CTL reading
++	 * 0x50 (bit 0 clear, bandgap off), writing 0x17 to BIAS_OSC_BG_CTL
++	 * read back 0x16 -- the OSC bandgap enable bit will not set while the
++	 * central bandgap is off. The sequence aborted at that step, which is
++	 * what the per-step readback is for.
++	 */
++	{ WCD9320_A_BIAS_CENTRAL_BG_CTL, 0x80, 0x80,    0, true,
++	  "BG: slow mode on" },
++	{ WCD9320_A_BIAS_CENTRAL_BG_CTL, 0x04, 0x04,    0, true,
++	  "BG: precharge" },
++	{ WCD9320_A_BIAS_CENTRAL_BG_CTL, 0x01, 0x01, 1000, true,
++	  "BG: enable, then 1 ms settle" },
++	{ WCD9320_A_BIAS_CENTRAL_BG_CTL, 0x80, 0x00,    0, true,
++	  "BG: slow mode off" },
++
++	/* Phase B: the RCO clock block. */
++	{ WCD9320_A_RC_OSC_FREQ,     0x10, 0x00,     0, true,
++	  "RC_OSC_FREQ: clear bit 4" },
++	{ WCD9320_A_BIAS_OSC_BG_CTL, 0x00, 0x17,     5, true,
++	  "BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')" },
++	{ WCD9320_A_RC_OSC_FREQ,     0x80, 0x80,     0, true,
++	  "RC_OSC_FREQ: enable the RC oscillator" },
++	{ WCD9320_A_RC_OSC_TEST,     0x80, 0x80,    10, true,
++	  "RC_OSC_TEST: start pulse, rising" },
++	{ WCD9320_A_RC_OSC_TEST,     0x80, 0x00, 10000, true,
++	  "RC_OSC_TEST: start pulse, falling, then 10 ms settle" },
++	{ WCD9320_A_CLK_BUFF_EN1,    0x08, 0x08,     0, true,
++	  "CLK_BUFF_EN1: select RCO as the buffer source" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x00, 0x02,  1000, true,
++	  "CLK_BUFF_EN2 = 0x02" },
++	{ WCD9320_A_CLK_BUFF_EN1,    0x01, 0x01,  1200, true,
++	  "CLK_BUFF_EN1: enable clock buffer (hardware-required delay)" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x02, 0x00,     0, true,
++	  "CLK_BUFF_EN2: clear bit 1" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x04, 0x04,     0, true,
++	  "CLK_BUFF_EN2: clock on" },
++	{ WCD9320_A_CDC_CLK_MCLK_CTL, 0x01, 0x01,   50, false,
++	  "CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)" },
++};
++
++/*
++ * wcd9xxx_disable_clock_block() followed by
++ * wcd9xxx_resmgr_enable_config_mode(codec, 0). Exactly the documented
++ * inverse -- no invented cleanup writes.
++ *
++ * Note it deliberately does NOT clear 0x311. Downstream leaves the CDC clock
++ * gate set, so the block staying accessible after teardown is a legitimate
++ * outcome rather than a failure.
++ */
++static const struct wcd9320_wake_step wcd9320_rco_sleep[] = {
++	{ WCD9320_A_CLK_BUFF_EN2,    0x04, 0x00,    50, true,
++	  "CLK_BUFF_EN2: clock off" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x02, 0x02,     0, true,
++	  "CLK_BUFF_EN2: set bit 1" },
++	{ WCD9320_A_CLK_BUFF_EN1,    0x05, 0x00,    50, true,
++	  "CLK_BUFF_EN1: disable buffer and source select" },
++	{ WCD9320_A_BIAS_OSC_BG_CTL, 0x01, 0x00,     0, true,
++	  "BIAS_OSC_BG_CTL: clear bit 0" },
++	{ WCD9320_A_RC_OSC_FREQ,     0x80, 0x00,     0, true,
++	  "RC_OSC_FREQ: disable the RC oscillator" },
++	/* wcd9xxx_disable_bg(): the inverse of phase A. */
++	{ WCD9320_A_BIAS_CENTRAL_BG_CTL, 0x03, 0x00, 100, true,
++	  "BG: disable, then 100 us" },
++	/*
++	 * Phase 0 is deliberately NOT reversed here. Its counterpart,
++	 * wcd9xxx_bring_down(), is a full low-leakage device shutdown -- it is
++	 * called only from the remove and shutdown paths (wcd9xxx-core.c:504,
++	 * 516), not as a step-wise inverse. Running it would take the codec
++	 * down entirely and make the post-teardown health check meaningless.
++	 *
++	 * So teardown reverses the clock and bandgap and leaves the digital
++	 * core brought up. That is the correct scope for this experiment, and
++	 * it is stated rather than silently assumed.
++	 */
++};
++
++enum wcd9320_wake_state {
++	WCD9320_WAKE_IDLE = 0,	/* never run, or cleanly reversed */
++	WCD9320_WAKE_ACTIVE,	/* sequence applied, not yet reversed */
++	WCD9320_WAKE_FAILED,	/* aborted part way; refuses to re-run */
++};
++
++static const struct regmap_config wcd9320_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 8,
++	.reg_base = WCD9320_REGISTER_START_OFFSET,
++	.max_register = WCD9320_MAX_REGISTER,
++	/*
++	 * Caching stays off. Volatility, power-on defaults and what survives a
++	 * codec reset are all still unmapped, and a cache that guesses any of
++	 * those wrong is worse than none.
++	 */
++	.cache_type = REGCACHE_NONE,
++};
++
++struct wcd9320 {
++	struct slim_device *sdev;
++	struct regulator_bulk_data supplies[WCD9320_NUM_SUPPLIES];
++	struct gpio_desc *reset;
++	struct regmap *regmap;		/* created once; outlives absence */
++	struct mutex state_lock;	/* serialises online/offline */
++
++	bool is_ifd;			/* interface function, not the control one */
++	bool online;			/* identity validated, device usable */
++	bool adopted;			/* bound onto an already-enumerated bus */
++	bool power_owned;		/* THIS driver enabled the supplies */
++
++	u16 id_major;
++	u16 id_minor;
++	u8 id_version;
++
++	unsigned int up_count;
++	unsigned int down_count;
++
++	/* instrumentation, so adoption can be shown to be non-destructive */
++	unsigned int reset_transitions;
++	unsigned int supply_enables;
++	unsigned int supply_disables;
++	unsigned int identity_reads;
++	unsigned int identity_failures;
++	unsigned int stale_bus_state_detected;
++
++	/* ---- parent interrupt line, observation only ---- */
++	int irq;			/* parent, from DT; <=0 if absent  */
++	struct gpio_desc *irq_gpio;	/* same pad, for raw level reads   */
++	bool irq_requested;
++	bool irq_setup_done;		/* setup is once-only, and races   */
++	unsigned int irq_count;		/* parent assertions               */
++	unsigned int irq_spurious;	/* asserted with nothing pending   */
++	unsigned int irq_acked;		/* times CLEAR was actually written*/
++	unsigned int trigger_type;	/* what the kernel says landed     */
++	int raw_level_at_setup;
++	int raw_level_last;
++	u8 snap_status[WCD9320_NUM_IRQ_REGS];	/* before masking */
++	u8 snap_mask[WCD9320_NUM_IRQ_REGS];
++	u8 snap_level[WCD9320_NUM_IRQ_LEVEL_REGS];
++	u8 snap_mode;
++	u8 mask_readback[WCD9320_NUM_IRQ_REGS];	/* after masking  */
++	u8 last_status[WCD9320_NUM_IRQ_REGS];
++
++	struct delayed_work sampler;
++	unsigned int sample_count;
++	unsigned int sample_pending_seen;	/* samples with a live source */
++	unsigned int sample_high_seen;		/* samples with the pad high  */
++	bool sampler_running;
++
++	/* ---- CDC-core wake experiment, manual trigger only ---- */
++	struct mutex wake_lock;
++	enum wcd9320_wake_state wake_state;
++	unsigned int wake_attempts;
++	int wake_failed_step;			/* 1-based; 0 if none      */
++	int wake_last_error;
++	u8 cdc_before[WCD9320_CDC_COUNT];
++	u8 cdc_after[WCD9320_CDC_COUNT];
++	u8 cdc_teardown[WCD9320_CDC_COUNT];
++	bool have_before, have_after, have_teardown;
++	unsigned int nz_before, nz_after, nz_teardown;
++};
++
++/* ---------------------------------------------------------------- power -- */
++
++static void wcd9320_reset_set(struct wcd9320 *wcd, int asserted)
++{
++	gpiod_set_value_cansleep(wcd->reset, asserted);
++	wcd->reset_transitions++;
++}
++
++/* Only ever called on the fresh bring-up path. */
++static int wcd9320_power_up(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	wcd9320_reset_set(wcd, 1);		/* assert across the supply ramp */
++
++	ret = regulator_bulk_enable(WCD9320_NUM_SUPPLIES, wcd->supplies);
++	if (ret) {
++		dev_err(dev, "failed to enable supplies: %d\n", ret);
++		return ret;
++	}
++	wcd->supply_enables++;
++	wcd->power_owned = true;
++
++	msleep(WCD9320_RESET_ASSERT_MS);
++	wcd9320_reset_set(wcd, 0);		/* release */
++	msleep(WCD9320_RESET_SETTLE_MS);
++
++	dev_info(dev, "fresh bring-up: %zu supplies enabled, reset released\n",
++		 WCD9320_NUM_SUPPLIES);
++	return 0;
++}
++
++static void wcd9320_power_down(struct wcd9320 *wcd)
++{
++	/*
++	 * Never turn off what this driver did not turn on. On the adoption
++	 * path the bus is actively using this codec and something else owns
++	 * its power.
++	 */
++	if (!wcd->power_owned)
++		return;
++
++	if (handoff_on_remove) {
++		dev_info(&wcd->sdev->dev,
++			 "handoff: leaving the codec powered for the next driver\n");
++		wcd->power_owned = false;
++		return;
++	}
++
++	wcd9320_reset_set(wcd, 1);
++	regulator_bulk_disable(WCD9320_NUM_SUPPLIES, wcd->supplies);
++	wcd->supply_disables++;
++	wcd->power_owned = false;
++	dev_info(&wcd->sdev->dev, "released power: reset asserted, supplies off\n");
++}
++
++static void wcd9320_power_release(void *data)
++{
++	/*
++	 * devres, not remove(). The logical-address query runs inside
++	 * slim_device_probe() after this driver's probe() has returned
++	 * success, so a failure there leaves the driver unbound and remove()
++	 * never runs -- but devres is released on probe failure.
++	 */
++	wcd9320_power_down(data);
++}
++
++/* ------------------------------------------------------------- identity -- */
++
++static int wcd9320_read_identity(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	u8 id[WCD9320_ID_LEN] = {0};
++	int ret;
++
++	if (!wcd->regmap)
++		return -ENODEV;
++
++	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_CHIP_ID_BYTE_0,
++			       id, WCD9320_ID_LEN);
++	if (ret) {
++		dev_err(dev, "identity read failed: %d\n", ret);
++		return ret;
++	}
++
++	if (!id[0] && !id[1] && !id[2] && !id[3] && !id[4]) {
++		dev_err(dev,
++			"identity bytes all zero -- register map not responding\n");
++		return -EIO;
++	}
++
++	/* wcd9xxx_check_codec_type(): minor is the LE u16 at CHIP_ID_BYTE_0,
++	 * major the LE u16 at CHIP_ID_BYTE_2. */
++	wcd->id_minor = id[0] | (id[1] << 8);
++	wcd->id_major = id[2] | (id[3] << 8);
++	wcd->id_version = id[4];
++	wcd->identity_reads++;
++
++	dev_info(dev, "id_major 0x%04x id_minor 0x%04x version 0x%02x (raw %02x %02x %02x %02x %02x)\n",
++		 wcd->id_major, wcd->id_minor, wcd->id_version,
++		 id[0], id[1], id[2], id[3], id[4]);
++
++	if (wcd->id_major != TAIKO_ID_MAJOR) {
++		dev_err(dev, "major 0x%04x is not Taiko (expected 0x%04x)\n",
++			wcd->id_major, TAIKO_ID_MAJOR);
++		return -ENODEV;
++	}
++	return 0;
++}
++
++/*
++ * The bus telling us a device is UP is a hint, not proof. The cached
++ * status and logical address survive an unbind, so they can describe a
++ * codec that is powered off and held in reset. Only a successful read
++ * establishes that the part is really there.
++ *
++ * Bounded retries so a single transport timeout does not provoke an
++ * unnecessary hardware reset.
++ */
++#define WCD9320_ID_ATTEMPTS	3
++#define WCD9320_ID_RETRY_MS	20
++
++static int wcd9320_verify_identity(struct wcd9320 *wcd)
++{
++	int ret = -ENODEV;
++	int i;
++
++	for (i = 0; i < WCD9320_ID_ATTEMPTS; i++) {
++		ret = wcd9320_read_identity(wcd);
++		if (!ret)
++			return 0;
++		wcd->identity_failures++;
++		msleep(WCD9320_ID_RETRY_MS);
++	}
++	return ret;
++}
++
++/* -------------------------------------------------------------- binding -- */
++
++/*
++ * Defined further down, with the rest of the interrupt observation code, but
++ * called from wcd9320_online() below -- the setup has to happen the moment the
++ * identity read proves the codec answers, and that is here.
++ */
++static int wcd9320_irq_setup(struct wcd9320 *wcd);
++
++/*
++ * Idempotent, and shared by both routes in: a genuine device_status(UP) after
++ * fresh enumeration, and a direct call from probe when the device was already
++ * enumerated before this driver bound. The guard matters because those two
++ * can race.
++ */
++static int wcd9320_online(struct wcd9320 *wcd)
++{
++	int ret;
++
++	mutex_lock(&wcd->state_lock);
++	if (wcd->online) {
++		mutex_unlock(&wcd->state_lock);
++		return 0;
++	}
++
++	ret = wcd9320_verify_identity(wcd);
++	if (!ret) {
++		wcd->online = true;
++		wcd->up_count++;
++	}
++	mutex_unlock(&wcd->state_lock);
++
++	/*
++	 * Outside the lock: setting up the parent line reads registers and can
++	 * sleep, and the handler it installs takes no lock of ours. Only once
++	 * the identity read has succeeded, so the interrupt block is never
++	 * touched on a part that is not answering.
++	 */
++	if (!ret)
++		wcd9320_irq_setup(wcd);
++
++	return ret;
++}
++
++static void wcd9320_offline(struct wcd9320 *wcd)
++{
++	mutex_lock(&wcd->state_lock);
++	if (wcd->online) {
++		wcd->online = false;
++		wcd->down_count++;
++	}
++	mutex_unlock(&wcd->state_lock);
++}
++
++static int wcd9320_device_status(struct slim_device *sdev,
++				 enum slim_device_status status)
++{
++	struct device *dev = &sdev->dev;
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (!wcd)
++		return 0;
++
++	if (status != SLIM_DEVICE_STATUS_UP) {
++		wcd9320_offline(wcd);
++		dev_info(dev, "device DOWN (#%u)\n", wcd->down_count);
++		return 0;
++	}
++
++	if (wcd->is_ifd) {
++		/* No identity here: the chip id lives on the control
++		 * function. Enumeration and a logical address are the whole
++		 * of what this function has to prove. */
++		mutex_lock(&wcd->state_lock);
++		if (!wcd->online) {
++			wcd->online = true;
++			wcd->up_count++;
++		}
++		mutex_unlock(&wcd->state_lock);
++	} else {
++		wcd9320_online(wcd);
++	}
++	dev_info(dev, "%s UP (#%u), logical address 0x%02x\n",
++		 wcd->is_ifd ? "interface function" : "control function",
++		 wcd->up_count, sdev->laddr);
++	return 0;
++}
++
++/* ------------------------------------------------------ parent interrupt -- */
++
++/*
++ * Everything below observes. It writes exactly two things, both inside the
++ * interrupt block and both with semantics established from downstream
++ * source: INTR_MASK0-3 once at setup, and INTR_CLEAR0-3 only when a real
++ * source is actually pending. It never touches a clock, a reset, an analog
++ * path, or anything in the unreachable 0x200-0x3bf region.
++ */
++
++static int wcd9320_raw_level(struct wcd9320 *wcd)
++{
++	if (!wcd->irq_gpio)
++		return -ENODEV;
++	return gpiod_get_value_cansleep(wcd->irq_gpio);
++}
++
++static int wcd9320_read_irq_state(struct wcd9320 *wcd, u8 *status, u8 *mask)
++{
++	int ret;
++
++	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_STATUS0,
++			       status, WCD9320_NUM_IRQ_REGS);
++	if (ret)
++		return ret;
++
++	return regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_MASK0,
++				mask, WCD9320_NUM_IRQ_REGS);
++}
++
++/*
++ * A source counts as pending only if it is unmasked (mask bit 0), asserted,
++ * and a real source. Reserved bits are excluded so that a reset-state
++ * artefact cannot be mistaken for a live interrupt.
++ */
++static bool wcd9320_pending(const u8 *status, const u8 *mask, u8 *out)
++{
++	bool any = false;
++	int i;
++
++	for (i = 0; i < WCD9320_NUM_IRQ_REGS; i++) {
++		out[i] = status[i] & ~mask[i] & wcd9320_irq_valid[i];
++		if (out[i])
++			any = true;
++	}
++	return any;
++}
++
++static irqreturn_t wcd9320_irq_thread(int irq, void *data)
++{
++	struct wcd9320 *wcd = data;
++	struct device *dev = &wcd->sdev->dev;
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++	u8 pending[WCD9320_NUM_IRQ_REGS];
++	int level, ret;
++
++	wcd->irq_count++;
++	level = wcd9320_raw_level(wcd);
++	wcd->raw_level_last = level;
++
++	ret = wcd9320_read_irq_state(wcd, status, mask);
++	if (ret) {
++		dev_err(dev, "irq #%u: failed to read interrupt state: %d\n",
++			wcd->irq_count, ret);
++		return IRQ_HANDLED;
++	}
++	memcpy(wcd->last_status, status, sizeof(status));
++
++	dev_info(dev,
++		 "irq #%u at %llu ms: raw_level=%d status=%02x %02x %02x %02x mask=%02x %02x %02x %02x\n",
++		 wcd->irq_count, ktime_to_ms(ktime_get_boottime()), level,
++		 status[0], status[1], status[2], status[3],
++		 mask[0], mask[1], mask[2], mask[3]);
++
++	if (!wcd9320_pending(status, mask, pending)) {
++		/*
++		 * Nothing real is asserted, so there is nothing to acknowledge
++		 * and acknowledging anyway would destroy the evidence. With
++		 * every usable source masked this is the only outcome the
++		 * first image expects to see -- and seeing it at all is itself
++		 * the finding.
++		 */
++		wcd->irq_spurious++;
++		dev_warn(dev,
++			 "irq #%u: parent asserted with no unmasked source pending (spurious #%u) -- not acknowledging\n",
++			 wcd->irq_count, wcd->irq_spurious);
++		return IRQ_HANDLED;
++	}
++
++	dev_warn(dev,
++		 "irq #%u: unexpected live source pending=%02x %02x %02x %02x -- acknowledging\n",
++		 wcd->irq_count, pending[0], pending[1], pending[2], pending[3]);
++
++	ret = regmap_bulk_write(wcd->regmap, WCD9320_A_INTR_CLEAR0,
++				pending, WCD9320_NUM_IRQ_REGS);
++	if (ret)
++		dev_err(dev, "irq #%u: failed to acknowledge: %d\n",
++			wcd->irq_count, ret);
++	else
++		wcd->irq_acked++;
++
++	return IRQ_HANDLED;
++}
++
++/*
++ * Bounded sampler. Runs for 30 s total and then stops for good, so that
++ * "the line stayed low and nothing was pending" is a recorded observation
++ * rather than an absence of one.
++ */
++static void wcd9320_sampler_work(struct work_struct *work)
++{
++	struct wcd9320 *wcd = container_of(to_delayed_work(work),
++					   struct wcd9320, sampler);
++	struct device *dev = &wcd->sdev->dev;
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++	u8 pending[WCD9320_NUM_IRQ_REGS];
++	unsigned int n = wcd->sample_count;
++	int level, ret;
++	bool live;
++
++	level = wcd9320_raw_level(wcd);
++	wcd->raw_level_last = level;
++	if (level > 0)
++		wcd->sample_high_seen++;
++
++	ret = wcd9320_read_irq_state(wcd, status, mask);
++	if (ret) {
++		dev_err(dev, "sample %u/%u: read failed: %d\n",
++			n + 1, WCD9320_SAMPLE_TOTAL, ret);
++	} else {
++		memcpy(wcd->last_status, status, sizeof(status));
++		live = wcd9320_pending(status, mask, pending);
++		if (live)
++			wcd->sample_pending_seen++;
++
++		/*
++		 * Only the interesting samples are logged at info level. A
++		 * clean idle window is summarised once at the end instead of
++		 * 45 identical lines.
++		 */
++		if (live || level != 0 || n == 0 ||
++		    n == WCD9320_SAMPLE_FAST_COUNT)
++			dev_info(dev,
++				 "sample %u/%u: raw_level=%d status=%02x %02x %02x %02x pending=%s irqs=%u\n",
++				 n + 1, WCD9320_SAMPLE_TOTAL, level,
++				 status[0], status[1], status[2], status[3],
++				 live ? "YES" : "no", wcd->irq_count);
++	}
++
++	wcd->sample_count++;
++	if (wcd->sample_count >= WCD9320_SAMPLE_TOTAL) {
++		wcd->sampler_running = false;
++		dev_info(dev,
++			 "sampling complete: %u samples, pad high in %u, live source in %u, parent irqs %u (spurious %u, acked %u)\n",
++			 wcd->sample_count, wcd->sample_high_seen,
++			 wcd->sample_pending_seen, wcd->irq_count,
++			 wcd->irq_spurious, wcd->irq_acked);
++		return;
++	}
++
++	schedule_delayed_work(&wcd->sampler,
++			      msecs_to_jiffies(wcd->sample_count <
++					       WCD9320_SAMPLE_FAST_COUNT ?
++					       WCD9320_SAMPLE_FAST_MS :
++					       WCD9320_SAMPLE_SLOW_MS));
++}
++
++static void wcd9320_irq_teardown(void *data)
++{
++	struct wcd9320 *wcd = data;
++
++	/*
++	 * Only the sampler needs stopping here. The interrupt itself is
++	 * devm-managed, and nothing in its handler queues work -- the sampler
++	 * is self-rescheduling and independent of the line -- so there is no
++	 * requeue race to order against.
++	 *
++	 * This action is registered after the regmap, so devres unwinds it
++	 * first: the work is guaranteed stopped before the regmap it touches
++	 * is torn down.
++	 */
++	cancel_delayed_work_sync(&wcd->sampler);
++	wcd->sampler_running = false;
++}
++
++/*
++ * Called once, after the identity read has proven the codec answers. Reading
++ * the interrupt block before that would be reading from a part that may not
++ * be responding at all.
++ */
++static int wcd9320_irq_setup(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	if (wcd->irq_setup_done || wcd->is_ifd)
++		return 0;
++	wcd->irq_setup_done = true;
++
++	if (wcd->irq <= 0) {
++		dev_info(dev, "no parent interrupt described; skipping IRQ setup\n");
++		return 0;
++	}
++
++	/* --- 1. snapshot, before anything is programmed or requested --- */
++	wcd->raw_level_at_setup = wcd9320_raw_level(wcd);
++
++	ret = wcd9320_read_irq_state(wcd, wcd->snap_status, wcd->snap_mask);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to snapshot interrupt state\n");
++
++	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_LEVEL0,
++			       wcd->snap_level, WCD9320_NUM_IRQ_LEVEL_REGS);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read INTR_LEVEL\n");
++
++	{
++		unsigned int mode;
++
++		ret = regmap_read(wcd->regmap, WCD9320_A_INTR_MODE, &mode);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to read INTR_MODE\n");
++		wcd->snap_mode = mode;
++	}
++
++	dev_info(dev,
++		 "irq snapshot: raw_level=%d mode=%02x status=%02x %02x %02x %02x mask=%02x %02x %02x %02x level=%02x %02x %02x\n",
++		 wcd->raw_level_at_setup, wcd->snap_mode,
++		 wcd->snap_status[0], wcd->snap_status[1],
++		 wcd->snap_status[2], wcd->snap_status[3],
++		 wcd->snap_mask[0], wcd->snap_mask[1],
++		 wcd->snap_mask[2], wcd->snap_mask[3],
++		 wcd->snap_level[0], wcd->snap_level[1], wcd->snap_level[2]);
++
++	/* --- 2. mask everything explicitly; the reset state is not enough --- */
++	ret = regmap_bulk_write(wcd->regmap, WCD9320_A_INTR_MASK0,
++				wcd9320_irq_mask_all, WCD9320_NUM_IRQ_REGS);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to mask all sources\n");
++
++	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_MASK0,
++			       wcd->mask_readback, WCD9320_NUM_IRQ_REGS);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read masks back\n");
++
++	dev_info(dev, "masks written %02x %02x %02x %02x, read back %02x %02x %02x %02x%s\n",
++		 wcd9320_irq_mask_all[0], wcd9320_irq_mask_all[1],
++		 wcd9320_irq_mask_all[2], wcd9320_irq_mask_all[3],
++		 wcd->mask_readback[0], wcd->mask_readback[1],
++		 wcd->mask_readback[2], wcd->mask_readback[3],
++		 memcmp(wcd->mask_readback, wcd9320_irq_mask_all,
++			WCD9320_NUM_IRQ_REGS) ? "  MISMATCH" : "");
++
++	/* --- 3. request the parent, then record what actually landed --- */
++	ret = devm_request_threaded_irq(dev, wcd->irq, NULL,
++					wcd9320_irq_thread,
++					IRQF_ONESHOT, "wcd9320", wcd);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request irq %d\n",
++				     wcd->irq);
++	wcd->irq_requested = true;
++
++	ret = devm_add_action_or_reset(dev, wcd9320_irq_teardown, wcd);
++	if (ret)
++		return ret;
++
++	wcd->trigger_type = irq_get_trigger_type(wcd->irq);
++	dev_info(dev,
++		 "parent irq %d requested, kernel reports trigger type 0x%x (%s)\n",
++		 wcd->irq, wcd->trigger_type,
++		 wcd->trigger_type & IRQ_TYPE_EDGE_RISING ? "edge rising" :
++		 wcd->trigger_type & IRQ_TYPE_LEVEL_HIGH ? "level high" :
++		 "other");
++
++	/* --- 4. bounded observation window --- */
++	wcd->sampler_running = true;
++	schedule_delayed_work(&wcd->sampler,
++			      msecs_to_jiffies(WCD9320_SAMPLE_FAST_MS));
++	dev_info(dev, "bounded sampling started: %u samples over ~30 s, then stop\n",
++		 WCD9320_SAMPLE_TOTAL);
++	return 0;
++}
++
++/* -------------------------------------------- CDC-core wake experiment -- */
++
++static unsigned int wcd9320_count_nonzero(const u8 *buf)
++{
++	unsigned int i, n = 0;
++
++	for (i = 0; i < WCD9320_CDC_COUNT; i++)
++		if (buf[i])
++			n++;
++	return n;
++}
++
++static int wcd9320_snapshot_cdc(struct wcd9320 *wcd, u8 *buf)
++{
++	unsigned int i;
++	int ret;
++
++	/*
++	 * One register at a time rather than a bulk read: a bulk read across
++	 * the whole block would fail as a unit and tell us nothing about
++	 * where. Slower, but this runs twice per experiment.
++	 */
++	for (i = 0; i < WCD9320_CDC_COUNT; i++) {
++		unsigned int v;
++
++		ret = regmap_read(wcd->regmap, WCD9320_CDC_FIRST + i, &v);
++		if (ret) {
++			dev_err(&wcd->sdev->dev,
++				"sentinel read failed at 0x%03x: %d\n",
++				WCD9320_CDC_FIRST + i, ret);
++			return ret;
++		}
++		buf[i] = v;
++	}
++	return 0;
++}
++
++/* Everything that must still be true before and after. */
++static int wcd9320_check_health(struct wcd9320 *wcd, const char *when)
++{
++	struct device *dev = &wcd->sdev->dev;
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++	u8 pending[WCD9320_NUM_IRQ_REGS];
++	int ret;
++
++	if (!wcd->online) {
++		dev_err(dev, "%s: codec is not online\n", when);
++		return -ENODEV;
++	}
++
++	ret = wcd9320_read_identity(wcd);
++	if (ret) {
++		dev_err(dev, "%s: identity lost (%d)\n", when, ret);
++		return ret;
++	}
++
++	ret = wcd9320_read_irq_state(wcd, status, mask);
++	if (ret) {
++		dev_err(dev, "%s: cannot read interrupt state (%d)\n", when, ret);
++		return ret;
++	}
++
++	if (memcmp(mask, wcd9320_irq_mask_all, WCD9320_NUM_IRQ_REGS)) {
++		dev_err(dev,
++			"%s: interrupt masks changed to %02x %02x %02x %02x\n",
++			when, mask[0], mask[1], mask[2], mask[3]);
++		return -EIO;
++	}
++
++	if (wcd9320_pending(status, mask, pending)) {
++		dev_err(dev,
++			"%s: unexpected pending source %02x %02x %02x %02x\n",
++			when, pending[0], pending[1], pending[2], pending[3]);
++		return -EIO;
++	}
++
++	dev_info(dev,
++		 "%s: healthy -- id 0x%04x/0x%04x laddr 0x%02x, irqs %u, status %02x %02x %02x %02x\n",
++		 when, wcd->id_major, wcd->id_minor, wcd->sdev->laddr,
++		 wcd->irq_count, status[0], status[1], status[2], status[3]);
++	return 0;
++}
++
++static int wcd9320_run_sequence(struct wcd9320 *wcd,
++				const struct wcd9320_wake_step *seq,
++				size_t n, const char *label)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int irq_at_start = wcd->irq_count;
++	size_t i;
++	int ret;
++
++	for (i = 0; i < n; i++) {
++		const struct wcd9320_wake_step *s = &seq[i];
++		unsigned int before = 0, after = 0;
++		u8 want;
++
++		ret = regmap_read(wcd->regmap, s->reg, &before);
++		if (ret) {
++			dev_err(dev, "%s step %zu/%zu: read 0x%03x failed: %d\n",
++				label, i + 1, n, s->reg, ret);
++			goto abort;
++		}
++
++		if (s->mask)
++			ret = regmap_update_bits(wcd->regmap, s->reg,
++						 s->mask, s->val);
++		else
++			ret = regmap_write(wcd->regmap, s->reg, s->val);
++		if (ret) {
++			dev_err(dev, "%s step %zu/%zu: write 0x%03x failed: %d\n",
++				label, i + 1, n, s->reg, ret);
++			goto abort;
++		}
++
++		if (s->delay_us)
++			usleep_range(s->delay_us, s->delay_us + s->delay_us / 5);
++
++		ret = regmap_read(wcd->regmap, s->reg, &after);
++		if (ret) {
++			dev_err(dev, "%s step %zu/%zu: readback 0x%03x failed: %d\n",
++				label, i + 1, n, s->reg, ret);
++			goto abort;
++		}
++
++		want = s->mask ? (s->val & s->mask) : s->val;
++
++		dev_info(dev,
++			 "%s step %2zu/%zu: reg 0x%03x (VE 0x%04x) old=%02x mask=%02x want=%02x -> read=%02x  delay=%uus  %s  [%s]\n",
++			 label, i + 1, n, s->reg,
++			 WCD9320_REGISTER_START_OFFSET + s->reg,
++			 before, s->mask ? s->mask : 0xff, want, after,
++			 s->delay_us,
++			 s->verify
++				? (((s->mask ? (after & s->mask) : after) == want)
++					? "OK" : "MISMATCH")
++				: "unverifiable",
++			 s->note);
++
++		if (s->verify) {
++			u8 got = s->mask ? (after & s->mask) : after;
++
++			if (got != want) {
++				dev_err(dev,
++					"%s step %zu/%zu: readback mismatch on a register the downstream sequence expects to be writable -- aborting\n",
++					label, i + 1, n);
++				ret = -EIO;
++				goto abort;
++			}
++		}
++
++		if (wcd->irq_count != irq_at_start) {
++			dev_err(dev,
++				"%s step %zu/%zu: parent IRQ asserted unexpectedly (%u -> %u) -- aborting\n",
++				label, i + 1, n, irq_at_start, wcd->irq_count);
++			ret = -EIO;
++			goto abort;
++		}
++	}
++
++	dev_info(dev, "%s: all %zu steps applied cleanly\n", label, n);
++	return 0;
++
++abort:
++	wcd->wake_failed_step = i + 1;
++	wcd->wake_last_error = ret;
++	dev_err(dev, "%s: ABORTED at step %zu of %zu\n", label, i + 1, n);
++	return ret;
++}
++
++static int wcd9320_rco_wake_run(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	dev_info(dev, "=== CDC-core RCO wake experiment: preconditions ===\n");
++
++	ret = wcd9320_check_health(wcd, "precondition");
++	if (ret)
++		return ret;
++
++	{
++		unsigned int f, t, st, bg, b1, b2;
++
++		if (!regmap_read(wcd->regmap, WCD9320_A_RC_OSC_FREQ, &f) &&
++		    !regmap_read(wcd->regmap, WCD9320_A_RC_OSC_TEST, &t) &&
++		    !regmap_read(wcd->regmap, WCD9320_A_RC_OSC_STATUS, &st) &&
++		    !regmap_read(wcd->regmap, WCD9320_A_BIAS_CENTRAL_BG_CTL, &bg) &&
++		    !regmap_read(wcd->regmap, WCD9320_A_CLK_BUFF_EN1, &b1) &&
++		    !regmap_read(wcd->regmap, WCD9320_A_CLK_BUFF_EN2, &b2))
++			dev_info(dev,
++				 "precondition: RC_OSC freq=%02x test=%02x status=%02x | BG_CTL=%02x CLK_BUFF_EN1=%02x EN2=%02x | TLMM72=%d\n",
++				 f, t, st, bg, b1, b2,
++				 wcd9320_raw_level(wcd));
++	}
++
++	ret = wcd9320_snapshot_cdc(wcd, wcd->cdc_before);
++	if (ret)
++		return ret;
++	wcd->have_before = true;
++	wcd->nz_before = wcd9320_count_nonzero(wcd->cdc_before);
++	dev_info(dev,
++		 "precondition: sentinel 0x%03x-0x%03x, %u of %u registers non-zero\n",
++		 WCD9320_CDC_FIRST, WCD9320_CDC_LAST,
++		 wcd->nz_before, WCD9320_CDC_COUNT);
++
++	dev_info(dev, "=== applying the RCO clock sequence ===\n");
++	ret = wcd9320_run_sequence(wcd, wcd9320_rco_wake,
++				   ARRAY_SIZE(wcd9320_rco_wake), "rco-wake");
++	if (ret)
++		return ret;
++
++	/* The final step's delay has already elapsed inside run_sequence. */
++	ret = wcd9320_snapshot_cdc(wcd, wcd->cdc_after);
++	if (ret)
++		return ret;
++	wcd->have_after = true;
++	wcd->nz_after = wcd9320_count_nonzero(wcd->cdc_after);
++
++	dev_info(dev,
++		 "=== result: sentinel non-zero %u -> %u of %u ===\n",
++		 wcd->nz_before, wcd->nz_after, WCD9320_CDC_COUNT);
++
++	return wcd9320_check_health(wcd, "post-wake");
++}
++
++static int wcd9320_rco_sleep_run(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	dev_info(dev, "=== applying the documented inverse sequence ===\n");
++	ret = wcd9320_run_sequence(wcd, wcd9320_rco_sleep,
++				   ARRAY_SIZE(wcd9320_rco_sleep), "rco-sleep");
++	if (ret)
++		return ret;
++
++	ret = wcd9320_snapshot_cdc(wcd, wcd->cdc_teardown);
++	if (ret)
++		return ret;
++	wcd->have_teardown = true;
++	wcd->nz_teardown = wcd9320_count_nonzero(wcd->cdc_teardown);
++
++	/*
++	 * Do NOT treat "still accessible" as a failure. The documented inverse
++	 * never clears 0x311, so downstream leaves the CDC clock gate set.
++	 */
++	dev_info(dev,
++		 "=== teardown: sentinel non-zero %u -> %u -> %u of %u (%s) ===\n",
++		 wcd->nz_before, wcd->nz_after, wcd->nz_teardown,
++		 WCD9320_CDC_COUNT,
++		 wcd->nz_teardown == 0 ? "returned dark" :
++		 wcd->nz_teardown == wcd->nz_after ? "remains accessible" :
++		 "partially changed");
++
++	return wcd9320_check_health(wcd, "post-teardown");
++}
++
++/* ---------------------------------------------------------------- sysfs -- */
++
++static ssize_t rco_wake_show(struct device *dev,
++			     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	static const char * const names[] = {
++		[WCD9320_WAKE_IDLE]   = "idle",
++		[WCD9320_WAKE_ACTIVE] = "active",
++		[WCD9320_WAKE_FAILED] = "failed",
++	};
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	return sysfs_emit(buf,
++			  "state=%s attempts=%u failed_step=%d last_error=%d\n"
++			  "sentinel_range=0x%03x-0x%03x count=%u\n"
++			  "nonzero_before=%u nonzero_after=%u nonzero_teardown=%u\n"
++			  "have_before=%u have_after=%u have_teardown=%u\n",
++			  names[wcd->wake_state], wcd->wake_attempts,
++			  wcd->wake_failed_step, wcd->wake_last_error,
++			  WCD9320_CDC_FIRST, WCD9320_CDC_LAST,
++			  WCD9320_CDC_COUNT,
++			  wcd->nz_before, wcd->nz_after, wcd->nz_teardown,
++			  wcd->have_before, wcd->have_after, wcd->have_teardown);
++}
++
++static ssize_t rco_wake_store(struct device *dev,
++			      struct device_attribute *attr,
++			      const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->wake_lock);
++
++	if (sysfs_streq(buf, "wake") || sysfs_streq(buf, "1")) {
++		/*
++		 * Refuse a second activation unless the first was cleanly
++		 * reversed. Re-running over an already-active or half-failed
++		 * clock block would produce a result nobody could interpret.
++		 */
++		if (wcd->wake_state == WCD9320_WAKE_ACTIVE) {
++			dev_warn(dev, "rco_wake: already active; reverse it first\n");
++			ret = -EBUSY;
++			goto out;
++		}
++		if (wcd->wake_state == WCD9320_WAKE_FAILED) {
++			dev_warn(dev,
++				 "rco_wake: a previous attempt aborted at step %d; reboot before retrying\n",
++				 wcd->wake_failed_step);
++			ret = -EPERM;
++			goto out;
++		}
++		wcd->wake_attempts++;
++		ret = wcd9320_rco_wake_run(wcd);
++		wcd->wake_state = ret ? WCD9320_WAKE_FAILED
++				      : WCD9320_WAKE_ACTIVE;
++	} else if (sysfs_streq(buf, "sleep") || sysfs_streq(buf, "0")) {
++		if (wcd->wake_state != WCD9320_WAKE_ACTIVE) {
++			dev_warn(dev, "rco_wake: not active; nothing to reverse\n");
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = wcd9320_rco_sleep_run(wcd);
++		wcd->wake_state = ret ? WCD9320_WAKE_FAILED
++				      : WCD9320_WAKE_IDLE;
++	} else {
++		ret = -EINVAL;
++	}
++
++out:
++	mutex_unlock(&wcd->wake_lock);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(rco_wake);
++
++static ssize_t wcd9320_emit_dump(char *buf, const u8 *d, bool have)
++{
++	int len = 0;
++	unsigned int i;
++
++	if (!have)
++		return sysfs_emit(buf, "not captured\n");
++
++	for (i = 0; i < WCD9320_CDC_COUNT; i++) {
++		len += sysfs_emit_at(buf, len, "%02x", d[i]);
++		if ((i & 31) == 31)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	if (WCD9320_CDC_COUNT & 31)
++		len += sysfs_emit_at(buf, len, "\n");
++	return len;
++}
++
++static ssize_t sentinel_before_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump(buf, wcd->cdc_before, wcd->have_before);
++}
++static DEVICE_ATTR_RO(sentinel_before);
++
++static ssize_t sentinel_after_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump(buf, wcd->cdc_after, wcd->have_after);
++}
++static DEVICE_ATTR_RO(sentinel_after);
++
++static ssize_t sentinel_teardown_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump(buf, wcd->cdc_teardown, wcd->have_teardown);
++}
++static DEVICE_ATTR_RO(sentinel_teardown);
++
++static ssize_t irq_observe_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: no parent irq\n");
++
++	return sysfs_emit(buf,
++			  "irq=%d trigger=0x%x requested=%u raw_at_setup=%d raw_last=%d\n"
++			  "snap_mode=%02x snap_status=%02x %02x %02x %02x snap_mask=%02x %02x %02x %02x snap_level=%02x %02x %02x\n"
++			  "mask_readback=%02x %02x %02x %02x last_status=%02x %02x %02x %02x\n"
++			  "irq_count=%u irq_spurious=%u irq_acked=%u\n"
++			  "samples=%u/%u running=%u pad_high_samples=%u pending_samples=%u\n",
++			  wcd->irq, wcd->trigger_type, wcd->irq_requested,
++			  wcd->raw_level_at_setup, wcd->raw_level_last,
++			  wcd->snap_mode,
++			  wcd->snap_status[0], wcd->snap_status[1],
++			  wcd->snap_status[2], wcd->snap_status[3],
++			  wcd->snap_mask[0], wcd->snap_mask[1],
++			  wcd->snap_mask[2], wcd->snap_mask[3],
++			  wcd->snap_level[0], wcd->snap_level[1],
++			  wcd->snap_level[2],
++			  wcd->mask_readback[0], wcd->mask_readback[1],
++			  wcd->mask_readback[2], wcd->mask_readback[3],
++			  wcd->last_status[0], wcd->last_status[1],
++			  wcd->last_status[2], wcd->last_status[3],
++			  wcd->irq_count, wcd->irq_spurious, wcd->irq_acked,
++			  wcd->sample_count, WCD9320_SAMPLE_TOTAL,
++			  wcd->sampler_running, wcd->sample_high_seen,
++			  wcd->sample_pending_seen);
++}
++static DEVICE_ATTR_RO(irq_observe);
++
++static ssize_t identity_show(struct device *dev,
++			     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf,
++				  "interface function: no chip id (laddr 0x%02x up %u down %u)\n",
++				  wcd->sdev->laddr, wcd->up_count, wcd->down_count);
++
++	return sysfs_emit(buf,
++			  "major 0x%04x minor 0x%04x version 0x%02x laddr 0x%02x up %u down %u\n",
++			  wcd->id_major, wcd->id_minor, wcd->id_version,
++			  wcd->sdev->laddr, wcd->up_count, wcd->down_count);
++}
++static DEVICE_ATTR_RO(identity);
++
++/*
++ * Evidence for the bring-up acceptance test. On the adoption path the reset
++ * and supply counters must all read zero: the driver must not have touched
++ * hardware the bus was already using.
++ */
++static ssize_t bringup_show(struct device *dev,
++			    struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf,
++			  "function=%s path=%s online=%u adopted=%u power_owned=%u reset_transitions=%u supply_enables=%u supply_disables=%u identity_reads=%u identity_failures=%u stale_bus_state=%u\n",
++			  wcd->is_ifd ? "ifd" : "pgd",
++			  wcd->adopted ? "adopted" : "fresh",
++			  wcd->online, wcd->adopted, wcd->power_owned,
++			  wcd->reset_transitions, wcd->supply_enables,
++			  wcd->supply_disables, wcd->identity_reads,
++			  wcd->identity_failures, wcd->stale_bus_state_detected);
++}
++static DEVICE_ATTR_RO(bringup);
++
++static struct attribute *wcd9320_attrs[] = {
++	&dev_attr_identity.attr,
++	&dev_attr_bringup.attr,
++	&dev_attr_irq_observe.attr,
++	&dev_attr_rco_wake.attr,
++	&dev_attr_sentinel_before.attr,
++	&dev_attr_sentinel_after.attr,
++	&dev_attr_sentinel_teardown.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(wcd9320);
++
++/* ---------------------------------------------------------------- probe -- */
++
++static int wcd9320_probe(struct slim_device *sdev)
++{
++	struct device *dev = &sdev->dev;
++	struct wcd9320 *wcd;
++	bool adopt;
++	int i, ret;
++
++	wcd = devm_kzalloc(dev, sizeof(*wcd), GFP_KERNEL);
++	if (!wcd)
++		return -ENOMEM;
++
++	wcd->sdev = sdev;
++	mutex_init(&wcd->state_lock);
++	mutex_init(&wcd->wake_lock);
++	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
++	dev_set_drvdata(dev, wcd);
++
++	/*
++	 * Two SLIMbus functions of one physical codec. dev_index 1 is the
++	 * control function carrying the chip id and codec registers;
++	 * dev_index 0 is the interface function carrying SLIMbus port and
++	 * channel configuration.
++	 *
++	 * The interface function takes no regulators and no reset descriptor
++	 * at all, so it cannot power or reset the codec even by mistake. The
++	 * control function stays the sole power owner.
++	 */
++	wcd->is_ifd = (sdev->e_addr.dev_index == 0);
++	if (wcd->is_ifd) {
++		wcd->regmap = devm_regmap_init_slimbus(sdev,
++						       &wcd9320_regmap_config);
++		if (IS_ERR(wcd->regmap))
++			return dev_err_probe(dev, PTR_ERR(wcd->regmap),
++					     "failed to init interface regmap\n");
++		dev_info(dev,
++			 "interface function: no power or reset taken, waiting for enumeration\n");
++		return 0;
++	}
++
++	/*
++	 * Decide before touching anything. If the core already enumerated this
++	 * device then the bus is using it, and probe must be non-destructive:
++	 * no reset transition, no supply votes.
++	 */
++	adopt = sdev->is_laddr_valid && sdev->status == SLIM_DEVICE_STATUS_UP;
++
++	for (i = 0; i < WCD9320_NUM_SUPPLIES; i++)
++		wcd->supplies[i].supply = wcd9320_supplies[i];
++
++	/* Handles only -- this does not enable anything. */
++	ret = devm_regulator_bulk_get(dev, WCD9320_NUM_SUPPLIES, wcd->supplies);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get supplies\n");
++
++	/*
++	 * GPIOD_ASIS on the adoption path: acquiring the descriptor must not
++	 * drive the line. GPIOD_OUT_HIGH with GPIO_ACTIVE_LOW in DT means
++	 * asserted, which is correct only when this driver is bringing the
++	 * codec up itself.
++	 */
++	wcd->reset = devm_gpiod_get(dev, "reset",
++				    adopt ? GPIOD_ASIS : GPIOD_OUT_HIGH);
++	if (IS_ERR(wcd->reset))
++		return dev_err_probe(dev, PTR_ERR(wcd->reset),
++				     "failed to get reset gpio\n");
++
++	/*
++	 * Parent interrupt line. Both properties describe TLMM 72:
++	 *
++	 *   interrupts-extended  the trigger type measured from the Lumia's own
++	 *                        DSDT, GpioInt(Edge, ActiveHigh, PullDown) on
++	 *                        pin 0x48. Note downstream hammerhead instead
++	 *                        requests this line as IRQF_TRIGGER_HIGH.
++	 *   irq-gpios            the same pad as a readable input, so the raw
++	 *                        level can be sampled.
++	 *
++	 * The raw level is what makes a quiet result meaningful. Under a rising
++	 * edge request, "no interrupt" cannot by itself distinguish an idle
++	 * line from a codec holding the line high whose transition was missed.
++	 * Both are therefore optional and neither is fatal: without them this
++	 * driver simply behaves as it did before.
++	 */
++	wcd->irq = of_irq_get(dev->of_node, 0);
++	if (wcd->irq == -EPROBE_DEFER)
++		return wcd->irq;
++	if (wcd->irq < 0) {
++		dev_info(dev, "no parent interrupt in DT (%d)\n", wcd->irq);
++		wcd->irq = 0;
++	}
++
++	wcd->irq_gpio = devm_gpiod_get_optional(dev, "irq", GPIOD_IN);
++	if (IS_ERR(wcd->irq_gpio)) {
++		dev_warn(dev, "no readable irq pad (%pe); raw level unavailable\n",
++			 wcd->irq_gpio);
++		wcd->irq_gpio = NULL;
++	}
++
++	/*
++	 * Created once and kept. regmap rides on this slim_device, which
++	 * persists across absence, and slim_read() picks up sdev->laddr at
++	 * call time.
++	 */
++	wcd->regmap = devm_regmap_init_slimbus(sdev, &wcd9320_regmap_config);
++	if (IS_ERR(wcd->regmap))
++		return dev_err_probe(dev, PTR_ERR(wcd->regmap),
++				     "failed to init regmap\n");
++
++	/* Registered before any power is taken, so every later exit unwinds. */
++	ret = devm_add_action_or_reset(dev, wcd9320_power_release, wcd);
++	if (ret)
++		return ret;
++
++	if (adopt) {
++		dev_info(dev,
++			 "bus reports enumerated (laddr 0x%02x); verifying before adopting\n",
++			 sdev->laddr);
++
++		if (!wcd9320_online(wcd)) {
++			wcd->adopted = true;
++			dev_info(dev,
++				 "late adoption: codec responded, no power or reset touched\n");
++			return 0;
++		}
++
++		/*
++		 * The cached state was stale: the core still calls this device UP
++		 * but nothing answers. Nothing client-side can tell the remote
++		 * manager to forget its assignment, so all this can do is take
++		 * ownership, bring the part up and try once more -- honestly, and
++		 * without looping.
++		 */
++		wcd->stale_bus_state_detected++;
++		dev_warn(dev,
++			 "stale bus state: reported UP but unresponsive; falling back to fresh bring-up\n");
++
++		ret = gpiod_direction_output(wcd->reset, 1);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to take the reset line\n");
++		wcd->reset_transitions++;
++	}
++
++	ret = wcd9320_power_up(wcd);
++	if (ret)
++		return ret;
++
++	if (adopt) {
++		/* Recovery attempt: the codec should now answer at the address
++		 * the manager still holds for it. */
++		if (wcd9320_online(wcd))
++			dev_err(dev,
++				"recovery failed -- the remote manager's assignment cannot be resynchronised from here; a fresh boot or controller recovery is required\n");
++		else
++			dev_info(dev, "recovered after fresh bring-up\n");
++	} else {
++		dev_info(dev, "fresh bring-up: waiting for enumeration\n");
++	}
++
++	return 0;
++}
++
++static void wcd9320_remove(struct slim_device *sdev)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(&sdev->dev);
++
++	dev_info(&sdev->dev, "removing (%s path, power_owned=%u)\n",
++		 wcd && wcd->adopted ? "adopted" : "fresh",
++		 wcd ? wcd->power_owned : 0);
++}
++
++static const struct slim_device_id wcd9320_slim_id[] = {
++	{ 0x217, 0x0a0, 0x1, 0x0 },	/* control function   (chip id, codec regs) */
++	{ 0x217, 0x0a0, 0x0, 0x0 },	/* interface function (SLIMbus ports)      */
++	{}
++};
++MODULE_DEVICE_TABLE(slim, wcd9320_slim_id);
++
++static const struct of_device_id wcd9320_of_match[] = {
++	{ .compatible = "slim217,a0" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, wcd9320_of_match);
++
++static struct slim_driver wcd9320_driver = {
++	.driver = {
++		.name = "wcd9320",
++		.of_match_table = wcd9320_of_match,
++		.dev_groups = wcd9320_groups,
++	},
++	.probe = wcd9320_probe,
++	.remove = wcd9320_remove,
++	.device_status = wcd9320_device_status,
++	.id_table = wcd9320_slim_id,
++};
++module_slim_driver(wcd9320_driver);
++
++MODULE_VERSION("rco-wake-rc3");
++MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
++MODULE_LICENSE("GPL");

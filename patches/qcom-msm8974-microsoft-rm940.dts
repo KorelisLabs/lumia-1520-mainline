@@ -1,0 +1,424 @@
+/dts-v1/;
+#include "qcom-msm8974-microsoft-common.dtsi"
+/ {
+	model = "Nokia Lumia 1520";
+	compatible = "microsoft,rm940", "qcom,msm8974";
+
+	aliases {
+		display0 = &framebuffer0;
+	};
+
+	chosen {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		stdout-path = "display0";
+
+		framebuffer0: framebuffer@400000 {
+			compatible = "simple-framebuffer";
+			reg = <0x00400000 0x00800000>;
+			width = <1080>;
+			height = <1920>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+			clocks = <&mmcc MDSS_AHB_CLK>,
+				 <&mmcc MDSS_AXI_CLK>,
+				 <&mmcc MDSS_BYTE0_CLK>,
+				 <&mmcc MDSS_MDP_CLK>,
+				 <&mmcc MDSS_PCLK0_CLK>,
+				 <&mmcc MDSS_VSYNC_CLK>;
+			power-domains = <&mmcc MDSS_GDSC>;
+		};
+	};
+};
+
+/* microSD slot (1520-specific; the 930 has none). Card-detect GPIO still
+ * unknown -> broken-cd polls for the card. Supplies TODO (WP firmware
+ * leaves the SD rail up; clk/pd_ignore_unused keeps it that way). */
+&sdhc_2 {
+	status = "okay";
+	broken-cd;
+};
+
+/* Stage-2 probing: enable every BLSP I2C bus that has default pinctrl in the
+ * SoC dtsi, so the touch controller (and sensors) can be located live with
+ * i2cdetect. Trim to the buses actually used once mapped. */
+&blsp1_i2c1 { status = "okay"; };
+&blsp1_i2c2 { status = "okay"; };
+&blsp1_i2c3 { status = "okay"; };
+&blsp1_i2c6 { status = "okay"; };
+&blsp2_i2c2 { status = "okay"; };
+&blsp2_i2c5 { status = "okay"; };
+&blsp2_i2c6 { status = "okay"; };
+
+/* Touchscreen -- wiring extracted from the stock WP ACPI DSDT (PLAT
+ * partition, Device TSC1 "NOKIA_TOUCH"):
+ *   bus \_SB.I2C2 = 0xF9924000 = blsp1_i2c2, addr 0x4B, 400 kHz
+ *   GpioInt: tlmm 61, edge active-low, pull-up
+ *   GpioIo:  tlmm 60 (enable/reset -- hogged high below)
+ * Controller family guess: Synaptics RMI4 (Lumia-era standard at 0x4b);
+ * if probe rejects, switch compatible to atmel,maxtouch. */
+&blsp1_i2c2 {
+	clock-frequency = <400000>;
+
+	touchscreen@4b {
+		compatible = "syna,rmi4-i2c";
+		reg = <0x4b>;
+		vdd-supply = <&pm8941_l22>;
+		vio-supply = <&pm8941_l6>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <61 2>;	/* IRQ_TYPE_EDGE_FALLING */
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		rmi4-f01@1 {
+			reg = <0x1>;
+			syna,nosleep-mode = <1>;
+		};
+
+		rmi4-f11@11 {
+			reg = <0x11>;
+			syna,sensor-type = <1>;
+		};
+
+		rmi4-f12@12 {
+			reg = <0x12>;
+			syna,sensor-type = <1>;
+		};
+	};
+};
+
+&tlmm {
+	touch-enable-hog {
+		gpio-hog;
+		gpios = <60 0>;		/* GPIO_ACTIVE_HIGH */
+		output-high;
+		line-name = "touch-enable";
+	};
+};
+
+/* Buttons -- wiring from the stock ACPI DSDT (Device BTN0, PNP0C40 array),
+ * independently matching the Lumia 930 out-of-tree port:
+ *   volume-up = pm8941 gpio5, camera focus = gpio4, shutter = gpio3
+ *   (ACPI: edge/both, pull-up => active-low), volume-down = PON RESIN. */
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gpio_keys_pin_a>;
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm8941_gpios 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+		};
+
+		key-camera-focus {
+			label = "Camera Focus";
+			gpios = <&pm8941_gpios 4 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_CAMERA_FOCUS>;
+			debounce-interval = <15>;
+		};
+
+		key-camera-snapshot {
+			label = "Camera Snapshot";
+			gpios = <&pm8941_gpios 3 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_CAMERA>;
+			debounce-interval = <15>;
+		};
+	};
+};
+
+&pm8941_gpios {
+	gpio_keys_pin_a: gpio-keys-active-state {
+		pins = "gpio3", "gpio4", "gpio5";
+		function = "normal";
+		bias-pull-up;
+		power-source = <PM8941_GPIO_S3>;
+	};
+};
+
+&pm8941_resin {
+	status = "okay";
+	linux,code = <KEY_VOLUMEDOWN>;
+};
+
+/*
+ * WCNSS/Pronto is intentionally disabled on RM-940.
+ *
+ * The firmware loads and PAS auth-and-reset returns success, but the
+ * remote processor never signals ready and qcom-wcnss-pil times out.
+ * Allowing wcn36xx to probe after the failed startup has caused full
+ * device resets.
+ *
+ * Keep disabled until the PAS/ready path is further instrumented or
+ * an alternative remoteproc startup method is implemented.
+ * (Experimental enabled config: branch research/pronto-pas-timeout.)
+ */
+&pronto {
+	status = "disabled";
+};
+
+/*
+ * PM8941 SMBB charger -- battery presence/health, charge status and
+ * USB/DC power detection (/sys/class/power_supply/smbb-*).
+ *
+ * History: enabling this used to kill the USB gadget a couple of minutes
+ * into boot, because the charger also drives the USB "usbin"/VBUS
+ * detection that shares the connector with our USB-network/SSH link, and
+ * the HS PHY could not be powered back up. That turned out to be the
+ * l24/l6 regulator-constraint bug (see the PHY note in the common dtsi):
+ * phy_power_on() was failing with -EINVAL, so the PHY only ever ran on
+ * whatever state the Windows firmware left behind. With that fixed the
+ * PHY re-powers cleanly and SMBB and USB coexist.
+ *
+ * Battery VOLTAGE and TEMPERATURE do not need SMBB at all -- the VADC
+ * provides them; see tools/batstat.py.
+ */
+&smbb {
+	/*
+	 * Charge parameters for the Nokia BV-4BW (3400 mAh, 3.8 V nominal).
+	 *
+	 * DELIBERATELY CONSERVATIVE. A 3.8 V-nominal cell is usually a 4.35 V
+	 * high-voltage type (mainline Fairphone 2, same PM8941, uses 4.35 V),
+	 * but this pack's rating is unconfirmed and the hardware is over a
+	 * decade old. The risk is asymmetric: charging a 4.35 V cell to only
+	 * 4.2 V merely loses capacity, while charging a 4.2 V cell to 4.35 V
+	 * is a thermal hazard. So we target 4.15 V with a 4.2 V hard clamp.
+	 *
+	 * Current is 1 A (~0.3C) rather than the 1.5 A the hardware allows.
+	 * usb-charge-current-limit is the USB-spec 500 mA for a configured
+	 * device; without it the driver sits at the 100 mA default and the
+	 * pack never actually charges.
+	 *
+	 * Raise these only against a real BV-4BW datasheet.
+	 */
+	usb-charge-current-limit = <500000>;
+	qcom,fast-charge-safe-current = <1500000>;
+	qcom,fast-charge-current-limit = <1000000>;
+	qcom,fast-charge-safe-voltage = <4200000>;
+	qcom,fast-charge-high-threshold-voltage = <4150000>;
+	qcom,fast-charge-low-threshold-voltage = <3400000>;
+	qcom,auto-recharge-threshold-voltage = <4000000>;
+	qcom,minimum-input-voltage = <4450000>;
+
+	status = "okay";
+};
+
+/*
+ * Backlight -- PM8941 WLED (WLED3, 3 strings). This drives the 1520's IPS
+ * LCD backlight: brightness 0 = backlight OFF (verified: physical panel
+ * tracks brightness, 30 off/on cycles clean, ~24mV VBAT rise when off).
+ * Creates /sys/class/backlight/backlight (max 4095). The "IRQ ovp not found"
+ * dmesg warning is benign (over-voltage-protection interrupt is optional and
+ * not wired in the base pm8941.dtsi node).
+ * This is the only working display power control on the simpledrm setup --
+ * there is no DSI panel driver, so DRM DPMS does not power the panel.
+ */
+&pm8941_wled {
+	status = "okay";
+	default-brightness = <2048>;
+};
+
+/*
+ * Ambient-light / proximity sensor: APDS-9930 on blsp1_i2c3 (i2c-2) @ 0x39,
+ * driven by the mainline tsl2772 driver.
+ *
+ * Identified from its ID register -- the APDS-9930 is addressed with the
+ * command bit set, so register 0x12 is read as 0x92, and it returns 0x39.
+ * Both channels verified against physical stimulus: proximity 270 -> 1023
+ * when covered, and ch0 66 -> 4830 under a lamp.
+ *
+ * Two caveats. The interrupt line has not been identified, so this is
+ * polled only; threshold events would need it. And the default gain of 1
+ * reads zero through this phone's dark glass -- userspace should raise
+ * in_intensity0_calibscale (8 works well indoors). in_illuminance0_input
+ * still reports 0 because the lux table has not been calibrated for this
+ * device; the raw intensity channels are the usable ones for now.
+ */
+&blsp1_i2c3 {
+	light-sensor@39 {
+		compatible = "amstaos,apds9930";
+		reg = <0x39>;
+	};
+};
+
+/*
+ * ------------------------------------------------------------------
+ * AUDIO NGD DISCOVERY PROBE (experimental)
+ * ------------------------------------------------------------------
+ *
+ * MSM8974's SLIMbus is mastered by the ADSP; the APPS side is only an NGD
+ * satellite. Nothing here programs the LPASS clock tree -- a live register
+ * read on this device showed SLIMBUS_CMD_RCGR has never been configured by
+ * the APPS side, and downstream maps the controller's core_clk to a dummy.
+ *
+ * Deliberately no codec child node: the point of this image is to find out
+ * whether the bus enumerates at all, and adding the WCD9320 would mix an
+ * untested codec into an untested transport.
+ */
+
+/* The Q6 audio DSP. Required: it owns the SLIMbus framer and publishes the
+ * SLIMbus QMI service the NGD driver talks to. Firmware must be extracted
+ * from the stock Windows install (see docs/trustzone-quirks.md). */
+&remoteproc_adsp {
+	status = "okay";
+};
+
+&soc {
+	/*
+	 * SLIMbus BAM. qcom,controlled-remotely because the ADSP initialises
+	 * the BAM -- the APPS side must not reset it.
+	 *
+	 * IRQ 164 and the 0x20000 window are confirmed against this device's
+	 * own ACPI tables (\_SB.BAM6, GSIV 0xC4 = SPI 164). NOTE: the DSDT
+	 * declares that interrupt Edge-triggered, but every in-tree msm8974
+	 * BAM and msm8996's slimbam use LEVEL_HIGH; following the in-tree
+	 * convention here. If BAM init misbehaves this is the first thing to
+	 * flip.
+	 */
+	slimbam: dma-controller@fe104000 {
+		compatible = "qcom,bam-v1.4.0";
+		qcom,controlled-remotely;
+		reg = <0xfe104000 0x20000>;
+		num-channels = <31>;
+		interrupts = <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <2>;
+	};
+
+	/*
+	 * SLIMbus NGD satellite controller.
+	 *
+	 * Window size 0x2c000 is what this device's DSDT declares (\_SB.ADSP
+	 * .SLM1) -- downstream hammerhead says 0x35000, but msm8996's
+	 * slim-ngd, which is the same IP family, also uses 0x2c000. IRQ 163
+	 * level-high matches both the DSDT and the driver's IRQF_TRIGGER_HIGH.
+	 *
+	 * BAM pipes 3 (rx) and 4 (tx) follow msm8996; downstream uses the SPS
+	 * API and does not express them as DT channel numbers, so this is the
+	 * least-assumption choice and an explicit thing to re-check if DMA
+	 * setup fails.
+	 */
+	slim_msm: slim-ngd@fe12f000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0xfe12f000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* ngd->base = ctrl->base + id * 0x1000, matching downstream
+		 * NGD_BASE_V2(1) = 0x1000 for cell-index 1. */
+		ngd@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			/*
+			 * WCD9320 "Taiko" audio codec -- ENUMERATION PROBE ONLY.
+			 *
+			 * This node exists so the SLIMbus core can create a
+			 * device with the right enumeration address and bind a
+			 * driver that can power the part and release its reset.
+			 * The node existing is NOT evidence the codec is
+			 * present; only a device_status(UP) callback after the
+			 * manager assigns a logical address proves that.
+			 *
+			 * of_register_slim_devices() requires the compatible in
+			 * "slim<manf_id>,<prod_code>" form and reg as
+			 * <device_index instance>. manf 0x217, prod 0x0a0,
+			 * dev_index 1, instance 0 reproduces the downstream
+			 * elemental address 00 01 A0 00 17 02 exactly.
+			 *
+			 * The codec also exposes an interface device (IFD) at
+			 * 00 00 A0 00 17 02 (same manf/prod, dev_index 0). It is
+			 * deliberately not described yet -- one device at a time.
+			 *
+			 * Supplies and reset are taken from the downstream
+			 * hammerhead taiko_codec node (same SoC, same codec).
+			 * All three rails already exist at exactly the required
+			 * voltages and are always-on, so no voltage operation is
+			 * requested -- see trustzone-quirks.md for why fixed
+			 * regulator constraints matter on this device.
+			 *
+			 * No MBHC interrupt, no DAIs, no routing, no sound card.
+			 */
+			/*
+			 * Interface function of the SAME physical codec.
+			 * dev_index 0 rather than 1, so EA 00 00 A0 00 17 02.
+			 *
+			 * This is where SLIMbus port and channel configuration
+			 * is written -- downstream routes
+			 * SB_PGD_RX/TX_PORT_MULTI_CHANNEL and
+			 * SB_PGD_PORT_CFG_BYTE_ADDR through it, despite the
+			 * "PGD" in those macro names. Audio transport cannot be
+			 * configured without it.
+			 *
+			 * Deliberately no supplies and no reset-gpios: this
+			 * function must never power or reset the codec. The
+			 * control function (codec@1,0) is the sole power owner.
+			 */
+			wcd9320_ifd: codec@0,0 {
+				compatible = "slim217,a0";
+				reg = <0 0>;
+			};
+
+			wcd9320: codec@1,0 {
+				compatible = "slim217,a0";
+				reg = <1 0>;
+
+				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
+				 * driven low 20 ms then high 20 ms -- active low. */
+				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * Parent interrupt, TLMM 72. The trigger type is
+				 * the Lumia's own, read out of its DSDT:
+				 *
+				 *   Device (MBHC)   \_SB.ADSP.SLM1.ADCM.AUDD.MBHC
+				 *     GpioInt (Edge, ActiveHigh, Exclusive,
+				 *              PullDown, ..., "\\_SB.GIO0", ...)
+				 *       { 0x0048 }        -- pin 72
+				 *
+				 * Note this disagrees with downstream hammerhead,
+				 * which requests the same line as IRQF_TRIGGER_HIGH.
+				 * The measured value is used here on purpose; the
+				 * disagreement is one of the things the first image
+				 * is meant to detect.
+				 *
+				 * Whether this pin is the codec's shared top-level
+				 * interrupt output or a narrower headset-only line
+				 * is NOT established. The DSDT labels it MBHC and
+				 * marks it Exclusive, but it is also the only
+				 * audio-related GpioInt in the whole table and AUDD
+				 * itself declares none -- an argument from absence
+				 * of alternatives, not proof.
+				 *
+				 * irq-gpios names the same pad so the driver can
+				 * read its raw level. Under a rising-edge request,
+				 * "no interrupt arrived" is otherwise ambiguous
+				 * between an idle line and a missed level assertion.
+				 */
+				interrupts-extended = <&tlmm 72 IRQ_TYPE_EDGE_RISING>;
+				irq-gpios = <&tlmm 72 GPIO_ACTIVE_HIGH>;
+
+				/* downstream qcom,cdc-static-supplies, in order */
+				vdd-buck-supply = <&pm8941_s2>;    /* 2.15 V  */
+				vdd-tx-h-supply = <&pm8941_s3>;    /* 1.8 V   */
+				vdd-rx-h-supply = <&pm8941_s3>;    /* 1.8 V   */
+				vddpx-1-supply = <&pm8941_s3>;     /* 1.8 V   */
+				vdd-a-1p2v-supply = <&pm8941_l1>;  /* 1.225 V */
+				vddcx-1-supply = <&pm8941_l1>;     /* 1.225 V */
+				vddcx-2-supply = <&pm8941_l1>;     /* 1.225 V */
+			};
+		};
+	};
+};
