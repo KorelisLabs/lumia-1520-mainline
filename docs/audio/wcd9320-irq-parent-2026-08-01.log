@@ -1,0 +1,119 @@
+WCD9320 parent interrupt line, first hardware pass -- Nokia Lumia 1520 (RM-940)
+==============================================================================
+2026-08-01. Kernel 6.16.12 r125, module wcd9320 irq-observe-rc1.
+
+TLMM 72 requested with the trigger type measured from the Lumia's own DSDT
+(rising edge). All usable codec sources explicitly masked. No CDC-core write,
+no MCLK write, no analog path touched. The only registers written anywhere
+were INTR_MASK0-3.
+
+Analysis: docs/audio/wcd9320-irq-topology.md
+
+
+### boot and binding ###
+
+  module version : irq-observe-rc1
+  bound devices  : 2  (PGD 0xcb, IFD 0xca)
+  identity       : major 0x0102 minor 0x0001 version 0x00
+  bringup        : path=fresh online=1 adopted=0 power_owned=1
+                   reset_transitions=2 supply_enables=1 supply_disables=0
+                   identity_reads=1 identity_failures=0 stale_bus_state=0
+
+
+### driver log ###
+
+  [47.499] fresh bring-up: 7 supplies enabled, reset released
+  [47.505] id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+  [47.513] irq snapshot: raw_level=0 mode=00 status=00 00 00 00
+           mask=ff ff 3f 3f level=01 00 00
+  [47.515] masks written ff ff ff 7f, read back ff ff 3f 7f  MISMATCH
+  [47.556] parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+  [47.556] bounded sampling started: 45 samples over ~30 s, then stop
+  [47.556] control function UP (#1), logical address 0xcb
+  [47.741] interface function UP (#1), logical address 0xca
+  [47.815] sample  1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+  [54.173] sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+  [79.772] sampling complete: 45 samples, pad high in 0, live source in 0,
+           parent irqs 0 (spurious 0, acked 0)
+
+
+### irq_observe, final ###
+
+  irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+  snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+  mask_readback=ff ff 3f 7f last_status=00 00 00 00
+  irq_count=0 irq_spurious=0 irq_acked=0
+  samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+
+### kernel view of the line ###
+
+   87:          0  msmgpio  72 Edge      wcd9320
+
+  The parent is msmgpio 72, edge triggered, zero assertions.
+
+
+### verdict against the interpretation table ###
+
+  raw line low        : yes, at setup and in all 45 samples
+  status clear        : yes, 00 00 00 00 throughout
+  no IRQ              : yes, count 0, spurious 0, acked 0
+  -> "clean idle pass" row
+
+
+### the one deviation: MASK2 ###
+
+  written  ff ff ff 7f
+  read     ff ff 3f 7f
+                 ^^ bits 6-7 of MASK2 did not take
+
+  MASK2 bits 6-7 are IRQ 22 and 23, WCD9XXX_IRQ_RESERVED_0/1. They are
+  read-only zero on this silicon and cannot be masked. 45 samples confirm the
+  corresponding status bits never assert, so there is nothing behind them.
+
+  MASK3 bit 6 -- IRQ 30, VBAT_MONITOR_RELEASE, the one real source left
+  unmasked by the reset state -- DID take: 0x3f became 0x7f. That was the
+  actual safety concern from the topology survey and it is resolved.
+
+  Fixed by writing the achievable value ff ff 3f 7f, so the readback check
+  stays meaningful instead of reporting an expected mismatch forever.
+
+
+### suspend / resume ###
+
+  Two real s2idle cycles:
+    [ 126.148] Restarting tasks: Done / PM: suspend exit
+    [ 661.827] PM: suspend entry (s2idle)
+    [ 673.149] Restarting tasks: Done / PM: suspend exit
+
+  After resume, at uptime 1093 s:
+    identity  major 0x0102 minor 0x0001 laddr 0xcb up 1 down 0   (unchanged)
+    irq line  87: 0 msmgpio 72 Edge wcd9320                      (still zero)
+    masks     0x094=ff 0x095=ff 0x096=3f 0x097=7f                (preserved)
+    status    0x098..0x09b = 00 00 00 00                         (clear)
+    adsp      running
+    slim errors 0, timeouts 0
+
+  The SSH session dies across suspend because the USB gadget network drops.
+  That is expected and is not a fault; uptime confirms no reboot occurred.
+
+
+### nothing else disturbed ###
+
+  slim errors       : 0
+  slim timeouts     : 0
+  adsp              : running
+  ngd               : 1
+  CDC sentinel      : 0x320 = 00 (POR e4) -- still unreachable, as expected
+  0x314             : 00 -- untouched
+
+
+### noted, not caused by this change ###
+
+  [56.9-58.8] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks
+
+  The same stall appeared at the same point in the previous boot, which was
+  running the OLD driver (dual-rc1) with no interrupt code at all. So it is
+  pre-existing and unrelated. It did not distort the sampling window: the
+  fast phase ran 47.8 -> 54.2 s for 20 samples and the slow phase 54.2 ->
+  79.8 s for 25, both essentially on schedule.

@@ -284,6 +284,67 @@ expected status bit, parent IRQ, nested dispatch and clear sequence. On the
 evidence in §4 that source should come from the MBHC block, which is
 reachable now, rather than from anything behind the CDC sentinel.
 
+---
+
+## 9. Result of the first hardware pass — clean idle
+
+Run 2026-08-01, kernel r125, module `irq-observe-rc1`. Full evidence in
+`wcd9320-irq-parent-2026-08-01.log`.
+
+The parent line is **IRQ 87 = `msmgpio 72 Edge`**, and the kernel confirms the
+trigger type as `0x1`, so the DSDT-derived rising-edge configuration landed
+rather than being silently overridden.
+
+| observation | value |
+|---|---|
+| raw pad level at setup | 0 |
+| raw pad level, all 45 samples | 0 (`pad_high_samples=0`) |
+| `INTR_STATUS0-3` throughout | `00 00 00 00` |
+| parent IRQ assertions | 0 |
+| spurious assertions | 0 |
+| acknowledgements written | 0 |
+
+That is the table's **clean idle pass** row: line low, status clear, no
+interrupt. Crucially it is a *positive* result rather than an absence of one —
+the pad was sampled directly 45 times and was low every time, so the
+edge-versus-level ambiguity in §6 is resolved for the idle case. The line is
+genuinely quiet; nothing was missed.
+
+Two real s2idle cycles left identity, logical addresses, mask registers and
+status all unchanged, with the ADSP still running and no SLIMbus errors.
+
+### `MASK2` bits 6–7 cannot be masked
+
+The one deviation. The driver wrote `ff ff ff 7f` and read back `ff ff 3f 7f`:
+bits 6–7 of `MASK2` did not take.
+
+Those bits are IRQ 22 and 23, `WCD9XXX_IRQ_RESERVED_0/1`. They are read-only
+zero on this silicon — there is nothing behind them to mask, and 45 samples
+confirm the matching status bits never assert. Downstream writes `0xff` there
+and never reads back, so it never notices.
+
+**`MASK3` bit 6 did take**: `0x3f` became `0x7f`. That bit is IRQ 30,
+`VBAT_MONITOR_RELEASE` — the one *real* source that §3 identified as unmasked
+out of reset. The safety concern that motivated writing the masks explicitly
+is therefore resolved, and the readback is what proved it.
+
+The driver now writes the achievable value `ff ff 3f 7f`. Writing `0xff` and
+tolerating a permanent mismatch would turn the readback check into noise that
+could hide a genuine fault later.
+
+This also sharpens §3: the reset state leaves four bits unmasked, but only one
+of them is a real source, and only that one is maskable.
+
+### What this does not establish
+
+The nested IRQ controller is not implemented and no source has been unmasked,
+so nothing here shows the codec can *deliver* an interrupt — only that the
+parent line is correctly wired, correctly configured, and electrically idle
+with everything masked. Whether TLMM 72 is the codec's shared output or a
+narrower headset line is still open (§6); a quiet line is consistent with both.
+
+Checkpoint tagged: **`wcd9320-irq-parent-idle-validated`**.
+
 ## 8. `volatile_reg`, from `taiko_volatile()`
 
 Recorded here because it is the same desk pass. `wcd9320.c` supplies a real
