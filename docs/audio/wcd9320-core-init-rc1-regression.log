@@ -1,0 +1,108 @@
+core-init-rc1 regression -- WCD9320 stage split, behaviour-neutral
+==================================================================
+2026-08-01. Kernel 6.16.12 r129, module wcd9320 core-init-rc1.
+
+Purpose: confirm that splitting core release from RCO clocking behind one
+shared executor changed nothing observable. Compared against rco-wake-rc3,
+the last build validated on hardware.
+
+Cold boot (full power-off, not a warm reboot), so this exercised the fresh
+path rather than adoption.
+
+
+### start state -- genuinely clean ###
+
+  precondition: sentinel 0x200-0x3bf, 0 of 448 registers non-zero
+
+  The power-off cleared the core left accessible by the previous rc3 run.
+  Had this read non-zero, the run would have been exercising the adoption
+  path and would not have been comparable.
+
+  identity   major 0x0102 minor 0x0001, laddr 0xcb / IFD 0xca
+  masks      written ff ff 3f 7f, read back ff ff 3f 7f (no mismatch)
+  irq        83 msmgpio 72 Edge, trigger 0x1, count 0
+  samples    45/45, pad high in 0, live source in 0
+  RC_OSC     freq=46 test=0a status=18
+  BG_CTL 50  CLK_BUFF_EN1 04  CLK_BUFF_EN2 02  TLMM72 low
+
+
+### the two stages now run separately ###
+
+  === stage 1: releasing the digital core ===
+  bring-up step 1/4  0x088 LEAKAGE_CTL  old=04 -> 04
+  bring-up step 2/4  0x080 CDC_CTL      old=00 -> 00   (5 ms)
+  bring-up step 3/4  0x080 CDC_CTL      old=00 -> 03
+  bring-up step 4/4  0x088 LEAKAGE_CTL  old=04 -> 03
+  bring-up: all 4 steps applied cleanly
+
+  === stage 2: bandgap and RCO clock block ===
+  rco-wake step 1/15  0x101 old=50 mask=80 want=80 -> d0  OK
+  rco-wake step 2/15  0x101 old=d0 mask=04 want=04 -> d4  OK
+  rco-wake step 3/15  0x101 old=d4 mask=01 want=01 -> d5  OK  (1 ms)
+  rco-wake step 4/15  0x101 old=d5 mask=80 want=00 -> 55  OK
+  rco-wake step 5/15  0x1fa old=46 mask=10 want=00 -> 46  OK
+  rco-wake step 6/15  0x105 old=16 write 0x17      -> 17  OK  (5 us)
+  ... through step 15/15
+
+  The bandgap writes take on the first attempt. In rc1 and rc2 these were
+  exactly the writes that were silently refused, because the core was still
+  in reset. That is the regression this split is meant to keep visible.
+
+  Table sizes: bring-up 4 steps, rco-wake 15. Previously one 19-step table.
+  4 + 15 = 19, and the registers, values, order and delays are unchanged.
+
+
+### result -- identical to rco-wake-rc3 ###
+
+  sentinel non-zero   0 -> 95 of 448        (rc3: 0 -> 95)
+
+  stability, three live re-reads 2 s apart:
+    0x320=e4  0x314=00  0x311=01  0x223=48  0x36b=37   every pass
+    pass 1 vs 2 byte-identical, pass 2 vs 3 byte-identical
+
+
+### teardown -- identical to rco-wake-rc3 ###
+
+  rco-sleep step 1/6  0x109 old=04 mask=04 want=00 -> 00  OK  (50 us)
+  rco-sleep step 2/6  0x109 old=00 mask=02 want=02 -> 02  OK
+  rco-sleep step 3/6  0x108 old=0d mask=05 want=00 -> 08  OK  (50 us)
+  rco-sleep step 4/6  0x105 old=17 mask=01 want=00 -> 16  OK
+  rco-sleep step 5/6  0x1fa old=c6 mask=80 want=00 -> 46  OK
+  rco-sleep step 6/6  0x101 old=55 mask=03 want=00 -> 54  OK  (100 us)
+  rco-sleep: all 6 steps applied cleanly
+
+  sentinel non-zero 0 -> 95 -> 95 of 448 (remains accessible)   (rc3: same)
+
+
+### carried-forward gates, all held ###
+
+  both functions bound            2
+  identity                        0x0102 / 0x0001, unchanged throughout
+  logical addresses               PGD 0xcb, IFD 0xca
+  adsp                            running
+  ngd                             1
+  slim errors / timeouts          0 / 0
+  irq masks / status              ff ff 3f 7f / 00 00 00 00
+  parent irq assertions           0, before and after
+
+
+### one incidental difference, not a regression ###
+
+  The parent IRQ is 83 this boot; it was 87 previously. That is a Linux
+  virtual IRQ number, allocated dynamically at request time. The underlying
+  pin is still msmgpio 72 and the kernel still reports trigger type 0x1.
+
+  Consequence: irq=87 must not be treated as a fixed expectation in any
+  future acceptance check. Assert on the pin and trigger type, not the
+  virtual number.
+
+
+### what this does NOT cover ###
+
+  Still absent by design, and still the next milestone: core_ready, the
+  mutex idempotency guard, three-stage snapshots, automatic initialisation
+  on the fresh path, and the adoption-path sentinel check. The wake here is
+  still triggered manually.
+
+  So this is a behaviour-neutrality regression for the refactor, not
+  wcd9320-core-init-proven.
