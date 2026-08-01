@@ -41,8 +41,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 11:14:42.484954990 -0400
-@@ -0,0 +1,1625 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 13:37:31.309465168 -0400
+@@ -0,0 +1,1812 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -449,11 +449,24 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int wake_attempts;
 +	int wake_failed_step;			/* 1-based; 0 if none      */
 +	int wake_last_error;
-+	u8 cdc_before[WCD9320_CDC_COUNT];
-+	u8 cdc_after[WCD9320_CDC_COUNT];
++	/*
++	 * Three-stage snapshots. Kept separate so the registers that read
++	 * something other than their documented default can be attributed to
++	 * a stage rather than guessed at: as-found, after the core release,
++	 * after clocking. Teardown is a fourth, taken only if reversed.
++	 */
++	u8 cdc_before[WCD9320_CDC_COUNT];		/* as found       */
++	u8 cdc_after_bringup[WCD9320_CDC_COUNT];	/* after stage 1  */
++	u8 cdc_after[WCD9320_CDC_COUNT];		/* after stage 2  */
 +	u8 cdc_teardown[WCD9320_CDC_COUNT];
-+	bool have_before, have_after, have_teardown;
-+	unsigned int nz_before, nz_after, nz_teardown;
++	bool have_before, have_after_bringup, have_after, have_teardown;
++	unsigned int nz_before, nz_after_bringup, nz_after, nz_teardown;
++
++	/* ---- automatic, idempotent core initialisation ---- */
++	bool core_ready;	/* CDC register file is reachable   */
++	bool core_adopted;	/* found ready; this driver wrote nothing */
++	unsigned int core_init_calls;	/* every entry, including no-ops */
++	unsigned int core_init_runs;	/* entries that actually wrote   */
 +};
 +
 +/* ---------------------------------------------------------------- power -- */
@@ -604,6 +617,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static int wcd9320_irq_setup(struct wcd9320 *wcd);
 +
 +/*
++ * Also defined further down, with the CDC-core code, and called from
++ * wcd9320_online() below. Idempotent and self-serialising, so the call site
++ * needs no ordering guarantees of its own.
++ */
++static int wcd9320_core_init(struct wcd9320 *wcd);
++
++/*
 + * Idempotent, and shared by both routes in: a genuine device_status(UP) after
 + * fresh enumeration, and a direct call from probe when the device was already
 + * enumerated before this driver bound. The guard matters because those two
@@ -632,8 +652,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * the identity read has succeeded, so the interrupt block is never
 +	 * touched on a part that is not answering.
 +	 */
-+	if (!ret)
++	if (!ret) {
 +		wcd9320_irq_setup(wcd);
++		/*
++		 * Core initialisation runs here, after the identity read has
++		 * proven the codec answers and after the interrupt block is
++		 * masked. It is idempotent and serialised, so being reached
++		 * from both probe-time reconciliation and a later
++		 * device_status(UP) is harmless.
++		 *
++		 * Its failure is logged but does not fail the codec: the
++		 * transport, identity and register access all remain usable
++		 * without a reachable CDC block, exactly as they were for
++		 * every milestone before this one.
++		 */
++		wcd9320_core_init(wcd);
++	}
 +
 +	return ret;
 +}
@@ -1165,6 +1199,136 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +				    ARRAY_SIZE(wcd9320_rco_wake), "rco-wake");
 +}
 +
++/*
++ * Is the CDC register file actually reachable?
++ *
++ * Not "did the sequence return 0" -- every step can succeed while the block
++ * stays dark, which is precisely what happened before the missing core
++ * release was found. The test is that the register file now answers.
++ *
++ * Two independent conditions, both measured rather than assumed:
++ *   - a substantial fraction of the block reads non-zero. Hardware gives 95
++ *     of 448; the floor is set well below that so a revision difference does
++ *     not fail the check, but far above the 0 that a dark block gives.
++ *   - one named register reads its documented default. 0x320 CDC_CLSH_B1_CTL
++ *     has __POR 0xe4 and read 0x00 in every pre-wake dump.
++ */
++#define WCD9320_CDC_MIN_NONZERO		48
++#define WCD9320_A_CDC_CLSH_B1_CTL	0x320
++#define WCD9320_CDC_CLSH_B1_CTL_POR	0xe4
++
++static int wcd9320_verify_core_accessible(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int canary;
++	int ret;
++
++	ret = regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &canary);
++	if (ret)
++		return dev_err_probe(dev, ret, "core verify: canary read failed\n");
++
++	dev_info(dev,
++		 "core verify: %u/%u non-zero (min %u), canary 0x%03x = %02x (want %02x)\n",
++		 wcd->nz_after, WCD9320_CDC_COUNT, WCD9320_CDC_MIN_NONZERO,
++		 WCD9320_A_CDC_CLSH_B1_CTL, canary, WCD9320_CDC_CLSH_B1_CTL_POR);
++
++	if (wcd->nz_after < WCD9320_CDC_MIN_NONZERO) {
++		dev_err(dev, "core verify: only %u registers non-zero\n",
++			wcd->nz_after);
++		return -EIO;
++	}
++	if (canary != WCD9320_CDC_CLSH_B1_CTL_POR) {
++		dev_err(dev, "core verify: canary reads %02x, expected %02x\n",
++			canary, WCD9320_CDC_CLSH_B1_CTL_POR);
++		return -EIO;
++	}
++	return 0;
++}
++
++/*
++ * The permanent initialisation entry point. Idempotent and serialised, so a
++ * deferred IFD probe, a device_status(UP) and a manual trigger can all call
++ * it without the sequence running twice.
++ *
++ * Decides fresh-versus-adoption by reading the hardware, not by trusting
++ * driver state: if the CDC block already answers, something else already
++ * initialised it and this driver must write nothing at all.
++ */
++static int wcd9320_core_init(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	if (wcd->is_ifd)
++		return 0;
++
++	mutex_lock(&wcd->wake_lock);
++	wcd->core_init_calls++;
++
++	if (wcd->core_ready) {
++		dev_dbg(dev, "core init: already ready (call #%u), nothing to do\n",
++			wcd->core_init_calls);
++		mutex_unlock(&wcd->wake_lock);
++		return 0;
++	}
++
++	ret = wcd9320_snapshot_cdc(wcd, wcd->cdc_before);
++	if (ret)
++		goto out;
++	wcd->have_before = true;
++	wcd->nz_before = wcd9320_count_nonzero(wcd->cdc_before);
++
++	if (wcd->nz_before >= WCD9320_CDC_MIN_NONZERO) {
++		/*
++		 * Adoption. The core is already reachable, so the bring-up and
++		 * clock sequences must not be replayed -- doing so would drive
++		 * a reset into a block another owner may be using.
++		 */
++		wcd->core_ready = true;
++		wcd->core_adopted = true;
++		dev_info(dev,
++			 "core init: already accessible (%u/%u non-zero) -- adopting, no writes\n",
++			 wcd->nz_before, WCD9320_CDC_COUNT);
++		goto out;
++	}
++
++	dev_info(dev, "core init: %u/%u non-zero -- initialising\n",
++		 wcd->nz_before, WCD9320_CDC_COUNT);
++	wcd->core_init_runs++;
++
++	ret = wcd9320_bring_up(wcd);
++	if (ret)
++		goto out;
++	if (!wcd9320_snapshot_cdc(wcd, wcd->cdc_after_bringup)) {
++		wcd->have_after_bringup = true;
++		wcd->nz_after_bringup =
++			wcd9320_count_nonzero(wcd->cdc_after_bringup);
++		dev_info(dev, "core init: after release, %u/%u non-zero\n",
++			 wcd->nz_after_bringup, WCD9320_CDC_COUNT);
++	}
++
++	ret = wcd9320_enable_rco(wcd);
++	if (ret)
++		goto out;
++	ret = wcd9320_snapshot_cdc(wcd, wcd->cdc_after);
++	if (ret)
++		goto out;
++	wcd->have_after = true;
++	wcd->nz_after = wcd9320_count_nonzero(wcd->cdc_after);
++
++	ret = wcd9320_verify_core_accessible(wcd);
++	if (!ret) {
++		wcd->core_ready = true;
++		dev_info(dev, "core init: complete, core_ready (%u -> %u -> %u non-zero)\n",
++			 wcd->nz_before, wcd->nz_after_bringup, wcd->nz_after);
++	}
++out:
++	mutex_unlock(&wcd->wake_lock);
++	if (ret)
++		dev_err(dev, "core init: FAILED (%d)\n", ret);
++	return ret;
++}
++
 +static int wcd9320_rco_wake_run(struct wcd9320 *wcd)
 +{
 +	struct device *dev = &wcd->sdev->dev;
@@ -1273,16 +1437,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return sysfs_emit(buf, "interface function: not applicable\n");
 +
 +	return sysfs_emit(buf,
++			  "core_ready=%u core_adopted=%u init_calls=%u init_runs=%u\n"
 +			  "state=%s attempts=%u failed_step=%d last_error=%d\n"
 +			  "sentinel_range=0x%03x-0x%03x count=%u\n"
-+			  "nonzero_before=%u nonzero_after=%u nonzero_teardown=%u\n"
-+			  "have_before=%u have_after=%u have_teardown=%u\n",
++			  "nonzero_before=%u nonzero_after_bringup=%u nonzero_after=%u nonzero_teardown=%u\n"
++			  "have_before=%u have_after_bringup=%u have_after=%u have_teardown=%u\n",
++			  wcd->core_ready, wcd->core_adopted,
++			  wcd->core_init_calls, wcd->core_init_runs,
 +			  names[wcd->wake_state], wcd->wake_attempts,
 +			  wcd->wake_failed_step, wcd->wake_last_error,
 +			  WCD9320_CDC_FIRST, WCD9320_CDC_LAST,
 +			  WCD9320_CDC_COUNT,
-+			  wcd->nz_before, wcd->nz_after, wcd->nz_teardown,
-+			  wcd->have_before, wcd->have_after, wcd->have_teardown);
++			  wcd->nz_before, wcd->nz_after_bringup,
++			  wcd->nz_after, wcd->nz_teardown,
++			  wcd->have_before, wcd->have_after_bringup,
++			  wcd->have_after, wcd->have_teardown);
 +}
 +
 +static ssize_t rco_wake_store(struct device *dev,
@@ -1315,6 +1484,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			ret = -EPERM;
 +			goto out;
 +		}
++		/*
++		 * Initialisation is automatic now, so by the time anything can
++		 * write here the core is normally already up. Replaying the
++		 * sequence would drive a reset into a live block. Reverse it
++		 * first if a re-run is genuinely wanted.
++		 */
++		if (wcd->core_ready) {
++			dev_warn(dev,
++				 "rco_wake: core already initialised (adopted=%u); reverse it before re-running\n",
++				 wcd->core_adopted);
++			ret = -EBUSY;
++			goto out;
++		}
 +		wcd->wake_attempts++;
 +		ret = wcd9320_rco_wake_run(wcd);
 +		wcd->wake_state = ret ? WCD9320_WAKE_FAILED
@@ -1328,6 +1510,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		ret = wcd9320_rco_sleep_run(wcd);
 +		wcd->wake_state = ret ? WCD9320_WAKE_FAILED
 +				      : WCD9320_WAKE_IDLE;
++		/*
++		 * The documented inverse leaves the CDC gate set and the block
++		 * readable, so core_ready stays true -- it describes register
++		 * accessibility, which teardown does not remove.
++		 */
 +	} else {
 +		ret = -EINVAL;
 +	}
@@ -1665,6 +1852,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("core-init-rc1");
++MODULE_VERSION("core-init-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
