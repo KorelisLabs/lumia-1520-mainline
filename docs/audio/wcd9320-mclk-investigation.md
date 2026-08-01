@@ -1,5 +1,27 @@
 # WCD9320 MCLK path on the Lumia 1520 — investigation
 
+> **Read this first (added 2026-08-01).** Everything below remains factually
+> correct, but its *significance* has shrunk considerably.
+>
+> This investigation was motivated by the `0x200`–`0x3bf` region reading
+> all-zero, on the assumption that a missing clock was the likely cause. That
+> assumption was wrong. The block was held in reset because this port had
+> never run `wcd9xxx_bring_up()`, the codec's digital-core release. Once that
+> ran, the block became fully accessible on the codec's **on-die RC
+> oscillator**, with no external clock of any kind — 87 of 87 registers, 71
+> at their documented defaults.
+>
+> So: the external MCLK route is still unresolved, and this document is still
+> the record of that. But it is **not** a blocker for register access, and it
+> was never the reason the digital core was unreachable. The PM8941 pad
+> sweeps in sections 6 and 7 were sound work aimed at a question that turned
+> out not to be the one blocking progress.
+>
+> MCLK becomes relevant again only when an actual audio path needs an
+> accurate reference; RCO is a low-accuracy oscillator that downstream uses
+> for MBHC and idle, switching to MCLK for streams.
+> See `wcd9320-cdc-rco-wake-2026-08-01.log`.
+
 Deliverable for the `wcd9320-mclk-path-mapped` milestone. No codec writes.
 The question: where does the codec's 9.6 MHz reference clock come from on
 *this* device, and does Linux control it?

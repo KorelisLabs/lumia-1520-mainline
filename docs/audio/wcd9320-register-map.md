@@ -161,6 +161,20 @@ that nevertheless read back zero:
 
 ## 4. The digital core is dark
 
+> **RESOLVED 2026-08-01 — and the cause was not clocking.** The block was
+> held in reset because this port had never run `wcd9xxx_bring_up()`
+> (`LEAKAGE_CTL` / `CDC_CTL`, `wcd9xxx-core.c:335`, called at line 468 before
+> `wcd9xxx_check_codec_type()`). Running it, then the bandgap and RC
+> oscillator sequences, made all 87 registers read out — 71 of them at their
+> documented defaults. See `wcd9320-cdc-rco-wake-2026-08-01.log` and the
+> `wcd9320-cdc-rco-wake-proven` tag.
+>
+> The reasoning below correctly identified the block boundary and correctly
+> refused to name a cause. Where it leans toward "unclocked", read "held in
+> reset": those were the two sub-cases it explicitly declined to
+> distinguish, and reset is the one that was true. No external MCLK was
+> involved at any point.
+
 `0x200`–`0x3bf` reads as all-zero regardless of documented reset value, at
 87 of 87, with a clean boundary at each end. That is a block-level condition,
 not 87 unrelated facts.
