@@ -1,0 +1,158 @@
+WCD9320 CDC digital core made accessible -- Nokia Lumia 1520 (RM-940)
+=====================================================================
+2026-08-01. Kernel 6.16.12 r128, module wcd9320 rco-wake-rc3.
+
+Manual trigger only (echo wake > .../rco_wake). Nothing runs at probe. No
+external MCLK, no ASoC component, no DAI, no port configuration, no analog
+route. The only registers written were those in the traced sequence.
+
+Analysis: docs/audio/wcd9320-cdc-wake-sequence.md
+
+
+### preconditions ###
+
+  module        rco-wake-rc3, both functions bound (PGD 0xcb, IFD 0xca)
+  identity      major 0x0102 minor 0x0001 version 0x00
+  adsp          running          ngd 1
+  irq           87 msmgpio 72 Edge, count 0, status 00 00 00 00
+  masks         ff ff 3f 7f
+  TLMM 72       low
+  RC_OSC        freq=46 test=0a status=18
+  BG_CTL        50   CLK_BUFF_EN1 04   CLK_BUFF_EN2 02
+  sentinel      0 of 448 registers non-zero in 0x200-0x3bf
+
+
+### the sequence, 19 steps, all applied cleanly ###
+
+  Phase 0 -- wcd9xxx_bring_up(), the digital-core release. NOT previously
+  run by this port at all.
+
+   1  0x088 LEAKAGE_CTL   old=04  ->  04    (write 0x04)
+   2  0x080 CDC_CTL       old=00  ->  00    (write 0, 5 ms)
+   3  0x080 CDC_CTL       old=00  ->  03    (write 3 -- release)
+   4  0x088 LEAKAGE_CTL   old=04  ->  03    (write 0x03)
+
+  Phase A -- wcd9xxx_enable_bg(), central bandgap.
+
+   5  0x101 BIAS_CENTRAL  old=50  mask=80 want=80 -> d0   OK
+   6  0x101 BIAS_CENTRAL  old=d0  mask=04 want=04 -> d4   OK
+   7  0x101 BIAS_CENTRAL  old=d4  mask=01 want=01 -> d5   OK  (1 ms)
+   8  0x101 BIAS_CENTRAL  old=d5  mask=80 want=00 -> 55   OK
+
+  Phase B -- wcd9xxx_enable_clock_block(config_mode=1), the RC oscillator.
+
+   9  0x1fa RC_OSC_FREQ   old=46  mask=10 want=00 -> 46   OK
+  10  0x105 BIAS_OSC_BG   old=16  write 0x17       -> 17   OK  (5 us)
+  11  0x1fa RC_OSC_FREQ   old=46  mask=80 want=80 -> c6   OK
+  12  0x1fb RC_OSC_TEST   old=0a  mask=80 want=80 -> 8a   OK  (10 us)
+  13  0x1fb RC_OSC_TEST   old=8a  mask=80 want=00 -> 0a   OK  (10 ms)
+  14  0x108 CLK_BUFF_EN1  old=04  mask=08 want=08 -> 0c   OK
+  15  0x109 CLK_BUFF_EN2  old=02  write 0x02       -> 02   OK  (1 ms)
+  16  0x108 CLK_BUFF_EN1  old=0c  mask=01 want=01 -> 0d   OK  (1.2 ms)
+  17  0x109 CLK_BUFF_EN2  old=02  mask=02 want=00 -> 00   OK
+  18  0x109 CLK_BUFF_EN2  old=00  mask=04 want=04 -> 04   OK
+  19  0x311 CDC_CLK_MCLK  old=00  mask=01 want=01 -> 01   (50 us)
+
+  Step 19 is the one that could not be verified in advance, because 0x311
+  lives inside the dark region. It read back 01 -- the register answered.
+
+
+### result: the 87 sentinel registers ###
+
+  became non-zero            :  87 / 87   (100%)
+  matched documented default :  71 / 87   ( 82%)
+  remained zero              :   0 / 87
+  non-zero but != default    :  16 / 87
+
+  The 16 differ in three coherent families, not at random:
+
+    0x223,0x22b,0x233,0x23b,0x243,   CDC_TX1..TX10_MUX_CTL
+    0x24b,0x253,0x25b,0x263,0x26b    POR 08 -> reads 48   (bit 6 set, all ten)
+    0x36b,0x373,0x37b                CDC_COMP0..2_B4_CTL
+                                     POR 3c -> reads 37
+    0x36c,0x374,0x37c                CDC_COMP0..2_B5_CTL
+                                     POR 1f -> reads 7f
+
+  Identical deltas within each family. That is the signature of a
+  revision-dependent default, not of a partial or unstable wake. This device
+  is minor 0x0001. Not investigated further here.
+
+
+### whole region ###
+
+  non-zero before                 :  0
+  non-zero after                  : 95
+    the 87 reference registers    : 87
+    documented with __POR == 0    :  8
+    NOT documented at all         :  0
+
+  The last line matters: no undocumented address became non-zero, so the
+  header-vs-silicon agreement established in wcd9320-register-map.md still
+  holds with the block awake.
+
+  boundary: lowest non-zero 0x223, highest 0x3b2 -- both inside 0x200-0x3bf.
+
+
+### stability ###
+
+  Three full live re-reads through regmap debugfs, 2 s apart:
+    0x320=e4  0x314=00  0x311=01  0x223=48  0x36b=37   on every pass
+    pass 1 vs 2 : byte-identical
+    pass 2 vs 3 : byte-identical
+
+  0x320 CDC_CLSH_B1_CTL reads e4, exactly its documented default, having
+  read 00 for every previous milestone.
+
+
+### teardown ###
+
+  The documented inverse only -- wcd9xxx_disable_clock_block() then
+  enable_config_mode(0) then wcd9xxx_disable_bg(). No invented writes.
+
+   1  0x109 CLK_BUFF_EN2  old=04  mask=04 want=00 -> 00   OK  (50 us)
+   2  0x109 CLK_BUFF_EN2  old=00  mask=02 want=02 -> 02   OK
+   3  0x108 CLK_BUFF_EN1  old=0d  mask=05 want=00 -> 08   OK  (50 us)
+   4  0x105 BIAS_OSC_BG   old=17  mask=01 want=00 -> 16   OK
+   5  0x1fa RC_OSC_FREQ   old=c6  mask=80 want=00 -> 46   OK
+   6  0x101 BIAS_CENTRAL  old=55  mask=03 want=00 -> 54   OK  (100 us)
+
+  Classification: REMAINS ACCESSIBLE.
+
+  sentinel non-zero 0 -> 95 -> 95, and the block is byte-identical to its
+  post-wake state across all 448 registers. The 87 still read 87 non-zero
+  with 71 matching defaults.
+
+  This is the predicted outcome, not a failure. The documented inverse never
+  clears 0x311, so the CDC clock gate stays set. Phase 0 is deliberately not
+  reversed either: its counterpart wcd9xxx_bring_down() is a full
+  low-leakage shutdown called only from remove/shutdown paths, not a
+  step-wise inverse.
+
+
+### nothing disturbed, at any point ###
+
+  identity      major 0x0102 minor 0x0001 laddr 0xcb -- unchanged throughout
+  IFD           laddr 0xca, still bound
+  adsp          running
+  ngd           1
+  slim errors   0        timeouts 0
+  irq           87: 0 msmgpio 72 Edge wcd9320 -- still zero assertions
+  irq status    00 00 00 00      masks ff ff 3f 7f
+  CDC_CLK_POWER_CTL (0x314) reads 00 -- never written, never needed
+
+
+### why this took three attempts ###
+
+  rc1 aborted at step 2: BIAS_OSC_BG_CTL bit 0 would not set.
+  rc2 aborted at step 1: BIAS_CENTRAL_BG_CTL bit 7 would not set.
+
+  Both were the same root cause. This port had never run
+  wcd9xxx_bring_up(), which downstream calls at wcd9xxx-core.c:468 --
+  before wcd9xxx_check_codec_type(), so before the chip id is even read.
+  Reading the chip id works without it, which is exactly why its absence
+  survived every previous milestone: identity, revision, regmap and
+  dual-function were all read-only.
+
+  The per-step readback is what made this diagnosable. Without it the
+  sequence would have "completed" while silently doing nothing, and the
+  dark sentinel would have been blamed on MCLK.
