@@ -2,10 +2,9 @@ From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
 Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
-observation, and a manually triggered CDC-core wake experiment. The core
-release and the RCO clock sequence are separate tables, because they answer
-different questions: one takes the digital core out of reset, the other
-clocks it. Registers no sound card and configures no audio path.
+observation, and a manually triggered CDC-core wake. Core release and RCO
+clocking are separate stages sharing one sequence executor. Registers no
+sound card and configures no audio path.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
@@ -42,8 +41,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 09:09:48.359147094 -0400
-@@ -0,0 +1,1593 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 11:14:42.484954990 -0400
+@@ -0,0 +1,1625 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1138,6 +1137,34 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/*
++ * Stage 1. Releases the codec's digital core from reset. Downstream runs the
++ * equivalent (wcd9xxx_bring_up) at wcd9xxx-core.c:468, before the chip id is
++ * read -- so before anything else touches the part.
++ *
++ * Separate from stage 2 on purpose: the adoption path may find a core that is
++ * already released and must then do neither, and a core that is dark needs
++ * this without any power or reset handling.
++ */
++static int wcd9320_bring_up(struct wcd9320 *wcd)
++{
++	return wcd9320_run_sequence(wcd, wcd9320_bring_up_seq,
++				    ARRAY_SIZE(wcd9320_bring_up_seq),
++				    "bring-up");
++}
++
++/*
++ * Stage 2. Bandgap, then the RC oscillator clock block, ending with the gate
++ * that admits the clock into the CDC register file. Requires stage 1 to have
++ * run: with the core still in reset the very first bandgap write is silently
++ * refused, which is how the missing bring-up was found.
++ */
++static int wcd9320_enable_rco(struct wcd9320 *wcd)
++{
++	return wcd9320_run_sequence(wcd, wcd9320_rco_wake,
++				    ARRAY_SIZE(wcd9320_rco_wake), "rco-wake");
++}
++
 +static int wcd9320_rco_wake_run(struct wcd9320 *wcd)
 +{
 +	struct device *dev = &wcd->sdev->dev;
@@ -1174,9 +1201,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 WCD9320_CDC_FIRST, WCD9320_CDC_LAST,
 +		 wcd->nz_before, WCD9320_CDC_COUNT);
 +
-+	dev_info(dev, "=== applying the RCO clock sequence ===\n");
-+	ret = wcd9320_run_sequence(wcd, wcd9320_rco_wake,
-+				   ARRAY_SIZE(wcd9320_rco_wake), "rco-wake");
++	dev_info(dev, "=== stage 1: releasing the digital core ===\n");
++	ret = wcd9320_bring_up(wcd);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "=== stage 2: bandgap and RCO clock block ===\n");
++	ret = wcd9320_enable_rco(wcd);
 +	if (ret)
 +		return ret;
 +
@@ -1634,6 +1665,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("rco-wake-rc3");
++MODULE_VERSION("core-init-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
