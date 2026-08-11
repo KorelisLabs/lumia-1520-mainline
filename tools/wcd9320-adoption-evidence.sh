@@ -52,6 +52,18 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/tmp}"
 DMESG_FILE="/tmp/.wcd9320-dmesg-adopt-$$"
 
+# Take the log delta from the last in-place re-entry, if there was one.
+#
+# dmesg is cumulative, so on a re-entry-staged run the boot's own fresh
+# initialisation is still in the log and would be counted against this
+# attempt. The driver's core_reinit hook prints this banner immediately
+# before calling the production decision path, so everything after it is
+# exactly what this adoption attempt did -- and nothing else.
+#
+# Absent on a reboot-staged run, where the whole log is already the delta;
+# snap_dmesg falls back to full history and says so in the report.
+DMESG_MARKER="${DMESG_MARKER:-core reinit test: clearing software init state}"
+
 # Gate first: nothing is collected and no file is written if this fails.
 require_module_version
 find_devices
@@ -152,12 +164,40 @@ fi
 	fi
 
 	# --- zero reset transitions, zero supply operations ---------------------
-	check "reset_transitions" "$(kv "$PGD/bringup" reset_transitions)" "0"
-	check "supply_enables" "$(kv "$PGD/bringup" supply_enables)" "0"
-	check "supply_disables" "$(kv "$PGD/bringup" supply_disables)" "0"
-	check "power_owned" "$(kv "$PGD/bringup" power_owned)" "0"
+	#
+	# These counters are cumulative for the life of the driver instance, so
+	# what has to be zero is the DELTA across the adoption attempt, not the
+	# absolute value.
+	#
+	# The two staging routes differ here and both are legitimate:
+	#
+	#   reboot-staged   a new driver instance that never ran the fresh path,
+	#                   so the baselines are 0 and this reduces to the
+	#                   original absolute check. power_owned is 0 because
+	#                   this instance never took the supplies.
+	#
+	#   in-place        the same instance already brought the codec up at
+	#                   boot, so it legitimately carries reset_transitions=2,
+	#                   supply_enables=1 and power_owned=1. Requiring those
+	#                   to be zero would fail an attempt that did nothing.
+	#
+	# Baselines default to 0, so nothing changes for the reboot route.
+	_rt=$(kv "$PGD/bringup" reset_transitions)
+	_se=$(kv "$PGD/bringup" supply_enables)
+	_sd=$(kv "$PGD/bringup" supply_disables)
+	check "reset_transitions delta" "$((_rt - ${BASE_RESET:-0}))" "0"
+	check "supply_enables delta" "$((_se - ${BASE_SUPPLY_EN:-0}))" "0"
+	check "supply_disables delta" "$((_sd - ${BASE_SUPPLY_DIS:-0}))" "0"
+	note  "absolute counters" "reset=$_rt supply_en=$_se supply_dis=$_sd (baselines ${BASE_RESET:-0}/${BASE_SUPPLY_EN:-0}/${BASE_SUPPLY_DIS:-0})"
+	check "power_owned" "$(kv "$PGD/bringup" power_owned)" "${EXPECT_POWER_OWNED:-0}"
 	check "stale bus state" "$(kv "$PGD/bringup" stale_bus_state)" "0"
-	note  "bus enumeration path" "$(kv "$PGD/bringup" path) -- must be 'adopted' for the counters to be zero"
+	note  "bus enumeration path" "$(kv "$PGD/bringup" path) -- 'adopted' on the reboot route, 'fresh' on in-place re-entry where this instance did the original bring-up"
+
+	# No kernel warning may appear in the delta. The handoff_on_remove route
+	# produced one _regulator_put() warning per supply; a clean staging
+	# produces none, and that difference is the whole point.
+	check "regulator warnings" "$(dmesg 2>/dev/null | grep -c '_regulator_put')" "0"
+	check "kernel WARNING/BUG" "$(dmesg 2>/dev/null | grep -c 'WARNING:\|BUG:')" "0"
 
 	# --- no replay of either sequence ---------------------------------------
 	# The point of the adoption path: not one write into a block another owner

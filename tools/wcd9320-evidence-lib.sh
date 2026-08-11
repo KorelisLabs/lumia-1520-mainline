@@ -109,9 +109,39 @@ kv() {
 	tr ' \t' '\n\n' < "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -n1
 }
 
-# dmesg lines from this driver only, numbered, captured once per run
+# dmesg lines from this driver only, numbered, captured once per run.
+#
+# If DMESG_MARKER is set and present, everything up to and including its LAST
+# occurrence is dropped, so the sequence assertions see only what happened
+# after that point.
+#
+# This matters because dmesg is cumulative across a boot. An adoption run
+# staged by re-entering the driver in place still carries the boot's own
+# fresh initialisation in the log, and counting "bring-up step" lines over the
+# whole history then reports writes that this attempt did not make. That was
+# measured: 8 bring-up and 30 rco-wake lines, exactly two prior fresh runs,
+# failing an adoption attempt that had in fact written nothing.
+#
+# With no marker set, or none found, behaviour is unchanged -- which is
+# correct for the cold-boot run and for a reboot-staged adoption, where the
+# whole log IS the delta.
 snap_dmesg() {
 	dmesg 2>/dev/null | grep -n 'wcd9320' > "$DMESG_FILE" 2>/dev/null || true
+
+	if [ -n "${DMESG_MARKER:-}" ]; then
+		_mk=$(grep -n -- "$DMESG_MARKER" "$DMESG_FILE" 2>/dev/null |
+			tail -n1 | cut -d: -f1)
+		if [ -n "$_mk" ]; then
+			tail -n +"$((_mk + 1))" "$DMESG_FILE" > "$DMESG_FILE.d" 2>/dev/null
+			mv "$DMESG_FILE.d" "$DMESG_FILE" 2>/dev/null
+			DMESG_DELTA="from marker, dropped $_mk earlier line(s)"
+		else
+			DMESG_DELTA="marker not found, using full history"
+		fi
+	else
+		DMESG_DELTA="full history"
+	fi
+
 	DMESG_LINES=$(wc -l < "$DMESG_FILE" 2>/dev/null | tr -d ' ')
 	[ -n "$DMESG_LINES" ] || DMESG_LINES=0
 }
@@ -205,7 +235,7 @@ collect_evidence() {
 	say "uptime            : $(cut -d' ' -f1 /proc/uptime 2>/dev/null) s"
 	say "control function  : $PGD_NAME"
 	say "interface function: $IFD_NAME"
-	say "dmesg wcd9320     : $DMESG_LINES lines"
+	say "dmesg wcd9320     : $DMESG_LINES lines (${DMESG_DELTA:-full history})"
 
 	hdr "PGD identity";     cat "$PGD/identity"     2>/dev/null
 	hdr "PGD bringup";      cat "$PGD/bringup"      2>/dev/null

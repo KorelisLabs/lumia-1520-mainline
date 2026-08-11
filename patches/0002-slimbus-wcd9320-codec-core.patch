@@ -2,9 +2,7 @@ From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
 Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
-observation, and a manually triggered CDC-core wake. Core release and RCO
-clocking are separate stages sharing one sequence executor. Registers no
-sound card and configures no audio path.
+observation, and automatic idempotent CDC-core initialisation.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
@@ -41,8 +39,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-01 13:37:31.309465168 -0400
-@@ -0,0 +1,1812 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 17:33:29.944442944 -0400
+@@ -0,0 +1,1885 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -107,6 +105,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * desynchronises the SLIMbus core -- it keeps reporting the device UP
 + * because nothing invalidates its cached state -- so this exists purely
 + * to construct a valid handoff for testing. Never production behaviour.
++ */
++/*
++ * MEASURED DEFECT, 2026-08-01: this leaves the supplies enabled while devres
++ * then calls regulator_bulk_free() on them, which trips
++ * _regulator_put()'s "releasing supply whilst still enabled" WARNING once per
++ * supply -- seven on this part. Superseded by the core_reinit hook, which
++ * stages the same precondition without touching regulator ownership at all.
++ * Do not use it to stage acceptance evidence.
 + */
 +static bool handoff_on_remove;
 +module_param(handoff_on_remove, bool, 0444);
@@ -1525,6 +1531,70 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RW(rco_wake);
 +
++/*
++ * Research hook, for the adoption acceptance run only.
++ *
++ * Adoption is the path taken when something else has already initialised the
++ * codec. On this device nothing does, so the state has to be staged -- and
++ * staging it by unbinding is not acceptable: handoff_on_remove leaves the
++ * supplies enabled while devres frees the handles, which was measured to
++ * produce one _regulator_put() "releasing supply whilst still enabled"
++ * warning per supply, seven in total. Evidence staged that way is not clean
++ * enough to certify against.
++ *
++ * This instead touches no hardware at all. It clears only the driver's own
++ * software record of having initialised the core, then re-enters the SAME
++ * production decision function that probe uses. The regulators, the reset
++ * line, the bound slim_device and the codec's actual state are all left
++ * exactly as they are.
++ *
++ * That makes it real evidence rather than a rehearsal: wcd9320_core_init()
++ * has to re-read the sentinel and decide for itself, and with the block still
++ * accessible the only correct answer is adoption with no writes. The decision
++ * is not duplicated here -- if it were, the run would prove nothing about the
++ * production path.
++ *
++ * Deliberately write-only and token-guarded so it cannot be tripped by a
++ * stray "1".
++ */
++static ssize_t core_reinit_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!sysfs_streq(buf, "reinit-test"))
++		return -EINVAL;
++
++	mutex_lock(&wcd->wake_lock);
++	/*
++	 * This banner is also the marker the acceptance script uses to take a
++	 * dmesg delta, so that sequence assertions see only what this re-entry
++	 * did rather than the whole boot's history.
++	 */
++	dev_info(dev,
++		 "core reinit test: clearing software init state only, no hardware touched\n");
++	wcd->core_ready = false;
++	wcd->core_adopted = false;
++	wcd->core_init_calls = 0;
++	wcd->core_init_runs = 0;
++	wcd->have_before = false;
++	wcd->have_after_bringup = false;
++	wcd->have_after = false;
++	wcd->nz_before = 0;
++	wcd->nz_after_bringup = 0;
++	wcd->nz_after = 0;
++	mutex_unlock(&wcd->wake_lock);
++
++	/* The production path, unmodified. */
++	ret = wcd9320_core_init(wcd);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(core_reinit);
++
 +static ssize_t wcd9320_emit_dump(char *buf, const u8 *d, bool have)
 +{
 +	int len = 0;
@@ -1647,6 +1717,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_bringup.attr,
 +	&dev_attr_irq_observe.attr,
 +	&dev_attr_rco_wake.attr,
++	&dev_attr_core_reinit.attr,
 +	&dev_attr_sentinel_before.attr,
 +	&dev_attr_sentinel_after.attr,
 +	&dev_attr_sentinel_teardown.attr,
@@ -1852,6 +1923,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("core-init-rc2");
++MODULE_VERSION("core-init-rc3");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
