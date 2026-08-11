@@ -2,7 +2,8 @@ From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
 Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
-observation, and automatic idempotent CDC-core initialisation.
+observation, and automatic idempotent CDC-core initialisation with all three
+stage snapshots readable.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
@@ -39,8 +40,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 17:33:29.944442944 -0400
-@@ -0,0 +1,1885 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 18:54:03.980620815 -0400
+@@ -0,0 +1,1911 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1631,6 +1632,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(sentinel_after);
 +
++/*
++ * Stage 2, between the core release and the clock sequence.
++ *
++ * The count alone already showed the interesting thing -- 94 of the eventual
++ * 95 registers are non-zero here, so the four-write core release does nearly
++ * all the work and the clock sequence adds one. But a count cannot attribute
++ * the 16 registers that read something other than their documented default.
++ *
++ * With the values, it can: whatever they already hold at this stage was not
++ * produced by the RCO sequence, which narrows those 16 to revision defaults
++ * or to something the core release itself sets. That distinction is what
++ * gates building a reg_defaults table, so the snapshot has to be readable and
++ * not merely counted.
++ */
++static ssize_t sentinel_after_bringup_show(struct device *dev,
++					   struct device_attribute *attr,
++					   char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump(buf, wcd->cdc_after_bringup,
++				 wcd->have_after_bringup);
++}
++static DEVICE_ATTR_RO(sentinel_after_bringup);
++
 +static ssize_t sentinel_teardown_show(struct device *dev,
 +				      struct device_attribute *attr, char *buf)
 +{
@@ -1720,6 +1746,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_core_reinit.attr,
 +	&dev_attr_sentinel_before.attr,
 +	&dev_attr_sentinel_after.attr,
++	&dev_attr_sentinel_after_bringup.attr,
 +	&dev_attr_sentinel_teardown.attr,
 +	NULL,
 +};
@@ -1923,6 +1950,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("core-init-rc3");
++MODULE_VERSION("core-init-rc4");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
