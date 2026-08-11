@@ -41,8 +41,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 19:14:29.119810465 -0400
-@@ -0,0 +1,2032 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 19:29:24.976230137 -0400
+@@ -0,0 +1,2026 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -304,7 +304,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	REGMAP_IRQ_REG(WCD9320_IRQ_VBAT_MONITOR_RELEASE, 3, BIT(6)),
 +};
 +
-+static const struct regmap_irq_chip wcd9320_irq_chip __maybe_unused = {
++static const struct regmap_irq_chip wcd9320_irq_chip = {
 +	.name		= "wcd9320",
 +	.status_base	= WCD9320_A_INTR_STATUS0,
 +	.mask_base	= WCD9320_A_INTR_MASK0,
@@ -552,6 +552,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	int irq;			/* parent, from DT; <=0 if absent  */
 +	struct gpio_desc *irq_gpio;	/* same pad, for raw level reads   */
 +	bool irq_requested;
++	struct regmap_irq_chip_data *irq_data;	/* nested controller */
 +	bool irq_setup_done;		/* setup is once-only, and races   */
 +	unsigned int irq_count;		/* parent assertions               */
 +	unsigned int irq_spurious;	/* asserted with nothing pending   */
@@ -893,61 +894,34 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return any;
 +}
 +
-+static irqreturn_t wcd9320_irq_thread(int irq, void *data)
-+{
-+	struct wcd9320 *wcd = data;
-+	struct device *dev = &wcd->sdev->dev;
-+	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
-+	u8 pending[WCD9320_NUM_IRQ_REGS];
-+	int level, ret;
++/*
++ * wcd9320_irq_thread() lived here. It is gone because regmap-irq now owns the
++ * parent line and dispatches nested sources itself.
++ *
++ * What it used to provide, and where each guarantee went:
++ *
++ *   masking before the line goes live   still done explicitly in
++ *                                       wcd9320_irq_setup(), before the chip
++ *                                       is registered
++ *   never ack what was not dispatched   regmap-irq acks only the bits it
++ *                                       dispatched, which is the same
++ *                                       guarantee stated differently
++ *   counting parent assertions          NO LONGER DONE IN THE DRIVER. The
++ *                                       authoritative count is the parent's
++ *                                       line in /proc/interrupts, which is
++ *                                       external to this driver and cannot be
++ *                                       skewed by its own bookkeeping. A
++ *                                       storm additionally shows up as the
++ *                                       kernel's own "nobody cared".
++ *
++ * Consequence, stated plainly because it is a trap: irq_count, irq_spurious
++ * and irq_acked in the irq_observe output are now vestigial and will read 0
++ * whatever happens. The field names are kept because the acceptance scripts
++ * parse that output and the self-test fixtures are transcribed from it, but
++ * an acceptance check that reads irq_count == 0 is now vacuous and must be
++ * repointed at /proc/interrupts before it means anything.
++ */
 +
-+	wcd->irq_count++;
-+	level = wcd9320_raw_level(wcd);
-+	wcd->raw_level_last = level;
-+
-+	ret = wcd9320_read_irq_state(wcd, status, mask);
-+	if (ret) {
-+		dev_err(dev, "irq #%u: failed to read interrupt state: %d\n",
-+			wcd->irq_count, ret);
-+		return IRQ_HANDLED;
-+	}
-+	memcpy(wcd->last_status, status, sizeof(status));
-+
-+	dev_info(dev,
-+		 "irq #%u at %llu ms: raw_level=%d status=%02x %02x %02x %02x mask=%02x %02x %02x %02x\n",
-+		 wcd->irq_count, ktime_to_ms(ktime_get_boottime()), level,
-+		 status[0], status[1], status[2], status[3],
-+		 mask[0], mask[1], mask[2], mask[3]);
-+
-+	if (!wcd9320_pending(status, mask, pending)) {
-+		/*
-+		 * Nothing real is asserted, so there is nothing to acknowledge
-+		 * and acknowledging anyway would destroy the evidence. With
-+		 * every usable source masked this is the only outcome the
-+		 * first image expects to see -- and seeing it at all is itself
-+		 * the finding.
-+		 */
-+		wcd->irq_spurious++;
-+		dev_warn(dev,
-+			 "irq #%u: parent asserted with no unmasked source pending (spurious #%u) -- not acknowledging\n",
-+			 wcd->irq_count, wcd->irq_spurious);
-+		return IRQ_HANDLED;
-+	}
-+
-+	dev_warn(dev,
-+		 "irq #%u: unexpected live source pending=%02x %02x %02x %02x -- acknowledging\n",
-+		 wcd->irq_count, pending[0], pending[1], pending[2], pending[3]);
-+
-+	ret = regmap_bulk_write(wcd->regmap, WCD9320_A_INTR_CLEAR0,
-+				pending, WCD9320_NUM_IRQ_REGS);
-+	if (ret)
-+		dev_err(dev, "irq #%u: failed to acknowledge: %d\n",
-+			wcd->irq_count, ret);
-+	else
-+		wcd->irq_acked++;
-+
-+	return IRQ_HANDLED;
-+}
 +
 +/*
 + * Bounded sampler. Runs for 30 s total and then stops for good, so that
@@ -1100,14 +1074,34 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 memcmp(wcd->mask_readback, wcd9320_irq_mask_all,
 +			WCD9320_NUM_IRQ_REGS) ? "  MISMATCH" : "");
 +
-+	/* --- 3. request the parent, then record what actually landed --- */
-+	ret = devm_request_threaded_irq(dev, wcd->irq, NULL,
-+					wcd9320_irq_thread,
-+					IRQF_ONESHOT, "wcd9320", wcd);
++	/*
++	 * --- 3. hand the parent to the nested controller ---
++	 *
++	 * regmap-irq requests the parent line itself, so this REPLACES the
++	 * driver's own threaded handler rather than sitting alongside it. Two
++	 * owners of msmgpio 72, or none, are both broken; that is why the
++	 * description and this registration are one change and not two.
++	 *
++	 * Everything above still runs first, deliberately: the snapshot and the
++	 * explicit ff ff 3f 7f write with readback are the precondition, taken
++	 * while the driver still has sole control, before the chip is allowed
++	 * to touch anything. regmap-irq will mask everything again at init --
++	 * that is belt and braces, not a substitute, because the reset state
++	 * leaves VBAT_MONITOR_RELEASE unmasked and we want that closed and
++	 * proven closed before the line is live.
++	 */
++	ret = devm_regmap_add_irq_chip(dev, wcd->regmap, wcd->irq,
++				       IRQF_ONESHOT, 0,
++				       &wcd9320_irq_chip, &wcd->irq_data);
 +	if (ret)
-+		return dev_err_probe(dev, ret, "failed to request irq %d\n",
++		return dev_err_probe(dev, ret,
++				     "failed to add nested irq chip on irq %d\n",
 +				     wcd->irq);
 +	wcd->irq_requested = true;
++
++	dev_info(dev,
++		 "nested irq chip registered: %zu sources, all masked, domain on parent irq %d\n",
++		 ARRAY_SIZE(wcd9320_regmap_irqs), wcd->irq);
 +
 +	ret = devm_add_action_or_reset(dev, wcd9320_irq_teardown, wcd);
 +	if (ret)
@@ -2072,6 +2066,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("core-init-rc4");
++MODULE_VERSION("nested-irq-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
