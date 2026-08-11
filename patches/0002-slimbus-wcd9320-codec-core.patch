@@ -2,8 +2,9 @@ From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
 Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
-observation, and automatic idempotent CDC-core initialisation with all three
-stage snapshots readable.
+observation, automatic idempotent CDC-core initialisation with all three
+stage snapshots readable, and a nested IRQ chip description that is
+deliberately not registered yet.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
@@ -40,8 +41,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 18:54:03.980620815 -0400
-@@ -0,0 +1,1911 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 19:14:29.119810465 -0400
+@@ -0,0 +1,2032 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -197,6 +198,127 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + */
 +static const u8 wcd9320_irq_valid[WCD9320_NUM_IRQ_REGS] = {
 +	0xff, 0xff, 0x3f, 0x7f
++};
++
++/*
++ * ---- nested interrupt controller, description only -------------------------
++ *
++ * DELIBERATELY NOT REGISTERED YET. regmap_add_irq_chip() would request the
++ * parent line itself, and the parent is currently owned by
++ * devm_request_threaded_irq() in wcd9320_irq_setup() -- the arrangement that
++ * wcd9320-irq-parent-idle-validated certifies. Two owners, or none, are both
++ * broken. The swap happens in one atomic change; this commit only builds the
++ * description so the tree still boots the proven configuration.
++ *
++ * See docs/audio/wcd9320-nested-irq-design.md.
++ *
++ * The register layout maps onto regmap-irq without any inversion:
++ *   status  0x098  INTR_STATUS0-3
++ *   mask    0x094  INTR_MASK0-3, 1 = masked, which is regmap-irq's own sense
++ *   ack     0x09c  INTR_CLEAR0-3, write-1-to-clear, also the default
++ *
++ * 29 sources are declared, not 31, and the two omissions are measured rather
++ * than assumed:
++ *
++ *   MASK2 bits 6-7   WCD9XXX_IRQ_RESERVED_0/1. Read-only zero on this
++ *                    silicon -- writing 0xff reads back 0x3f -- and their
++ *                    status bits never asserted across 45 samples. Declaring
++ *                    them would have regmap-irq try to mask bits that cannot
++ *                    be masked.
++ *   MASK3 bit 7      past TAIKO_NUM_IRQS (31); no such source exists.
++ *
++ * Consequence for numbering: because the two reserved sources are skipped,
++ * the indices below are NOT downstream's enum values. Downstream MAD_AUDIO is
++ * 24; here it is 22. Anything cross-referencing wcd9xxx/core.h must translate.
++ */
++enum wcd9320_irq {
++	/* INTR_REG 0 */
++	WCD9320_IRQ_SLIMBUS = 0,
++	WCD9320_IRQ_MBHC_REMOVAL,
++	WCD9320_IRQ_MBHC_SHORT_TERM,
++	WCD9320_IRQ_MBHC_PRESS,
++	WCD9320_IRQ_MBHC_RELEASE,
++	WCD9320_IRQ_MBHC_POTENTIAL,
++	WCD9320_IRQ_MBHC_INSERTION,
++	WCD9320_IRQ_BG_PRECHARGE,
++	/* INTR_REG 1 */
++	WCD9320_IRQ_PA1_STARTUP,
++	WCD9320_IRQ_PA2_STARTUP,
++	WCD9320_IRQ_PA3_STARTUP,
++	WCD9320_IRQ_PA4_STARTUP,
++	WCD9320_IRQ_PA5_STARTUP,
++	WCD9320_IRQ_MICBIAS1_PRECHARGE,
++	WCD9320_IRQ_MICBIAS2_PRECHARGE,
++	WCD9320_IRQ_MICBIAS3_PRECHARGE,
++	/* INTR_REG 2 -- bits 0-5 only; 6-7 are RESERVED_0/1 and unmaskable */
++	WCD9320_IRQ_HPH_PA_OCPL_FAULT,
++	WCD9320_IRQ_HPH_PA_OCPR_FAULT,
++	WCD9320_IRQ_EAR_PA_OCPL_FAULT,
++	WCD9320_IRQ_HPH_L_PA_STARTUP,
++	WCD9320_IRQ_HPH_R_PA_STARTUP,
++	WCD9320_IRQ_EAR_PA_STARTUP,
++	/* INTR_REG 3 -- bits 0-6; bit 7 is past the end of the enum */
++	WCD9320_IRQ_MAD_AUDIO,
++	WCD9320_IRQ_MAD_BEACON,
++	WCD9320_IRQ_MAD_ULTRASOUND,
++	WCD9320_IRQ_SPEAKER_CLIPPING,
++	WCD9320_IRQ_MBHC_JACK_SWITCH,
++	WCD9320_IRQ_VBAT_MONITOR_ATTACK,
++	WCD9320_IRQ_VBAT_MONITOR_RELEASE,
++	WCD9320_NUM_CHILD_IRQS,
++};
++
++static const struct regmap_irq wcd9320_regmap_irqs[] = {
++	/* INTR_REG 0 */
++	REGMAP_IRQ_REG(WCD9320_IRQ_SLIMBUS,		0, BIT(0)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_REMOVAL,	0, BIT(1)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_SHORT_TERM,	0, BIT(2)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_PRESS,		0, BIT(3)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_RELEASE,	0, BIT(4)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_POTENTIAL,	0, BIT(5)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_INSERTION,	0, BIT(6)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_BG_PRECHARGE,	0, BIT(7)),
++	/* INTR_REG 1 */
++	REGMAP_IRQ_REG(WCD9320_IRQ_PA1_STARTUP,		1, BIT(0)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_PA2_STARTUP,		1, BIT(1)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_PA3_STARTUP,		1, BIT(2)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_PA4_STARTUP,		1, BIT(3)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_PA5_STARTUP,		1, BIT(4)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MICBIAS1_PRECHARGE,	1, BIT(5)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MICBIAS2_PRECHARGE,	1, BIT(6)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MICBIAS3_PRECHARGE,	1, BIT(7)),
++	/* INTR_REG 2 */
++	REGMAP_IRQ_REG(WCD9320_IRQ_HPH_PA_OCPL_FAULT,	2, BIT(0)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_HPH_PA_OCPR_FAULT,	2, BIT(1)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_EAR_PA_OCPL_FAULT,	2, BIT(2)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_HPH_L_PA_STARTUP,	2, BIT(3)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_HPH_R_PA_STARTUP,	2, BIT(4)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_EAR_PA_STARTUP,	2, BIT(5)),
++	/* INTR_REG 3 */
++	REGMAP_IRQ_REG(WCD9320_IRQ_MAD_AUDIO,		3, BIT(0)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MAD_BEACON,		3, BIT(1)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MAD_ULTRASOUND,	3, BIT(2)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_SPEAKER_CLIPPING,	3, BIT(3)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_MBHC_JACK_SWITCH,	3, BIT(4)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_VBAT_MONITOR_ATTACK,	3, BIT(5)),
++	REGMAP_IRQ_REG(WCD9320_IRQ_VBAT_MONITOR_RELEASE, 3, BIT(6)),
++};
++
++static const struct regmap_irq_chip wcd9320_irq_chip __maybe_unused = {
++	.name		= "wcd9320",
++	.status_base	= WCD9320_A_INTR_STATUS0,
++	.mask_base	= WCD9320_A_INTR_MASK0,
++	.ack_base	= WCD9320_A_INTR_CLEAR0,
++	.num_regs	= WCD9320_NUM_IRQ_REGS,
++	.irqs		= wcd9320_regmap_irqs,
++	.num_irqs	= ARRAY_SIZE(wcd9320_regmap_irqs),
++	/*
++	 * Clear anything latched from before the driver loaded, while
++	 * everything is still masked. The block reads 00 00 00 00 at every
++	 * boot observed so far, so this should be a no-op -- but relying on
++	 * that rather than doing it would be assuming the thing being tested.
++	 */
++	.init_ack_masked = true,
 +};
 +
 +/*
