@@ -8,12 +8,13 @@ State as of 2026-08-11. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`ab12c71`**, pushed |
-| pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch — **local only**, origin is upstream postmarketOS and is not writable |
+| working branch | `research/audio-wcd9320-core-init` at **`aa6feac`**, pushed |
+| pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | 135 built; the build script bumps to 136 |
-| last built module | `nested-irq-rc1` (r135), currently on the phone |
+| pkgrel | **136 built and verified** |
+| last built module | `mbhc-irq-rc1` (r136), **not yet on the phone** |
+| running on the phone | `nested-irq-rc1` (r135) |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -56,7 +57,7 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4, committed but NOT built or booted
+## IN FLIGHT — step 4, BUILT but not yet booted
 
 `ab12c71` adds `mbhc-irq-rc1`: a research hook arming exactly one source,
 `WCD9320_IRQ_MBHC_INSERTION`, plus `tools/wcd9320-mbhc-irq-evidence.sh`.
@@ -64,16 +65,44 @@ unmeasured**, and `taiko_volatile()` has never been checked against this part.
 Requesting the child IRQ is the whole mechanism — regmap-irq unmasks on
 request, re-masks on free — so no mask register is touched by hand.
 
+### Build: DONE, verified by artifact
+
+r136 is built and staged. Verified, not assumed:
+
+- `linux-postmarketos-qcom-msm8974-6.16.12-r136.apk` exists, and the
+  `wcd9320.ko.zst` inside it reports `version=mbhc-irq-rc1`, with `strings`
+  finding both `mbhc test: ARMED` and `nested irq chip registered`.
+- `check-modpost.sh` clean.
+- pmaports patch is byte-identical to `patches/0002-...`, and its sha512
+  matches the APKBUILD entry **in position** (`source=` order is config,
+  dtsi, rm940.dts, 0001, 0003, 0002).
+- `boot-1520-mbhc-irq-rc1.img` carries the known-good cmdline UUIDs and is
+  byte-identical to the built `boot.img` apart from the cmdline field.
+
+### The harness bug found before the run was spent — `aa6feac`
+
+Two of the gate's checks could not fail. Both read `irq_observe`, and neither
+field is live: `last_status` is written only by the bounded sampler, which
+finished during probe with everything masked, and `mask_readback` is written
+exactly once at IRQ setup, right after the driver masks everything. They are
+frozen at `00 00 00 00` and `ff ff 3f 7f`.
+
+So "status cleared after ack" and "re-masked after disarm" — the two checks
+carrying the acceptance bar — would have passed a stuck source, which is
+precisely the failure a separate write-1-to-clear register produces.
+
+Both now come from the handler's own live post-ack log line, and the run
+gained a real check for "exactly one source armed": the live mask while armed
+must read `bf ff 3f 7f`. The evidence file was also never actually written;
+it is now, the cold-boot way.
+
 ### Exact next actions
 
-1. Build: bump pkgrel, regen patch from `~/corepatch` (`diff -uprN orig new`),
-   fix checksums **positionally** (`source=` is ordered 0001, 0003, 0002),
-   build, verify by artifact, make `boot-1520-mbhc-irq-rc1.img` with the
-   known-good cmdline UUIDs. Guards: module reports `mbhc-irq-rc1`, and
-   `strings` finds both `mbhc test: ARMED` and `nested irq chip registered`.
-2. Push the `.ko` to `/lib/modules` — `fastboot boot` does **not** update it.
-3. Reboot, boot the image.
-4. Run `wcd9320-mbhc-irq-evidence.sh`. **Interactive — needs a headset.**
+1. Push the r136 `.ko` to `/lib/modules` and `depmod -a` — `fastboot boot`
+   does **not** update it. Then reboot.
+2. Boot `boot-1520-mbhc-irq-rc1.img`.
+3. Copy `tools/wcd9320-mbhc-irq-evidence.sh` and `wcd9320-evidence-lib.sh`
+   to the phone and run it. **Interactive — needs a headset.**
 
 ### The acceptance bar
 
@@ -129,6 +158,12 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 - `irq_count`/`irq_spurious`/`irq_acked` in `irq_observe` are **vestigial**
   since regmap-irq took the parent. They read 0 regardless. Use
   `/proc/interrupts`.
+- `last_status` and `mask_readback` in `irq_observe` are **frozen**, not live.
+  `last_status` is written only by the bounded sampler, `mask_readback` only
+  once at IRQ setup. Anything asserted against them is self-confirming. Read
+  interrupt state from the handler's own post-ack log line instead.
+- Parent and child both appear in `/proc/interrupts` as `wcd9320*`. Exclude
+  `wcd9320-mbhc` by name when counting the parent; do not rely on ordering.
 - Editing `~/corepatch/new/...c` does **not** change the repo — only the
   regenerated patch does. `git status` will happily say clean.
 - Kconfig dependency errors are invisible to source checks. `CONFIG_REGMAP_IRQ`
