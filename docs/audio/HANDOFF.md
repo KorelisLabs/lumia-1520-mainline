@@ -8,13 +8,13 @@ State as of 2026-08-12. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`28608bc`**, pushed |
+| working branch | `research/audio-wcd9320-core-init` at **`2c234b6`**, pushed |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **138 built, verified, and run on hardware** |
-| last built module | `mbhc-irq-rc3` (r138) |
-| running on the phone | `mbhc-irq-rc3` (r138), **autoloaded** |
+| pkgrel | **139 built, verified, and run on hardware** |
+| last built module | `mbhc-probe-rc4` (r139) |
+| running on the phone | `mbhc-probe-rc4` (r139), inserted by hand from `/tmp` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -57,7 +57,7 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4: arming proven; no MBHC stimulus exists unconfigured
+## IN FLIGHT — step 4: arming proven; MBHC detection is off until configured
 
 ### What two hardware runs established
 
@@ -114,14 +114,60 @@ failed experiment.
 Per the settled bar, the answer is **minimal MBHC programming**, not a
 driver-triggered source.
 
-### Autoload fixed as a side effect
+### Autoload: NOT fixed — that claim was wrong
 
-r138 probed at **t=47.8 s — boot time, autoloaded**, where the hand-loaded rc2
-probe landed at t=1052 s. Installing the plain `.ko` and deleting the
-`.ko.zst` restored it. Roadmap step 5 is largely discharged; what remains is a
-deliberate cold-boot regression, and the `.ko.zst` question is still unexplained.
+r138 probed at t=47.8 s, boot time, and this was written up as autoload having
+been restored by installing a plain `.ko`.
 
-### rc4 — measure the MBHC block before writing to it
+**r139 disproved it.** Identical arrangement — uncompressed `.ko` in
+`/lib/modules`, sha-verified on the phone, `depmod -a` run — and it did not
+autoload. Four minutes up, both SLIMbus functions enumerated, no module. A
+manual `modprobe` then failed with the same silent `EINVAL`.
+
+So r138's boot-time load was not proof of a fix; it was one success in a
+pattern nobody has explained yet. See the `EINVAL` trap below. Nothing may
+claim cold-boot behaviour until this is understood.
+
+### rc4 (r139) RESULT: NO SIGNAL — detection is off, 12/12 valid
+
+**2026-08-12, `wcd9320-mbhc-probe-20260812T234415Z.txt`.** Read-only. Nothing
+written.
+
+| register | baseline | inserted | removed |
+|---|---|---|---|
+| `0x14b` MBHC_INSERT_DET_STATUS | `0e` | `0e` | `0e` |
+| `0x1b3` RX_HPH_L_STATUS | `04` | `04` | `04` |
+| `0x1b9` RX_HPH_R_STATUS | `04` | `04` | `04` |
+| `0x3c0`–`0x3ff`, 64 registers | 15 non-zero | 15 non-zero | 15 non-zero |
+
+Zero bytes changed in either direction. `insert_det` was polled every second
+through both windows, so a transient that settled back would have been caught;
+only `0e` was ever seen. RC oscillator alive at `0x18`, so detection's clock
+was running and the probe was measuring the right thing.
+
+**Detection is off, not merely ungated.** Micbias and the comparator have to be
+brought up before any physical event can be detected at all. That is the larger
+of the two possible writes, and this run is why it is necessary rather than
+assumed.
+
+### The MBHC block baseline — first read on this hardware
+
+The CDC sentinel stops at `0x3bf`, so `0x3c0`–`0x3ff` had never been read.
+15 of 64 non-zero, in five clusters:
+
+| run | registers | values |
+|---|---|---|
+| `0x3c2`–`0x3c8` | 7 | `06 03 09 1e 45 04 78` |
+| `0x3ce`–`0x3cf` | 2 | `c0 5d` |
+| `0x3d6`–`0x3d9` | 4 | `ff 07 ff 7f` |
+| `0x3db` | 1 | `80` |
+| `0x3eb` | 1 | `40` |
+
+This is the state any minimal MBHC configuration starts from, and the baseline
+every future MBHC diff is against. It is also consistent with the count of
+non-zero-`__POR` registers `wcd9320-register-map.md` predicted for this range.
+
+### rc4 design notes — measure before writing
 
 `wcd9320-register-map.md` already carries the lead, from the 2026-07-31 dump:
 
@@ -176,16 +222,16 @@ Build script: `~/build-mbhc-irq-rc3.sh` (WSL, survives sessions).
 
 ### Exact next actions
 
-1. Pull back `wcd9320-mbhc-group-20260812T230939Z.txt` from the phone and
-   commit it — the conclusive negative is the evidence for choosing MBHC
-   programming over an easier stimulus.
-2. Build rc4: a **read-only** MBHC probe. Poll `0x14b`
-   `MBHC_INSERT_DET_STATUS` and dump `0x3c0`-`0x3ff` across a physical
-   insertion and removal. Write nothing.
-3. From what moves, decide the minimum configuration, then implement it.
-4. Single-source acceptance run against whichever source that makes live →
+1. Commit `wcd9320-mbhc-probe-20260812T234415Z.txt` — the evidence that
+   detection is off, and the MBHC baseline everything diffs against.
+2. **Minimal MBHC configuration.** Bring up micbias and the insert-detect
+   comparator: the least that makes a physical insertion observable at
+   `0x14b` or in `0x3c0`-`0x3ff`. Re-run the rc4 probe to confirm the
+   comparator now tracks the jack — still read-only afterwards, so it stays
+   falsifiable.
+3. Then arm the matching source and run the single-source acceptance proof →
    `wcd9320-irq-proven`.
-5. Cold-boot regression, and only then resume higher audio bring-up.
+4. Cold-boot regression, and the silent-EINVAL investigation.
 
 ### The acceptance bar — settled 2026-08-12
 
@@ -299,16 +345,35 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 - `irq_count`/`irq_spurious`/`irq_acked` in `irq_observe` are **vestigial**
   since regmap-irq took the parent. They read 0 regardless. Use
   `/proc/interrupts`.
-- **Do not ship the module as `.ko.zst`.** The kernel's in-tree zstd
-  decompressor rejected the r137 `.ko.zst` with a silent `-EINVAL` —
-  `module_decompress()` returns that without logging, so `modprobe` says
-  "Invalid argument" and dmesg says nothing at all. The identical bytes
-  (sha256-verified on the phone) decompress fine under userspace zstd, and the
-  uncompressed `.ko` inserts and probes cleanly. `CONFIG_MODULE_DECOMPRESS=y`,
-  so the kernel *should* accept it; the frame incompatibility is not yet
-  understood. r136's file happened to be acceptable, which is why this only
-  appeared at r137. The build script now stages an uncompressed `.ko`; install
-  that and delete the `.ko.zst` beside it, or autoload silently fails.
+- **Module inserts sometimes fail with a silent `EINVAL`, cause unknown.**
+  `modprobe` says "Invalid argument" and dmesg says *nothing at all*. When it
+  happens, insert from `/tmp` by hand and carry on; it has always worked on a
+  later attempt.
+
+  **CORRECTION (2026-08-12):** this was first recorded as a `.ko.zst`
+  decompression problem. **That was wrong.** The same silent `EINVAL` then
+  happened with an uncompressed `.ko` at r139, so compression is not the
+  variable. What was actually observed:
+
+  | build | file | when | result |
+  |---|---|---|---|
+  | r137 | `.ko.zst` in `/lib/modules` | t≈190 s | EINVAL |
+  | r137 | `.ko` in `/tmp` | t≈1052 s | loaded |
+  | r138 | `.ko` in `/lib/modules` | boot, t≈47 s | autoloaded |
+  | r139 | `.ko` in `/lib/modules` | t≈240 s | EINVAL |
+  | r139 | `.ko` in `/tmp` | t≈503 s | loaded |
+
+  Neither compression nor path explains all five. The one pattern that nearly
+  fits is **time since boot** — every failure was an early attempt, every
+  manual success a later one — and r138's boot-time autoload is the case that
+  breaks it.
+
+  The strongest untested lead: a silent `EINVAL` with no kernel log is exactly
+  what a module's `init` function returning `-EINVAL` produces. That would
+  point at `slim_driver_register()` failing early rather than at the module
+  loader, which fits the timing pattern and fits this port's history of late,
+  racy NGD registration (see `0001-slimbus-ngd-late-registration-recovery.patch`).
+  Not investigated. Do not record a cause until one is measured.
 - `last_status` and `mask_readback` in `irq_observe` are **frozen**, not live.
   `last_status` is written only by the bounded sampler, `mask_readback` only
   once at IRQ setup. Anything asserted against them is self-confirming. Read
