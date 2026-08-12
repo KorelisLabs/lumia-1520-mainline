@@ -87,6 +87,11 @@ assert MBHC_INSERTION with the MBHC block unconfigured — measured, not
 inferred. The four remaining FAILs are all the same fact, that no event
 occurred.
 
+Evidence files, both **FAIL verdicts** and both worth keeping:
+`wcd9320-mbhc-irq-20260812T212820Z.txt` (rc1) and
+`...T222527Z.txt` (rc2). The one line that separates them is
+`armed mask (live)`: `got=` empty in rc1, `bf ff 3f 7f` in rc2.
+
 ### Where the proof stands
 
 - Chain proven: enumeration → regmap → nested chip → mask/unmask → parent idle

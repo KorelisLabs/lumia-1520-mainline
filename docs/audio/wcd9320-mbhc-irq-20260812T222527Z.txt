@@ -1,0 +1,180 @@
+
+=== before arming ===
+parent assertions : 0
+mbhc_test         : armed=0 source=6 name=MBHC_INSERTION child_virq=0
+live mask         : ff ff 3f 7f
+live status       : 00 00 00 00
+  ....  irq_observe masks                ff ff 3f 7f -- frozen probe-time snapshot, not a live read
+
+=== armed ===
+mbhc_test         : armed=1 source=6 name=MBHC_INSERTION child_virq=88
+child virq        : 88
+child assertions  : 0
+live mask         : bf ff 3f 7f   (want bf ff 3f 7f)
+live status       : 00 00 00 00
+
+=== physical event ===
+waited            : 20s of 20s
+parent assertions : 0  (was 0)
+child assertions  : 0  (was 0)
+handler lines     : 0
+post-ack status   : none logged   (live, from the handler)
+post-ack mask     : none logged   (live, from the handler)
+
+=== quiescence, 5s after the event ===
+parent assertions : 0
+child assertions  : 0
+delta since event : parent 0, child 0
+
+=== disarmed ===
+mbhc_test         : armed=0 source=6 name=MBHC_INSERTION child_virq=88
+live mask         : ff ff 3f 7f   (want ff ff 3f 7f)
+live status       : 00 00 00 00
+  ....  irq_observe masks                ff ff 3f 7f -- same frozen snapshot; it cannot show re-masking
+
+=== acceptance checks: MBHC SINGLE SOURCE ===
+  PASS  module version                   mbhc-irq-rc2
+  PASS  child irq was armed              virq 88
+  FAIL  nested source fired              child count did not increase -- no event, or it never reached the handler
+  FAIL  parent asserted                  parent count did not increase -- nested dispatch without a parent edge is impossible
+  FAIL  handler ran                      driver handler never ran
+  PASS  handler status reads             0
+  PASS  masks quiet before arming        ff ff 3f 7f
+  PASS  nothing asserted before arming   00 00 00 00
+  PASS  armed mask (live)                bf ff 3f 7f
+  PASS  re-masked after disarm (live)    ff ff 3f 7f
+  ....  post-ack mask (handler)          none logged
+  FAIL  status cleared after ack (live)  got= want=00 00 00 00
+  PASS  returned to quiescence (parent)  0
+  PASS  returned to quiescence (child)   0
+  PASS  finite sequence                  0 assertion(s)
+  PASS  disarm acknowledged              free_irq ran
+  PASS  armed flag cleared               0
+  PASS  kernel WARNING/BUG               0
+  PASS  spurious irq complaints          0
+  PASS  identity major                   0x0102
+  PASS  slimbus errors                   0
+  PASS  adsp state                       running
+  ....  source                           6 MBHC_INSERTION -- all others stayed masked
+
+=== run identity ===
+mode              : mbhc-irq
+date              : 2026-08-12T22:25:55Z (UTC)
+module version    : mbhc-irq-rc2   (expected mbhc-irq-rc2)
+uname -r          : 6.16.12
+uname -v          : #138-postmarketos-qcom-msm8974 SMP PREEMPT Wed Aug 12 21:53:28 U
+uptime            : 1300.82 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 43 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[ 1052.396621] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[ 1052.397672] wcd9320 217:a0:0:0: Failed to get logical address
+[ 1052.459312] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[ 1052.459432] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[ 1052.460288] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[ 1052.461580] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[ 1052.462095] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[ 1052.464442] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 87
+[ 1052.464542] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[ 1052.464635] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[ 1052.581836] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[ 1052.582737] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[ 1052.589552] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[ 1052.590811] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[ 1052.592036] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[ 1052.592182] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[ 1052.715765] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[ 1052.716951] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[ 1052.718413] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[ 1052.728262] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[ 1052.729831] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[ 1052.737026] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[ 1052.738366] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[ 1052.739753] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[ 1052.749642] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[ 1052.751182] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[ 1052.764730] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[ 1052.769454] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[ 1052.771966] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[ 1052.774894] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[ 1052.776303] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[ 1052.777695] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[ 1052.789287] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[ 1052.789468] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[ 1052.903605] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[ 1052.904053] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[ 1052.904435] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[ 1052.914492] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[ 1052.915089] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[ 1058.732651] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[ 1083.692790] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[ 1272.903216] wcd9320 217:a0:1:0: mbhc test: ARMED source 6 (MBHC_INSERTION) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[ 1299.456664] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 6 re-masked after 0 interrupt(s)
+
+=== verdict ===
+mode   : mbhc-irq
+checks : 17 passed, 4 failed
+VERDICT: FAIL (mbhc-irq)
