@@ -57,7 +57,51 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4, BUILT but not yet booted
+## IN FLIGHT — step 4, rc1 ran and did not fire; rc2 staged
+
+**rc1 hardware run, 2026-08-12: FAIL, 13/18.** MBHC_INSERTION armed cleanly on
+child virq 88, headset inserted inside the 20 s window, and nothing happened —
+child 0→0, parent 0→0, no handler line, DISARMED after 0 interrupts. Codec
+health untouched throughout: identity `0x0102`, `core_ready=1`, ADSP running,
+no WARNING/BUG, no spurious complaints, parent still idle.
+
+The likely reading is that nothing has programmed the MBHC block — no micbias,
+no insert-detect enable — so the codec never raised the status bit. But the run
+**could not prove that**, and that is the part that mattered: with no interrupt
+there was no handler line, and every live fact about the mask came from that
+line. So it could not separate
+
+- (a) regmap-irq unmasked bit 6, codec never asserted — a stimulus problem, from
+- (b) the unmask never reached the chip — which makes the whole test vacuous.
+
+`armed mask (live)` and `status cleared after ack` both failed with `got=`,
+empty rather than wrong.
+
+**`1e8a00f` adds `irq_live`** (`mbhc-irq-rc2`, pkgrel 137, staged not built): a
+sysfs attribute reading INTR_STATUS and INTR_MASK off the chip on every open,
+plus raw GPIO level and computed pending state. The arming half of the proof is
+now measured before the event window opens and no longer waits on an event:
+
+| check | expected |
+|---|---|
+| masks quiet before arming | `ff ff 3f 7f` |
+| nothing asserted before arming | `00 00 00 00` |
+| armed mask (live) | `bf ff 3f 7f` — INTR_REG0 bit 6 clear, 28 set |
+| re-masked after disarm (live) | `ff ff 3f 7f` |
+
+That last row also retires the old "not directly observable" note. The script
+refuses to run against a build without `irq_live`.
+
+**The decision waiting on r137:** if the armed mask reads `bf ff 3f 7f`, the
+chain is fine and this is purely a stimulus problem — either program the MBHC
+block (micbias + insert detect) to keep a literally physical event, or move to
+a driver-triggerable source such as MICBIAS precharge, which is a genuine
+hardware interrupt raised by a register write. That trade is a judgement about
+what "one physical event" is meant to mean and should be made deliberately.
+
+Build script regenerated at `~/build-mbhc-irq-rc2.sh` (WSL, survives sessions).
+
+## Superseded: step 4 rc1 build details
 
 `ab12c71` adds `mbhc-irq-rc1`: a research hook arming exactly one source,
 `WCD9320_IRQ_MBHC_INSERTION`, plus `tools/wcd9320-mbhc-irq-evidence.sh`.
@@ -98,11 +142,15 @@ it is now, the cold-boot way.
 
 ### Exact next actions
 
-1. Push the r136 `.ko` to `/lib/modules` and `depmod -a` — `fastboot boot`
-   does **not** update it. Then reboot.
-2. Boot `boot-1520-mbhc-irq-rc1.img`.
-3. Copy `tools/wcd9320-mbhc-irq-evidence.sh` and `wcd9320-evidence-lib.sh`
-   to the phone and run it. **Interactive — needs a headset.**
+1. Run `~/build-mbhc-irq-rc2.sh` (needs interactive sudo). It verifies by
+   artifact and stages both the `.ko` and `boot-1520-mbhc-irq-rc2.img`.
+2. `scp` the `.ko` to the phone, `install` it into
+   `/lib/modules/6.16.12/kernel/drivers/slimbus/`, `depmod -a`.
+3. Reboot to bootloader, `fastboot boot boot-1520-mbhc-irq-rc2.img`.
+4. Set the clock — the phone has no working RTC and comes up a month behind,
+   which would date the evidence file wrongly.
+5. Run the evidence script. Read `armed mask (live)` first; it decides
+   whether this is a stimulus problem or a broken unmask.
 
 ### The acceptance bar
 
