@@ -1,215 +1,160 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-01. Everything below is on GitHub unless marked otherwise.
+State as of 2026-08-11. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
 | | |
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
-| `main` | `17db442` — all proven milestones and tags |
-| working branch | `research/audio-wcd9320-core-init` at `8372807` |
-| pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch, `164b6d6446` — **local only**, its origin is upstream postmarketOS and is not writable |
-| driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` in this repo is the durable copy |
-| pkgrel | 130 — bumped and synced; ready for the next build |
+| `main` | `17db442` |
+| working branch | `research/audio-wcd9320-core-init` at **`ab12c71`**, pushed |
+| pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch — **local only**, origin is upstream postmarketOS and is not writable |
+| driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
+| driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
+| pkgrel | 135 built; the build script bumps to 136 |
+| last built module | `nested-irq-rc1` (r135), currently on the phone |
 
-The kernel driver lives only as a patch. There is no checked-in `.c` file;
-`patches/` in this repo is the authoritative archive, since pmaports cannot
-be pushed.
+**The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
+and this repo do. Regenerate build scripts from the patterns below.
 
-`pmaports/linux-postmarketos-qcom-msm8974/` mirrors the live package. It had
-drifted badly — it was still the pre-audio snapshot at `pkgrel=100`, with no
-patches in `source=` and `# CONFIG_SLIMBUS is not set` in the config, so the
-public repo held the driver but nothing that could build it. It is now synced
-from the live clone and internally consistent: the positional checksums verify
-against `patches/`, and the `RegenX-AE` → `mainline` substitution in the
-APKBUILD comment and the dtsi header is preserved, with the dtsi's own sha512
-recomputed to match the de-branded file. Keep that substitution on any future
-sync.
-
-## What is proven on hardware
+## Proven on hardware
 
 Tags, each with an evidence log in this directory:
 
-- `wcd9320-regmap-readonly-proven` — regmap over the `0x800` offset
-- `wcd9320-core-bringup-proven` — fresh and adoption power paths
-- `wcd9320-dual-function-proven` — PGD `0xcb` and IFD `0xca`
-- `wcd9320-irq-parent-idle-validated` — TLMM 72, edge-rising, electrically
-  idle across 45 direct pad samples and two s2idle cycles
-- `wcd9320-cdc-rco-wake-proven` — CDC digital core made accessible, 87/87
-  sentinel registers, on the on-die RC oscillator with **no external MCLK**
+- `wcd9320-regmap-readonly-proven`
+- `wcd9320-core-bringup-proven`
+- `wcd9320-dual-function-proven`
+- `wcd9320-irq-parent-idle-validated` — TLMM 72 edge-rising, idle
+- `wcd9320-cdc-rco-wake-proven` — CDC core accessible, **no external MCLK**
+- `wcd9320-core-init-proven` (`1b18fe7`) — automatic idempotent init:
+  cold boot 24/24, adoption 26/26
 
-Plus, untagged but validated: `core-init-rc1` regression showing the
-core-release/RCO stage split is behaviour-neutral
-(`wcd9320-core-init-rc1-regression.log`).
+Untagged but validated:
 
-## The single most important finding
+- `core-init-rc1` regression — stage split is behaviour-neutral
+- **nested IRQ idle proof, 16/16** (`9544c1d`) — chip registers 29 sources all
+  masked on parent irq 87, `/proc/interrupts` shows **0** assertions against
+  `msmgpio 72 Edge`, masks `ff ff 3f 7f`, codec health untouched
 
-The `0x200`–`0x3bf` region reading all-zero was **never an MCLK problem**. The
-digital core was held in reset because this port had never run
-`wcd9xxx_bring_up()` — four writes downstream performs at
-`wcd9xxx-core.c:468`, before it even reads the chip id.
+## The two findings that matter
 
-It survived every earlier milestone because identity, revision, regmap and
-dual-function were all **read-only**. The first write outside the top-level
-block exposed it immediately.
+**1. The dark `0x200`–`0x3bf` region was never an MCLK problem.** The digital
+core was held in reset because this port never ran `wcd9xxx_bring_up()` — four
+writes downstream performs at `wcd9xxx-core.c:468`, before it even reads the
+chip id. It survived every earlier milestone because identity, revision,
+regmap and dual-function were all **read-only**.
 
-`wcd9320-mclk-investigation.md` and `wcd9320-register-map.md` both carry
-correction headers saying so. External MCLK remains unresolved but is **not**
-a blocker; it matters again only when a stream needs a frequency-accurate
-reference.
+**2. The core release does the work, not the clock.** Three-stage snapshots:
+`0 → 94 → 95` non-zero. The RCO sequence changes **exactly one register in
+448** — `0x311`, the gate bit it writes itself. All 16 registers differing
+from `__POR` are already at final values after the core release, so they are
+reset-state values for this die (consistent with revision-dependent defaults
+for minor `0x0001`). See `wcd9320-core-release-vs-clock.md`.
 
-## What is implemented but NOT validated
+Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
+`REGCACHE_NONE` still stays, but now for one reason only — **volatility is
+unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-`core-init-rc2` (commit `8372807`) converts the manual wake into automatic,
-idempotent initialisation. Nothing has been built or booted.
+## IN FLIGHT — step 4, committed but NOT built or booted
 
-- `wcd9320_core_init()` — idempotent, serialised on `wake_lock`, no-op for
-  the IFD; `core_init_calls` vs `core_init_runs` distinguishes a no-op entry
-  from one that wrote
-- fresh vs adoption decided by **reading the sentinel**, not driver state
-- `wcd9320_verify_core_accessible()` — ≥48 of 448 non-zero, and `0x320`
-  reading its documented `0xe4`
-- three-stage snapshots: as-found, after core release, after clocking
-- manual trigger refuses to wake an already-initialised core
-- `core_ready` deliberately survives teardown (the documented inverse leaves
-  the CDC gate set; `core_ready` describes accessibility, not intent)
+`ab12c71` adds `mbhc-irq-rc1`: a research hook arming exactly one source,
+`WCD9320_IRQ_MBHC_INSERTION`, plus `tools/wcd9320-mbhc-irq-evidence.sh`.
 
-### The two proofs still required
+Requesting the child IRQ is the whole mechanism — regmap-irq unmasks on
+request, re-masks on free — so no mask register is touched by hand.
 
-**1. Cold-boot automatic init.** Full power-off first. Expect
-`core_ready=1 core_adopted=0 init_runs=1`, `nonzero_after=95`, bring-up
-before RCO, bandgap canary succeeding first try, and **no `wake` written**.
+### Exact next actions
 
-**2. Adoption, zero writes.** From that already-initialised state, reboot
-*without* power-off. Expect `core_adopted=1 init_runs=0`, and `bringup`
-showing zero reset transitions and zero supply operations.
+1. Build: bump pkgrel, regen patch from `~/corepatch` (`diff -uprN orig new`),
+   fix checksums **positionally** (`source=` is ordered 0001, 0003, 0002),
+   build, verify by artifact, make `boot-1520-mbhc-irq-rc1.img` with the
+   known-good cmdline UUIDs. Guards: module reports `mbhc-irq-rc1`, and
+   `strings` finds both `mbhc test: ARMED` and `nested irq chip registered`.
+2. Push the `.ko` to `/lib/modules` — `fastboot boot` does **not** update it.
+3. Reboot, boot the image.
+4. Run `wcd9320-mbhc-irq-evidence.sh`. **Interactive — needs a headset.**
 
-Only after both: tag `wcd9320-core-init-proven`.
+### The acceptance bar
+
+One physical event must produce a **finite, explainable interrupt sequence and
+return to quiescence with no manual recovery**. A source that fires and stays
+asserted is a FAIL, not a partial pass. The script splits this into: status
+cleared after ack, quiescence resampled 5 s later (parent and child), and
+≤20 assertions.
+
+Only after that passes: tag `wcd9320-irq-proven`.
 
 ## Build and test loop
 
-The acceptance scripts no longer live in a scratchpad. They are in `tools/`:
+Scripts in `tools/`: `wcd9320-coldboot-evidence.sh`,
+`wcd9320-adoption-evidence.sh`, `wcd9320-nested-idle-evidence.sh`,
+`wcd9320-mbhc-irq-evidence.sh`, `wcd9320-evidence-lib.sh`,
+`wcd9320-evidence-selftest.sh` (offline, 12 cases),
+`wcd9320-attribute-stages.py`, `check-modpost.sh`, `patch-cmdline.py`.
 
-- `wcd9320-coldboot-evidence.sh` — proof 1
-- `wcd9320-adoption-evidence.sh` — proof 2
-- `wcd9320-evidence-lib.sh` — shared collection and assertions
-- `wcd9320-evidence-selftest.sh` — offline self-test, no hardware needed
-
-Every run gates on `/sys/module/wcd9320/version` before reading a single
-register, and writes **no evidence file at all** if it mismatches, so a stale
-`.ko` cannot produce a plausible-looking result. Exit codes are 0 PASS,
-1 FAIL, 2 INVALID. Cold-boot and adoption outputs use different filenames and
-each refuses to overwrite the other mode's file.
-
-**Pull the cold-boot report before rebooting.** Reports are written to `/tmp`,
-which does not survive the reboot the adoption proof requires. The cold-boot
-script prints that reminder on exit; the command sequence puts the `scp`
-between the two proofs.
-
-Both runs prove their own starting condition from the raw `sentinel_before`
-dump — an independent recount of the non-zero registers plus the `0x320` byte
-read straight out of the hex — rather than trusting the driver's counters.
-Cold expects `0` non-zero and `0x320 = 00`; adoption expects ≥ 48 and
-`0x320 = e4`.
-
-That matters most on the adoption side. A reboot that does not physically
-remove power is **not** the same as a reboot that preserved codec state: the
-rails can still drop, or the bootloader can reset the part, and rc2 will then
-correctly run the fresh path again. Read only from the outcome, that is
-indistinguishable from rc2 failing to adopt. So the adoption script classifies
-before it judges:
-
-- codec still initialised → run the gate
-- codec came up dark, fresh path ran → **INVALID SETUP**, exit 2, filename
-  marked `-INVALID-`. Recorded as a fact about the test method, not against
-  rc2, with the rebind/reload alternatives spelled out in the report.
-- accessible at probe but *not* adopted → a genuine contradiction, so this
-  still FAILs rather than being excused as bad setup.
-
-The self-test builds synthetic sysfs trees, sentinel dumps and dmesg logs and
-checks the verdict on twelve cases, including the known bandgap failure
-signature (`0x17` reading back `0x16`), a swapped bring-up/RCO order, a stale
-module version, a counter claiming the part was dark while the dump says
-otherwise, a core-adopted-but-bus-fresh run, and the codec-was-reset case that
-must exit 2 rather than 1. Its fixtures are transcribed from the driver's
-`printf` formats, so if those change the self-test is where it surfaces.
-Verified under `dash`; the constructs are plain POSIX, but it has not been run
-under busybox `ash` on the device itself.
+Every run gates on `/sys/module/wcd9320/version` and writes **no evidence file
+at all** on mismatch. Exit 0 PASS, 1 FAIL, 2 INVALID.
 
 1. `pmbootstrap build --force linux-postmarketos-qcom-msm8974` — **the agent
-   cannot run this**; it needs interactive sudo. Verify by artifact, never by
-   exit code.
-2. `pmbootstrap install --no-sparse` then `export`, then overwrite the
-   cmdline with the known-good UUIDs via `tools/patch-cmdline.py`:
+   cannot run this**, it needs interactive sudo (`sudo -n` fails). Verify by
+   artifact, never by exit code.
+2. `install --no-sparse` then `export`, then overwrite the cmdline via
+   `tools/patch-cmdline.py`:
    `pmos_boot_uuid=a9d9c6cd-eda8-4246-8a5d-2ff04682aa95`
    `pmos_root_uuid=de214b3a-0811-4b22-a5f7-095ac1f8d676`
-   The installer mints fresh ones every time; using them gives
-   "failed to mount subpartitions" on `mmcblk0p28`.
-3. **Push the module to `/lib/modules` separately.** `fastboot boot` only
-   RAM-loads the kernel; the rootfs on eMMC is untouched, so a driver change
-   needs the `.ko` extracted from the `.apk`, copied to
-   `/lib/modules/$(uname -r)/kernel/...`, and `depmod -a`. This costs an
-   extra boot and has caused two void runs. Always check
-   `/sys/module/wcd9320/version` before trusting a result.
+   The installer mints fresh ones; using them gives "failed to mount
+   subpartitions" on `mmcblk0p28`.
+3. **Push the `.ko` to `/lib/modules` separately** and `depmod -a`. This has
+   voided two runs. Always check `/sys/module/wcd9320/version`.
 4. `fastboot.exe` is Windows-side only, not on PATH:
    `C:\Users\Admin\AppData\Local\Android\Sdk\platform-tools\fastboot.exe`,
    and PowerShell needs the `&` call operator.
 
-Recovery images, both untouched: `boot-1520.img` (pre-audio) and
-`boot-1520-rco-wake.img` (rc3, last fully validated).
+Recovery images, untouched: `boot-1520.img` (pre-audio),
+`boot-1520-core-init-rc2.img`, `boot-1520-nested-irq-rc1.img`.
 
-## Traps worth knowing
+## Traps
 
-- `abuild` pairs `source=` and `sha512sums=` **by position**, and this
-  package's `source=` is ordered 0001, 0003, 0002. A filename-keyed check
-  gives a false pass. A pmaports pre-commit hook validates this.
-- `uname -r` build number (`#129`) is a per-chroot counter, **not** `pkgrel`.
-  Identify a running build by the module's `MODULE_VERSION`.
-- The parent IRQ number varies per boot (83 and 87 both seen). It is a
-  dynamically allocated Linux virtual IRQ. Assert on pin `msmgpio 72` and
-  trigger type `0x1`, never the number.
-- `pmbootstrap`'s exit code is non-zero when a post-run umount fails despite
-  a good build.
-- The phone currently has the core woken and torn down, so it is **not** a
-  clean state. The fresh-path test needs a full power-off.
-
-## Open questions
-
-- **The 16 non-POR registers.** Three coherent families with identical deltas:
-  `TX1..TX10_MUX_CTL` `08→48`, `COMP0..2_B4_CTL` `3c→37`,
-  `COMP0..2_B5_CTL` `1f→7f`. Likely revision-dependent for minor `0x0001`,
-  but could equally be state set by the core release or the RCO sequence, or
-  inherited firmware configuration. The three-stage snapshots exist to settle
-  this. **Do not build `reg_defaults` until it is settled**, and keep
-  `REGCACHE_NONE`.
-- **External MCLK route** — unresolved, deferred, not blocking.
-- **RCU expedited stalls** at ~t+29 s, pre-existing and unrelated to audio
-  (they appear with drivers that have no interrupt code). One full record is
-  preserved in `rcu-stall-2026-08-01.log`.
+- **Never generate shell scripts through a PowerShell pipe.** It adds a BOM and
+  CRLF and the script dies with `$'\r': command not found`. Use the Write tool
+  or a WSL heredoc. This has bitten twice.
+- `abuild` pairs `source=` and `sha512sums=` **by position**; a filename-keyed
+  check gives a false pass. A pmaports pre-commit hook validates it and will
+  reject a commit after a patch is regenerated.
+- `uname -r` build number is a per-chroot counter, **not** `pkgrel`. Identify a
+  running build by `MODULE_VERSION`.
+- The parent virtual IRQ number **varies per boot** (83 and 87 both seen).
+  Assert on `msmgpio 72` and trigger `0x1`, never the number.
+- `irq_count`/`irq_spurious`/`irq_acked` in `irq_observe` are **vestigial**
+  since regmap-irq took the parent. They read 0 regardless. Use
+  `/proc/interrupts`.
+- Editing `~/corepatch/new/...c` does **not** change the repo — only the
+  regenerated patch does. `git status` will happily say clean.
+- Kconfig dependency errors are invisible to source checks. `CONFIG_REGMAP_IRQ`
+  was missing and the build died at modpost with the symbol undefined; run
+  `check-modpost.sh`.
+- Confirm pushes by `git ls-remote`. Backgrounded git commands have reported a
+  commit while leaving the push undone.
 
 ## Sequence from here
 
-1. Validate `core-init-rc2` with the two proofs above → `wcd9320-core-init-proven`
-2. Attribute the 16 non-POR registers from the three-stage snapshots
-3. Nested codec IRQ controller, all sources masked
-4. Unmask one MBHC source (reachable without MCLK) and prove a real
-   insertion/removal through status → parent edge → threaded handler →
-   nested dispatch → write-1-to-clear → line low → `wcd9320-irq-proven`
-5. Minimal ASoC component
-6. RX DAI and IFD port programming
-7. Machine driver
-8. External MCLK / AFE clock work
-9. First 48 kHz playback route
+1. **Step 4/5** — one MBHC source end-to-end → `wcd9320-irq-proven`
+2. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
+3. Minimal ASoC component
+4. RX DAI and IFD port programming
+5. Machine driver
+6. External MCLK / AFE clock work
+7. First 48 kHz playback route
 
 ## Standing constraints
 
-- Public repo: **no RegenX branding, no private substrate content**. This is
-  ordinary upstream-style kernel work and stays that way.
-- Never redistribute Nokia/Microsoft firmware blobs or ACPI dumps. Publish
-  extraction instructions and hashes only.
-- No downstream GPL source is checked in; `tools/wcd9320-regmap-derive.py`
-  fetches its own headers.
+- Public repo: **no RegenX branding, no private substrate content.** Ordinary
+  upstream-style kernel work only.
+- Never redistribute Nokia/Microsoft firmware blobs or ACPI dumps — extraction
+  instructions and hashes only.
+- No downstream GPL source checked in; `wcd9320-regmap-derive.py` fetches its
+  own headers.
 - Evidence discipline: do not tag on evidence that needs explaining, and
   correct published docs when a hypothesis is disproven. Several docs here
-  carry correction headers for exactly that reason.
+  carry correction headers for that reason.
