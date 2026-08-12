@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 17:31:10.488390100 -0400
-@@ -0,0 +1,2201 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 18:33:40.769440200 -0400
+@@ -0,0 +1,2411 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -522,6 +522,32 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	.cache_type = REGCACHE_NONE,
 +};
 +
++/*
++ * One armed MBHC source. Each request_threaded_irq gets its own dev_id so the
++ * handler can name which source fired without re-deriving it from the status
++ * register -- with several sources armed at once, deriving it that way would
++ * be a guess whenever two assert close together.
++ */
++#define WCD9320_MBHC_GROUP_MAX 8
++
++struct wcd9320;
++
++struct wcd9320_mbhc_src {
++	struct wcd9320 *wcd;
++	unsigned int src;		/* enum wcd9320_irq */
++	const char *name;
++	int virq;
++	unsigned int count;
++	u64 last_ms;
++	/*
++	 * request_irq keeps the pointer, so the name has to outlive the call.
++	 * Per-source rather than one shared string so /proc/interrupts names
++	 * which source each child line belongs to instead of showing seven
++	 * identical entries.
++	 */
++	char irqname[32];
++};
++
 +struct wcd9320 {
 +	struct slim_device *sdev;
 +	struct regulator_bulk_data supplies[WCD9320_NUM_SUPPLIES];
@@ -555,11 +581,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool irq_requested;
 +	struct regmap_irq_chip_data *irq_data;	/* nested controller */
 +
-+	/* single-source MBHC test; nothing here runs unless armed by hand */
++	/* MBHC interrupt test; nothing here runs unless armed by hand */
 +	bool mbhc_armed;
-+	int mbhc_virq;
-+	unsigned int mbhc_irq_count;
++	int mbhc_virq;			/* single-source mode only */
++	unsigned int mbhc_irq_count;	/* total across everything armed */
 +	u64 mbhc_last_ms;
++	struct wcd9320_mbhc_src mbhc_group[WCD9320_MBHC_GROUP_MAX];
++	unsigned int mbhc_group_n;	/* 0 when armed single-source */
 +	bool irq_setup_done;		/* setup is once-only, and races   */
 +	unsigned int irq_count;		/* parent assertions               */
 +	unsigned int irq_spurious;	/* asserted with nothing pending   */
@@ -1736,6 +1764,127 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * mask register is touched by hand. plain request/free rather than devm,
 + * because disarming has to be possible without unbinding.
 + */
++/*
++ * The MBHC source group, for the diagnostic pass.
++ *
++ * rc2 established that arming reaches the chip -- INTR_MASK0 read back bf with
++ * exactly bit 6 cleared -- and that with MBHC_INSERTION genuinely unmasked, a
++ * headset insertion still raised nothing. So the codec does not assert that
++ * source with the MBHC block unconfigured. That is a measurement, not an
++ * inference.
++ *
++ * What it does not say is whether the codec raises ANY MBHC source in that
++ * state. MBHC_JACK_SWITCH is the interesting one: on this family it reflects
++ * a mechanical contact in the jack rather than the detection block, so it may
++ * assert with no configuration at all. Arming the group answers that in one
++ * pass instead of seven.
++ *
++ * This is deliberately still a hand-armed research hook. It is not jack
++ * detection, and nothing here belongs in a production path.
++ */
++static const struct {
++	unsigned int src;
++	const char *name;
++} wcd9320_mbhc_group[] = {
++	{ WCD9320_IRQ_MBHC_INSERTION,	"INSERTION"	},
++	{ WCD9320_IRQ_MBHC_REMOVAL,	"REMOVAL"	},
++	{ WCD9320_IRQ_MBHC_JACK_SWITCH,	"JACK_SWITCH"	},
++	{ WCD9320_IRQ_MBHC_PRESS,	"PRESS"		},
++	{ WCD9320_IRQ_MBHC_RELEASE,	"RELEASE"	},
++	{ WCD9320_IRQ_MBHC_POTENTIAL,	"POTENTIAL"	},
++	{ WCD9320_IRQ_MBHC_SHORT_TERM,	"SHORT_TERM"	},
++};
++
++/*
++ * Six of the seven live in INTR_REG0 bits 1-6 and JACK_SWITCH in INTR_REG3
++ * bit 4, so a correctly armed group reads back 81 ff 3f 6f. The acceptance
++ * script asserts that, which is what keeps "the group and nothing else" a
++ * measurement.
++ */
++static irqreturn_t wcd9320_mbhc_group_thread(int irq, void *data)
++{
++	struct wcd9320_mbhc_src *s = data;
++	struct wcd9320 *wcd = s->wcd;
++	struct device *dev = &wcd->sdev->dev;
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++
++	s->count++;
++	s->last_ms = ktime_to_ms(ktime_get_boottime());
++	wcd->mbhc_irq_count++;
++	wcd->mbhc_last_ms = s->last_ms;
++
++	if (!wcd9320_read_irq_state(wcd, status, mask))
++		dev_info(dev,
++			 "mbhc group: %s (source %u) irq #%u at %llu ms, post-ack status=%02x %02x %02x %02x mask=%02x %02x %02x %02x\n",
++			 s->name, s->src, s->count, s->last_ms,
++			 status[0], status[1], status[2], status[3],
++			 mask[0], mask[1], mask[2], mask[3]);
++	else
++		dev_err(dev, "mbhc group: %s irq #%u, status read failed\n",
++			s->name, s->count);
++
++	return IRQ_HANDLED;
++}
++
++static void wcd9320_mbhc_group_free(struct wcd9320 *wcd)
++{
++	unsigned int i;
++
++	for (i = 0; i < wcd->mbhc_group_n; i++)
++		if (wcd->mbhc_group[i].virq > 0)
++			free_irq(wcd->mbhc_group[i].virq, &wcd->mbhc_group[i]);
++	wcd->mbhc_group_n = 0;
++}
++
++static int wcd9320_mbhc_group_arm(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int i;
++	int ret;
++
++	BUILD_BUG_ON(ARRAY_SIZE(wcd9320_mbhc_group) > WCD9320_MBHC_GROUP_MAX);
++
++	for (i = 0; i < ARRAY_SIZE(wcd9320_mbhc_group); i++) {
++		struct wcd9320_mbhc_src *s = &wcd->mbhc_group[i];
++
++		s->wcd = wcd;
++		s->src = wcd9320_mbhc_group[i].src;
++		s->name = wcd9320_mbhc_group[i].name;
++		s->count = 0;
++		s->last_ms = 0;
++		s->virq = regmap_irq_get_virq(wcd->irq_data, s->src);
++		if (s->virq <= 0) {
++			dev_err(dev, "mbhc group: no virq for %s (source %u)\n",
++				s->name, s->src);
++			ret = -ENXIO;
++			goto unwind;
++		}
++
++		snprintf(s->irqname, sizeof(s->irqname), "wcd9320-mbhc-%s",
++			 s->name);
++		ret = request_threaded_irq(s->virq, NULL,
++					   wcd9320_mbhc_group_thread,
++					   IRQF_ONESHOT, s->irqname, s);
++		if (ret) {
++			dev_err(dev, "mbhc group: request %s virq %d: %d\n",
++				s->name, s->virq, ret);
++			s->virq = 0;
++			goto unwind;
++		}
++		wcd->mbhc_group_n = i + 1;
++	}
++
++	dev_info(dev,
++		 "mbhc group: ARMED %u MBHC sources -- all others remain masked\n",
++		 wcd->mbhc_group_n);
++	return 0;
++
++unwind:
++	/* Partial arming would make the mask assertion meaningless. */
++	wcd9320_mbhc_group_free(wcd);
++	return ret;
++}
++
 +static irqreturn_t wcd9320_mbhc_test_thread(int irq, void *data)
 +{
 +	struct wcd9320 *wcd = data;
@@ -1768,16 +1917,36 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			      struct device_attribute *attr, char *buf)
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int i;
++	int len;
 +
 +	if (wcd->is_ifd)
 +		return sysfs_emit(buf, "interface function: not applicable\n");
 +
-+	return sysfs_emit(buf,
-+			  "armed=%u source=%u name=MBHC_INSERTION child_virq=%d\n"
-+			  "irq_count=%u last_ms=%llu\n",
-+			  wcd->mbhc_armed, WCD9320_IRQ_MBHC_INSERTION,
-+			  wcd->mbhc_virq, wcd->mbhc_irq_count,
-+			  wcd->mbhc_last_ms);
++	if (!wcd->mbhc_group_n)
++		return sysfs_emit(buf,
++				  "armed=%u mode=single source=%u name=MBHC_INSERTION child_virq=%d\n"
++				  "irq_count=%u last_ms=%llu\n",
++				  wcd->mbhc_armed, WCD9320_IRQ_MBHC_INSERTION,
++				  wcd->mbhc_virq, wcd->mbhc_irq_count,
++				  wcd->mbhc_last_ms);
++
++	len = sysfs_emit(buf,
++			 "armed=%u mode=group sources=%u\n"
++			 "irq_count=%u last_ms=%llu\n",
++			 wcd->mbhc_armed, wcd->mbhc_group_n,
++			 wcd->mbhc_irq_count, wcd->mbhc_last_ms);
++
++	/* One line per source, so a run can say exactly which one fired. */
++	for (i = 0; i < wcd->mbhc_group_n; i++)
++		len += sysfs_emit_at(buf, len,
++				     "source=%u name=%s child_virq=%d count=%u last_ms=%llu\n",
++				     wcd->mbhc_group[i].src,
++				     wcd->mbhc_group[i].name,
++				     wcd->mbhc_group[i].virq,
++				     wcd->mbhc_group[i].count,
++				     wcd->mbhc_group[i].last_ms);
++	return len;
 +}
 +
 +static ssize_t mbhc_test_store(struct device *dev,
@@ -1819,16 +1988,35 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev,
 +			 "mbhc test: ARMED source %u (MBHC_INSERTION) on child virq %d -- this source is now UNMASKED, all others remain masked\n",
 +			 WCD9320_IRQ_MBHC_INSERTION, wcd->mbhc_virq);
++	} else if (sysfs_streq(buf, "arm-group")) {
++		if (wcd->mbhc_armed) {
++			ret = -EBUSY;
++			goto out;
++		}
++		ret = wcd9320_mbhc_group_arm(wcd);
++		if (ret)
++			goto out;
++		wcd->mbhc_armed = true;
 +	} else if (sysfs_streq(buf, "disarm")) {
 +		if (!wcd->mbhc_armed) {
 +			ret = -EINVAL;
 +			goto out;
 +		}
-+		free_irq(wcd->mbhc_virq, wcd);
++		if (wcd->mbhc_group_n) {
++			unsigned int n = wcd->mbhc_group_n;
++
++			wcd9320_mbhc_group_free(wcd);
++			dev_info(dev,
++				 "mbhc group: DISARMED, %u sources re-masked after %u interrupt(s)\n",
++				 n, wcd->mbhc_irq_count);
++		} else {
++			free_irq(wcd->mbhc_virq, wcd);
++			dev_info(dev,
++				 "mbhc test: DISARMED, source %u re-masked after %u interrupt(s)\n",
++				 WCD9320_IRQ_MBHC_INSERTION,
++				 wcd->mbhc_irq_count);
++		}
 +		wcd->mbhc_armed = false;
-+		dev_info(dev,
-+			 "mbhc test: DISARMED, source %u re-masked after %u interrupt(s)\n",
-+			 WCD9320_IRQ_MBHC_INSERTION, wcd->mbhc_irq_count);
 +	} else {
 +		ret = -EINVAL;
 +		goto out;
@@ -2211,6 +2399,28 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(&sdev->dev);
 +
++	/*
++	 * The MBHC test hook uses plain request_irq rather than devm, so that
++	 * disarming does not require unbinding. That means unbinding while
++	 * armed has to disarm here -- otherwise the handlers stay registered
++	 * against memory that is about to go away, and the next assertion
++	 * lands in freed state. The acceptance scripts always disarm, but
++	 * rmmod while armed is an ordinary thing to do during research.
++	 */
++	if (wcd) {
++		mutex_lock(&wcd->wake_lock);
++		if (wcd->mbhc_armed) {
++			if (wcd->mbhc_group_n)
++				wcd9320_mbhc_group_free(wcd);
++			else
++				free_irq(wcd->mbhc_virq, wcd);
++			wcd->mbhc_armed = false;
++			dev_info(&sdev->dev,
++				 "removing while armed: MBHC test disarmed first\n");
++		}
++		mutex_unlock(&wcd->wake_lock);
++	}
++
 +	dev_info(&sdev->dev, "removing (%s path, power_owned=%u)\n",
 +		 wcd && wcd->adopted ? "adopted" : "fresh",
 +		 wcd ? wcd->power_owned : 0);
@@ -2242,6 +2452,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-irq-rc2");
++MODULE_VERSION("mbhc-irq-rc3");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
