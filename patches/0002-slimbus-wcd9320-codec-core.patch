@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 18:33:40.769440200 -0400
-@@ -0,0 +1,2411 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 19:20:09.500913600 -0400
+@@ -0,0 +1,2527 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -369,6 +369,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_CDC_FIRST		0x200
 +#define WCD9320_CDC_LAST		0x3bf
 +#define WCD9320_CDC_COUNT		(WCD9320_CDC_LAST - WCD9320_CDC_FIRST + 1)
++
++/*
++ * ---- MBHC observation window, READ ONLY ------------------------------------
++ *
++ * The MBHC block sits immediately above the CDC sentinel range, so nothing
++ * here has ever been read on this hardware -- the sentinel stops at 0x3bf.
++ *
++ * Three single registers outside the dark block were recorded in the
++ * 2026-07-31 dump as reading something other than their reset value, which is
++ * to say they reflect real analog state rather than a register file:
++ *
++ *   0x14b  MBHC_INSERT_DET_STATUS  __POR 00, read 0e
++ *   0x1b3  RX_HPH_L_STATUS         __POR 00, read 04
++ *   0x1b9  RX_HPH_R_STATUS         __POR 00, read 04
++ *
++ * RC_OSC_STATUS is included as an anchor, not as data: it read 0x18 on a
++ * healthy part, and headset detection is designed to run off that oscillator,
++ * so a probe that finds it dead is measuring the wrong thing.
++ */
++#define WCD9320_A_MBHC_INSERT_DET_STATUS	0x14b
++#define WCD9320_A_RX_HPH_L_STATUS		0x1b3
++#define WCD9320_A_RX_HPH_R_STATUS		0x1b9
++#define WCD9320_MBHC_FIRST			0x3c0
++#define WCD9320_MBHC_LAST			0x3ff
++#define WCD9320_MBHC_COUNT		(WCD9320_MBHC_LAST - WCD9320_MBHC_FIRST + 1)
 +
 +struct wcd9320_wake_step {
 +	u16 reg;
@@ -2178,6 +2203,96 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(irq_live);
 +
++/*
++ * ---- MBHC probe, READ ONLY -------------------------------------------------
++ *
++ * Why this exists before any MBHC configuration is written.
++ *
++ * r138 established that no MBHC source asserts unconfigured: all seven armed
++ * and verified unmasked at 81 ff 3f 6f read live off the chip, a physical
++ * insertion and a removal, every counter still zero. So configuration is
++ * needed. What is not yet known is HOW MUCH, and the two possibilities call
++ * for very different amounts of writing into an analog block this port has
++ * never touched:
++ *
++ *   - the comparator already tracks the jack, and only the path from
++ *     detection to interrupt is missing -- one targeted enable, or
++ *   - detection itself is off, and micbias plus the comparator have to be
++ *     brought up first.
++ *
++ * Reading tells them apart and costs nothing. This attribute writes no
++ * register, and every read goes to the chip because the regmap is
++ * REGCACHE_NONE.
++ */
++static int wcd9320_read_mbhc(struct wcd9320 *wcd, u8 *buf)
++{
++	unsigned int i;
++	int ret;
++
++	/* Per register, not bulk: a bulk failure would not say where. */
++	for (i = 0; i < WCD9320_MBHC_COUNT; i++) {
++		unsigned int v;
++
++		ret = regmap_read(wcd->regmap, WCD9320_MBHC_FIRST + i, &v);
++		if (ret) {
++			dev_err(&wcd->sdev->dev,
++				"mbhc probe read failed at 0x%03x: %d\n",
++				WCD9320_MBHC_FIRST + i, ret);
++			return ret;
++		}
++		buf[i] = v;
++	}
++	return 0;
++}
++
++static ssize_t mbhc_probe_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	u8 block[WCD9320_MBHC_COUNT];
++	unsigned int insert, hph_l, hph_r, rc_osc;
++	unsigned int i, nonzero = 0;
++	int len, ret;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	ret = regmap_read(wcd->regmap, WCD9320_A_MBHC_INSERT_DET_STATUS, &insert);
++	if (!ret)
++		ret = regmap_read(wcd->regmap, WCD9320_A_RX_HPH_L_STATUS, &hph_l);
++	if (!ret)
++		ret = regmap_read(wcd->regmap, WCD9320_A_RX_HPH_R_STATUS, &hph_r);
++	if (!ret)
++		ret = regmap_read(wcd->regmap, WCD9320_A_RC_OSC_STATUS, &rc_osc);
++	if (ret)
++		return sysfs_emit(buf, "read failed: %d\n", ret);
++
++	if (wcd9320_read_mbhc(wcd, block))
++		return sysfs_emit(buf, "mbhc block read failed\n");
++
++	for (i = 0; i < WCD9320_MBHC_COUNT; i++)
++		if (block[i])
++			nonzero++;
++
++	len = sysfs_emit(buf,
++			 "insert_det=%02x hph_l=%02x hph_r=%02x rc_osc=%02x\n"
++			 "range=0x%03x-0x%03x count=%u nonzero=%u\n",
++			 insert, hph_l, hph_r, rc_osc,
++			 WCD9320_MBHC_FIRST, WCD9320_MBHC_LAST,
++			 WCD9320_MBHC_COUNT, nonzero);
++
++	for (i = 0; i < WCD9320_MBHC_COUNT; i++) {
++		len += sysfs_emit_at(buf, len, "%02x", block[i]);
++		if ((i & 31) == 31)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	if (WCD9320_MBHC_COUNT & 31)
++		len += sysfs_emit_at(buf, len, "\n");
++
++	return len;
++}
++static DEVICE_ATTR_RO(mbhc_probe);
++
 +static ssize_t identity_show(struct device *dev,
 +			     struct device_attribute *attr, char *buf)
 +{
@@ -2221,6 +2336,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_bringup.attr,
 +	&dev_attr_irq_observe.attr,
 +	&dev_attr_irq_live.attr,
++	&dev_attr_mbhc_probe.attr,
 +	&dev_attr_rco_wake.attr,
 +	&dev_attr_core_reinit.attr,
 +	&dev_attr_mbhc_test.attr,
@@ -2452,6 +2568,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-irq-rc3");
++MODULE_VERSION("mbhc-probe-rc4");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
