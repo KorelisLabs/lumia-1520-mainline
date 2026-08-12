@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 16:08:40.404010124 -0400
-@@ -0,0 +1,2154 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 17:31:10.488390100 -0400
+@@ -0,0 +1,2201 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1944,6 +1944,52 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(irq_observe);
 +
++/*
++ * Live interrupt state, read off the chip on every open.
++ *
++ * irq_observe cannot answer "what are the masks right now". Its
++ * mask_readback is written once, at IRQ setup, and its last_status only by
++ * the bounded sampler, which stops half a minute into probe. Both are frozen
++ * thereafter, which made the step 4 gate's two most important checks
++ * unfailable until they were moved onto the handler's own log line.
++ *
++ * That left one thing still unanswerable. When a source is armed and no
++ * interrupt arrives, there is no handler line, so nothing distinguishes
++ *
++ *   (a) regmap-irq unmasked the source and the codec never asserted it, from
++ *   (b) the unmask never reached the chip and the arm did nothing,
++ *
++ * and (b) would make the whole exercise vacuous. This reads INTR_STATUS and
++ * INTR_MASK directly, so the question is settled without needing an event to
++ * happen first.
++ */
++static ssize_t irq_live_show(struct device *dev,
++			     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++	u8 pending[WCD9320_NUM_IRQ_REGS];
++	int level, ret;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: no parent irq\n");
++
++	ret = wcd9320_read_irq_state(wcd, status, mask);
++	if (ret)
++		return sysfs_emit(buf, "read failed: %d\n", ret);
++
++	level = wcd9320_raw_level(wcd);
++
++	return sysfs_emit(buf,
++			  "status=%02x %02x %02x %02x mask=%02x %02x %02x %02x\n"
++			  "pending=%s raw_level=%d\n",
++			  status[0], status[1], status[2], status[3],
++			  mask[0], mask[1], mask[2], mask[3],
++			  wcd9320_pending(status, mask, pending) ? "yes" : "no",
++			  level);
++}
++static DEVICE_ATTR_RO(irq_live);
++
 +static ssize_t identity_show(struct device *dev,
 +			     struct device_attribute *attr, char *buf)
 +{
@@ -1986,6 +2032,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_identity.attr,
 +	&dev_attr_bringup.attr,
 +	&dev_attr_irq_observe.attr,
++	&dev_attr_irq_live.attr,
 +	&dev_attr_rco_wake.attr,
 +	&dev_attr_core_reinit.attr,
 +	&dev_attr_mbhc_test.attr,
@@ -2195,6 +2242,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-irq-rc1");
++MODULE_VERSION("mbhc-irq-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");

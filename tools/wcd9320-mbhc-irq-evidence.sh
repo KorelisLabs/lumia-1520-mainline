@@ -34,15 +34,23 @@
 # hardware actually did.
 #
 # The handler reads both registers live, straight off the chip, after
-# regmap-irq has already acknowledged. That is the only source in this build
-# that can distinguish an ack that took from one that did not.
+# regmap-irq has already acknowledged. That is the only thing that can
+# distinguish an ack that took from one that did not.
+#
+# The handler only speaks when an interrupt arrives, though, and the first
+# hardware run got none: MBHC_INSERTION was armed, a headset went in, and
+# nothing fired. That left the run unable to say whether regmap-irq had
+# unmasked the source at all -- and if it had not, the whole exercise was
+# vacuous. mbhc-irq-rc2 adds irq_live, which reads INTR_STATUS and INTR_MASK
+# on demand, so the arming half of the proof is measured directly and no
+# longer waits on an event that may never come.
 # ---------------------------------------------------------------------------
 
 set -u
 
 MODE="mbhc-irq"
 DIR=$(dirname "$0")
-EXPECT_VERSION="${EXPECT_VERSION:-mbhc-irq-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-mbhc-irq-rc2}"
 . "$DIR/wcd9320-evidence-lib.sh"
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
@@ -80,6 +88,19 @@ stale_masks() {
 	grep -o 'mask_readback=[0-9a-f ]*' "$PGD/irq_observe" 2>/dev/null |
 		head -n1 | sed 's/mask_readback=//; s/ *$//'
 }
+# Live INTR_STATUS/INTR_MASK, read off the chip on every open (mbhc-irq-rc2+).
+# This is what makes "exactly one source is armed" and "the source was
+# re-masked" measurable without waiting for an interrupt: the first rc1 run
+# could not tell an unmask that never reached the chip from a codec that
+# simply never asserted.
+live_status() {
+	sed -n 's/^status=\([0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]*\) mask=.*/\1/p' \
+		"$PGD/irq_live" 2>/dev/null | head -n1
+}
+live_mask() {
+	sed -n 's/^status=[0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]* mask=\([0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]*\).*/\1/p' \
+		"$PGD/irq_live" 2>/dev/null | head -n1
+}
 # post-ack status and mask off the LAST handler line, which is the settled one.
 handler_status() {
 	sed -n 's/.*post-ack status=\([0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]*\) mask=.*/\1/p' \
@@ -99,8 +120,17 @@ tty_note() { printf '%s\n' "$*" >&2; }
 # into it.
 
 MASK_STALE_BEFORE=$(stale_masks)
+MASK_LIVE_BEFORE=$(live_mask)
+STATUS_LIVE_BEFORE=$(live_status)
 PARENT_BEFORE=$(parent_count)
 MBHC_BEFORE=$(head -n1 "$PGD/mbhc_test" 2>/dev/null)
+
+if [ -z "$MASK_LIVE_BEFORE" ]; then
+	say "INVALID RUN: $PGD/irq_live is missing or unreadable."
+	say "  This build predates the live interrupt-state attribute, so the"
+	say "  arming half of the proof cannot be measured. Nothing collected."
+	exit 2
+fi
 
 tty_note "arming MBHC_INSERTION on $PGD_NAME"
 if ! echo arm > "$PGD/mbhc_test" 2>/dev/null; then
@@ -112,7 +142,12 @@ sleep 1
 ARMED=$(head -n1 "$PGD/mbhc_test" 2>/dev/null)
 CHILD_VIRQ=$(printf '%s' "$ARMED" | tr ' ' '\n' | sed -n 's/^child_virq=//p')
 CHILD_BEFORE=$(child_count)
+# Read the masks while armed and BEFORE any event. This is the measurement
+# that separates "the codec never asserted" from "the unmask never happened".
+MASK_LIVE_ARMED=$(live_mask)
+STATUS_LIVE_ARMED=$(live_status)
 tty_note "armed: $ARMED"
+tty_note "live mask while armed: $MASK_LIVE_ARMED (want $MASK_ONE_ARMED)"
 
 printf '\n>>> INSERT OR REMOVE A HEADSET NOW (%ss) <<<\n\n' "$SETTLE" >&2
 i=0
@@ -138,6 +173,8 @@ CHILD_Q=$(child_count)
 echo disarm > "$PGD/mbhc_test" 2>/dev/null
 sleep 1
 MASK_STALE_AFTER=$(stale_masks)
+MASK_LIVE_AFTER=$(live_mask)
+STATUS_LIVE_AFTER=$(live_status)
 MBHC_AFTER=$(head -n1 "$PGD/mbhc_test" 2>/dev/null)
 
 snap_dmesg
@@ -152,12 +189,16 @@ tty_note "collected; writing $OUT"
 	hdr "before arming"
 	say "parent assertions : ${PARENT_BEFORE:-0}"
 	say "mbhc_test         : $MBHC_BEFORE"
+	say "live mask         : $MASK_LIVE_BEFORE"
+	say "live status       : $STATUS_LIVE_BEFORE"
 	note "irq_observe masks" "$MASK_STALE_BEFORE -- frozen probe-time snapshot, not a live read"
 
 	hdr "armed"
 	say "mbhc_test         : $ARMED"
 	say "child virq        : ${CHILD_VIRQ:-none}"
 	say "child assertions  : ${CHILD_BEFORE:-0}"
+	say "live mask         : $MASK_LIVE_ARMED   (want $MASK_ONE_ARMED)"
+	say "live status       : $STATUS_LIVE_ARMED"
 
 	hdr "physical event"
 	say "waited            : ${WAITED}s of ${SETTLE}s"
@@ -174,6 +215,8 @@ tty_note "collected; writing $OUT"
 
 	hdr "disarmed"
 	say "mbhc_test         : $MBHC_AFTER"
+	say "live mask         : $MASK_LIVE_AFTER   (want $MASK_ALL)"
+	say "live status       : $STATUS_LIVE_AFTER"
 	note "irq_observe masks" "$MASK_STALE_AFTER -- same frozen snapshot; it cannot show re-masking"
 
 	# --- GATE ---------------------------------------------------------------
@@ -199,9 +242,19 @@ tty_note "collected; writing $OUT"
 	check "handler status reads" \
 		"$(count_lines 'mbhc test: irq #[0-9]*, status read failed')" "0"
 
-	# Exactly one source unmasked, read live off the chip while armed. This is
-	# what makes "all others remain masked" a measurement rather than a claim.
-	check "armed mask (live)" "$MASK_POSTACK" "$MASK_ONE_ARMED"
+	# The arming half of the proof, and it does NOT depend on an event
+	# arriving: read straight off INTR_MASK while armed. Exactly one bit
+	# clear -- INTR_REG0 bit 6 -- is what makes "all others remain masked" a
+	# measurement rather than a claim in a dev_info string.
+	check "masks quiet before arming" "$MASK_LIVE_BEFORE" "$MASK_ALL"
+	check "nothing asserted before arming" "$STATUS_LIVE_BEFORE" "00 00 00 00"
+	check "armed mask (live)" "$MASK_LIVE_ARMED" "$MASK_ONE_ARMED"
+	check "re-masked after disarm (live)" "$MASK_LIVE_AFTER" "$MASK_ALL"
+
+	# The handler's own post-ack mask, when there was an event to log one.
+	# Recorded rather than gated: the armed-mask check above already carries
+	# this, and gating twice would report one fact as two failures.
+	note "post-ack mask (handler)" "${MASK_POSTACK:-none logged}"
 
 	# The strict requirement, split so a failure says which half broke.
 	check "status cleared after ack (live)" "$STATUS_POSTACK" "00 00 00 00"
@@ -228,8 +281,6 @@ tty_note "collected; writing $OUT"
 	check "adsp state" "$(cat /sys/class/remoteproc/remoteproc0/state 2>/dev/null)" "running"
 
 	note "source" "$(kv "$PGD/mbhc_test" source) MBHC_INSERTION -- all others stayed masked"
-	note "re-masking after disarm" \
-		"not directly observable in this build; regmap-irq re-masks on free, and the DISARMED line plus continued quiescence are the evidence for it"
 
 	collect_evidence
 	emit_verdict
