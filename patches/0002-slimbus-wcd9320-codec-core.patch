@@ -1,9 +1,10 @@
 From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
-Supplies, reset, SLIMbus binding, regmap, automatic idempotent CDC-core
-initialisation with readable stage snapshots, and a nested regmap-irq
-controller owning the parent line with every source masked.
+Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
+observation, automatic idempotent CDC-core initialisation with all three
+stage snapshots readable, and a nested IRQ chip description that is
+deliberately not registered yet.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
@@ -41,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 20:06:04.855819947 -0400
-@@ -0,0 +1,2026 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 16:08:40.404010124 -0400
+@@ -0,0 +1,2154 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -553,6 +554,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct gpio_desc *irq_gpio;	/* same pad, for raw level reads   */
 +	bool irq_requested;
 +	struct regmap_irq_chip_data *irq_data;	/* nested controller */
++
++	/* single-source MBHC test; nothing here runs unless armed by hand */
++	bool mbhc_armed;
++	int mbhc_virq;
++	unsigned int mbhc_irq_count;
++	u64 mbhc_last_ms;
 +	bool irq_setup_done;		/* setup is once-only, and races   */
 +	unsigned int irq_count;		/* parent assertions               */
 +	unsigned int irq_spurious;	/* asserted with nothing pending   */
@@ -1712,6 +1719,127 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_WO(core_reinit);
 +
++/*
++ * ---- single-source MBHC interrupt test, research only ----------------------
++ *
++ * Unmasks exactly ONE already-mapped source and nothing else. No jack
++ * detection policy, no other MBHC sources, no ASoC.
++ *
++ * MBHC_INSERTION is the choice for a reason that is now measured twice: the
++ * MBHC block at 0x3c0-0x3ff reads its documented defaults with no clock
++ * running, and the release-not-clock finding showed register accessibility
++ * does not depend on clocking at all. So this source can be exercised without
++ * anything the port has not already proven.
++ *
++ * Requesting the child IRQ is what unmasks it -- regmap-irq unmasks on
++ * request and re-masks on free -- so arm/disarm is the whole mechanism and no
++ * mask register is touched by hand. plain request/free rather than devm,
++ * because disarming has to be possible without unbinding.
++ */
++static irqreturn_t wcd9320_mbhc_test_thread(int irq, void *data)
++{
++	struct wcd9320 *wcd = data;
++	struct device *dev = &wcd->sdev->dev;
++	u8 status[WCD9320_NUM_IRQ_REGS], mask[WCD9320_NUM_IRQ_REGS];
++
++	wcd->mbhc_irq_count++;
++	wcd->mbhc_last_ms = ktime_to_ms(ktime_get_boottime());
++
++	/*
++	 * Read status AFTER regmap-irq has already acknowledged, so this shows
++	 * whether the bit actually cleared. A source that stays asserted here
++	 * is the failure that matters: it means the ack did not take and the
++	 * line will never return to idle.
++	 */
++	if (!wcd9320_read_irq_state(wcd, status, mask))
++		dev_info(dev,
++			 "mbhc test: irq #%u at %llu ms, post-ack status=%02x %02x %02x %02x mask=%02x %02x %02x %02x\n",
++			 wcd->mbhc_irq_count, wcd->mbhc_last_ms,
++			 status[0], status[1], status[2], status[3],
++			 mask[0], mask[1], mask[2], mask[3]);
++	else
++		dev_err(dev, "mbhc test: irq #%u, status read failed\n",
++			wcd->mbhc_irq_count);
++
++	return IRQ_HANDLED;
++}
++
++static ssize_t mbhc_test_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	return sysfs_emit(buf,
++			  "armed=%u source=%u name=MBHC_INSERTION child_virq=%d\n"
++			  "irq_count=%u last_ms=%llu\n",
++			  wcd->mbhc_armed, WCD9320_IRQ_MBHC_INSERTION,
++			  wcd->mbhc_virq, wcd->mbhc_irq_count,
++			  wcd->mbhc_last_ms);
++}
++
++static ssize_t mbhc_test_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->irq_data)
++		return -ENODEV;
++
++	mutex_lock(&wcd->wake_lock);
++
++	if (sysfs_streq(buf, "arm")) {
++		if (wcd->mbhc_armed) {
++			ret = -EBUSY;
++			goto out;
++		}
++		wcd->mbhc_virq = regmap_irq_get_virq(wcd->irq_data,
++						     WCD9320_IRQ_MBHC_INSERTION);
++		if (wcd->mbhc_virq <= 0) {
++			dev_err(dev, "mbhc test: no virq for source %u\n",
++				WCD9320_IRQ_MBHC_INSERTION);
++			ret = -ENXIO;
++			goto out;
++		}
++		ret = request_threaded_irq(wcd->mbhc_virq, NULL,
++					   wcd9320_mbhc_test_thread,
++					   IRQF_ONESHOT, "wcd9320-mbhc", wcd);
++		if (ret) {
++			dev_err(dev, "mbhc test: request child virq %d: %d\n",
++				wcd->mbhc_virq, ret);
++			goto out;
++		}
++		wcd->mbhc_armed = true;
++		dev_info(dev,
++			 "mbhc test: ARMED source %u (MBHC_INSERTION) on child virq %d -- this source is now UNMASKED, all others remain masked\n",
++			 WCD9320_IRQ_MBHC_INSERTION, wcd->mbhc_virq);
++	} else if (sysfs_streq(buf, "disarm")) {
++		if (!wcd->mbhc_armed) {
++			ret = -EINVAL;
++			goto out;
++		}
++		free_irq(wcd->mbhc_virq, wcd);
++		wcd->mbhc_armed = false;
++		dev_info(dev,
++			 "mbhc test: DISARMED, source %u re-masked after %u interrupt(s)\n",
++			 WCD9320_IRQ_MBHC_INSERTION, wcd->mbhc_irq_count);
++	} else {
++		ret = -EINVAL;
++		goto out;
++	}
++	ret = 0;
++out:
++	mutex_unlock(&wcd->wake_lock);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(mbhc_test);
++
 +static ssize_t wcd9320_emit_dump(char *buf, const u8 *d, bool have)
 +{
 +	int len = 0;
@@ -1860,6 +1988,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_irq_observe.attr,
 +	&dev_attr_rco_wake.attr,
 +	&dev_attr_core_reinit.attr,
++	&dev_attr_mbhc_test.attr,
 +	&dev_attr_sentinel_before.attr,
 +	&dev_attr_sentinel_after.attr,
 +	&dev_attr_sentinel_after_bringup.attr,
@@ -2066,6 +2195,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("nested-irq-rc1");
++MODULE_VERSION("mbhc-irq-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
