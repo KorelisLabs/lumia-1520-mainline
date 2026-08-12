@@ -1,6 +1,6 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-11. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-12. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
@@ -8,13 +8,13 @@ State as of 2026-08-11. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`aa6feac`**, pushed |
+| working branch | `research/audio-wcd9320-core-init` at **`476d468`**, pushed |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **136 built and verified** |
-| last built module | `mbhc-irq-rc1` (r136), **not yet on the phone** |
-| running on the phone | `nested-irq-rc1` (r135) |
+| pkgrel | 137 built and verified; **138 staged, not built** |
+| last built module | `mbhc-irq-rc2` (r137), on the phone, inserted by hand |
+| running on the phone | `mbhc-irq-rc2` (r137) |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -57,49 +57,91 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4, rc1 ran and did not fire; rc2 staged
+## IN FLIGHT — step 4: arming proven, dispatch has no stimulus yet
 
-**rc1 hardware run, 2026-08-12: FAIL, 13/18.** MBHC_INSERTION armed cleanly on
-child virq 88, headset inserted inside the 20 s window, and nothing happened —
-child 0→0, parent 0→0, no handler line, DISARMED after 0 interrupts. Codec
-health untouched throughout: identity `0x0102`, `core_ready=1`, ADSP running,
-no WARNING/BUG, no spurious complaints, parent still idle.
+### What two hardware runs established
 
-The likely reading is that nothing has programmed the MBHC block — no micbias,
-no insert-detect enable — so the codec never raised the status bit. But the run
-**could not prove that**, and that is the part that mattered: with no interrupt
-there was no handler line, and every live fact about the mask came from that
-line. So it could not separate
+**rc1 (r136): FAIL 13/18, inconclusive.** MBHC_INSERTION armed on child virq
+88, headset inserted, nothing fired. But with no interrupt there was no handler
+line, and every live fact about the mask came from that line — so the run could
+not separate "the codec never asserted" from "the unmask never reached the
+chip", and the second would have made the whole test vacuous.
 
-- (a) regmap-irq unmasked bit 6, codec never asserted — a stimulus problem, from
-- (b) the unmask never reached the chip — which makes the whole test vacuous.
+**rc2 (r137): FAIL 17/21, and the ambiguity is gone.** `irq_live` reads
+INTR_STATUS and INTR_MASK off the chip on demand, so the arming half is
+measured before the event window opens:
 
-`armed mask (live)` and `status cleared after ack` both failed with `got=`,
-empty rather than wrong.
-
-**`1e8a00f` adds `irq_live`** (`mbhc-irq-rc2`, pkgrel 137, staged not built): a
-sysfs attribute reading INTR_STATUS and INTR_MASK off the chip on every open,
-plus raw GPIO level and computed pending state. The arming half of the proof is
-now measured before the event window opens and no longer waits on an event:
-
-| check | expected |
+| check | measured |
 |---|---|
 | masks quiet before arming | `ff ff 3f 7f` |
 | nothing asserted before arming | `00 00 00 00` |
-| armed mask (live) | `bf ff 3f 7f` — INTR_REG0 bit 6 clear, 28 set |
+| armed mask (live) | **`bf ff 3f 7f`** — INTR_REG0 bit 6 clear, 28 still set |
 | re-masked after disarm (live) | `ff ff 3f 7f` |
 
-That last row also retires the old "not directly observable" note. The script
-refuses to run against a build without `irq_live`.
+So regmap-irq's unmask **does** reach the chip and `free_irq` re-masks it. The
+arm/disarm mechanism is proven at the register level.
 
-**The decision waiting on r137:** if the armed mask reads `bf ff 3f 7f`, the
-chain is fine and this is purely a stimulus problem — either program the MBHC
-block (micbias + insert detect) to keep a literally physical event, or move to
-a driver-triggerable source such as MICBIAS precharge, which is a genuine
-hardware interrupt raised by a register write. That trade is a judgement about
-what "one physical event" is meant to mean and should be made deliberately.
+**And that makes the negative a result:** with the source verifiably unmasked,
+live status stayed `00 00 00 00` across an insertion. The WCD9320 does not
+assert MBHC_INSERTION with the MBHC block unconfigured — measured, not
+inferred. The four remaining FAILs are all the same fact, that no event
+occurred.
 
-Build script regenerated at `~/build-mbhc-irq-rc2.sh` (WSL, survives sessions).
+### Where the proof stands
+
+- Chain proven: enumeration → regmap → nested chip → mask/unmask → parent idle
+- Chain unproven: **dispatch**. Nothing has yet travelled codec → parent → ack.
+- The blocker is stimulus, not mechanism.
+
+### rc3, staged not built — `476d468`, pkgrel 138
+
+`arm-group` arms all seven MBHC sources at once, to find out whether the codec
+raises *anything* unconfigured. `MBHC_JACK_SWITCH` is the candidate worth the
+run: on this family it reflects a mechanical contact in the jack rather than
+the detection block, so it may assert with no setup at all.
+
+A correctly armed group reads back **`81 ff 3f 6f`** and the script asserts it.
+Each source gets its own dev_id and irqname, so the handler names which source
+fired and `/proc/interrupts` shows seven named child lines.
+
+`tools/wcd9320-mbhc-group-evidence.sh` is a **diagnostic, not the gate** — the
+acceptance script stays single-source. Its exits: 0 a stimulus exists, 1 valid
+run and nothing fired (a conclusive negative, not a driver fault), 2 the run
+did not hold up.
+
+If nothing fires, the remaining routes are to program MBHC insert detection, or
+to use a driver-triggerable source such as MICBIAS precharge — which
+reinterprets what "one physical event" means and should be decided deliberately.
+
+Build script: `~/build-mbhc-irq-rc3.sh` (WSL, survives sessions).
+
+### Exact next actions
+
+1. Run `~/build-mbhc-irq-rc3.sh` (needs interactive sudo — it authenticates
+   once up front, because pmbootstrap dies on a mistyped password with an
+   unrelated JSON error). Verifies by artifact; stages an **uncompressed**
+   `.ko` and `boot-1520-mbhc-irq-rc3.img`.
+2. `scp` the `.ko`, install it as `wcd9320.ko` into
+   `/lib/modules/6.16.12/kernel/drivers/slimbus/`, **delete the `.ko.zst`
+   beside it**, `depmod -a`.
+3. Reboot to bootloader, `fastboot boot boot-1520-mbhc-irq-rc3.img`. Allow a
+   minute for the USB network gadget before ssh.
+4. Set the clock — no working RTC, comes up a month behind, which would date
+   the evidence file wrongly.
+5. Run `wcd9320-mbhc-group-evidence.sh`. Headset out to start; it asks for an
+   insertion, then a removal.
+
+### The acceptance bar, unchanged
+
+One physical event must produce a **finite, explainable interrupt sequence and
+return to quiescence with no manual recovery**. A source that fires and stays
+asserted is a FAIL, not a partial pass. The single-source acceptance script
+splits this into: status cleared after ack (live, from the handler's own
+post-ack line), quiescence resampled 5 s later on both parent and child, and
+≤20 assertions.
+
+Only after that passes: tag `wcd9320-irq-proven`. The group script cannot
+produce that tag — it only finds a stimulus for the run that can.
 
 ## Superseded: step 4 rc1 build details
 
@@ -139,28 +181,6 @@ Both now come from the handler's own live post-ack log line, and the run
 gained a real check for "exactly one source armed": the live mask while armed
 must read `bf ff 3f 7f`. The evidence file was also never actually written;
 it is now, the cold-boot way.
-
-### Exact next actions
-
-1. Run `~/build-mbhc-irq-rc2.sh` (needs interactive sudo). It verifies by
-   artifact and stages both the `.ko` and `boot-1520-mbhc-irq-rc2.img`.
-2. `scp` the `.ko` to the phone, `install` it into
-   `/lib/modules/6.16.12/kernel/drivers/slimbus/`, `depmod -a`.
-3. Reboot to bootloader, `fastboot boot boot-1520-mbhc-irq-rc2.img`.
-4. Set the clock — the phone has no working RTC and comes up a month behind,
-   which would date the evidence file wrongly.
-5. Run the evidence script. Read `armed mask (live)` first; it decides
-   whether this is a stimulus problem or a broken unmask.
-
-### The acceptance bar
-
-One physical event must produce a **finite, explainable interrupt sequence and
-return to quiescence with no manual recovery**. A source that fires and stays
-asserted is a FAIL, not a partial pass. The script splits this into: status
-cleared after ack, quiescence resampled 5 s later (parent and child), and
-≤20 assertions.
-
-Only after that passes: tag `wcd9320-irq-proven`.
 
 ## Build and test loop
 
@@ -206,6 +226,16 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 - `irq_count`/`irq_spurious`/`irq_acked` in `irq_observe` are **vestigial**
   since regmap-irq took the parent. They read 0 regardless. Use
   `/proc/interrupts`.
+- **Do not ship the module as `.ko.zst`.** The kernel's in-tree zstd
+  decompressor rejected the r137 `.ko.zst` with a silent `-EINVAL` —
+  `module_decompress()` returns that without logging, so `modprobe` says
+  "Invalid argument" and dmesg says nothing at all. The identical bytes
+  (sha256-verified on the phone) decompress fine under userspace zstd, and the
+  uncompressed `.ko` inserts and probes cleanly. `CONFIG_MODULE_DECOMPRESS=y`,
+  so the kernel *should* accept it; the frame incompatibility is not yet
+  understood. r136's file happened to be acceptable, which is why this only
+  appeared at r137. The build script now stages an uncompressed `.ko`; install
+  that and delete the `.ko.zst` beside it, or autoload silently fails.
 - `last_status` and `mask_readback` in `irq_observe` are **frozen**, not live.
   `last_status` is written only by the bounded sampler, `mask_readback` only
   once at IRQ setup. Anything asserted against them is self-confirming. Read
