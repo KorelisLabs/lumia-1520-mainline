@@ -8,13 +8,13 @@ State as of 2026-08-12. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`476d468`**, pushed |
+| working branch | `research/audio-wcd9320-core-init` at **`28608bc`**, pushed |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | 137 built and verified; **138 staged, not built** |
-| last built module | `mbhc-irq-rc2` (r137), on the phone, inserted by hand |
-| running on the phone | `mbhc-irq-rc2` (r137) |
+| pkgrel | **138 built, verified, and run on hardware** |
+| last built module | `mbhc-irq-rc3` (r138) |
+| running on the phone | `mbhc-irq-rc3` (r138), **autoloaded** |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -57,7 +57,7 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4: arming proven, dispatch has no stimulus yet
+## IN FLIGHT — step 4: arming proven; no MBHC stimulus exists unconfigured
 
 ### What two hardware runs established
 
@@ -98,7 +98,61 @@ Evidence files, both **FAIL verdicts** and both worth keeping:
 - Chain unproven: **dispatch**. Nothing has yet travelled codec → parent → ack.
 - The blocker is stimulus, not mechanism.
 
-### rc3, staged not built — `476d468`, pkgrel 138
+### rc3 (r138) RESULT: NO STIMULUS — conclusive negative, 13/13 valid
+
+**2026-08-12, `wcd9320-mbhc-group-20260812T230939Z.txt`.** All seven MBHC
+sources armed and verified unmasked (`81 ff 3f 6f` read live off the chip),
+seven named children in `/proc/interrupts`, a physical insertion **and** a
+removal, 20 s each. Every counter stayed at 0. Live status never left
+`00 00 00 00`. Masks restored to `ff ff 3f 7f` on disarm. Codec healthy
+throughout, no warnings, no spurious.
+
+**The WCD9320 raises no MBHC interrupt at all until the MBHC block is
+configured.** Every run-validity check passed, so this is a measurement, not a
+failed experiment.
+
+Per the settled bar, the answer is **minimal MBHC programming**, not a
+driver-triggered source.
+
+### Autoload fixed as a side effect
+
+r138 probed at **t=47.8 s — boot time, autoloaded**, where the hand-loaded rc2
+probe landed at t=1052 s. Installing the plain `.ko` and deleting the
+`.ko.zst` restored it. Roadmap step 5 is largely discharged; what remains is a
+deliberate cold-boot regression, and the `.ko.zst` question is still unexplained.
+
+### rc4 — measure the MBHC block before writing to it
+
+`wcd9320-register-map.md` already carries the lead, from the 2026-07-31 dump:
+
+| addr | register | `__POR` | read |
+|---|---|---|---|
+| `0x14b` | `MBHC_INSERT_DET_STATUS` | `00` | **`0e`** |
+
+That register is in the **readable analog** region, outside the dark block, and
+was recorded then as reflecting real analog state. The same doc notes MBHC at
+`0x3c0`–`0x3ff` reads its defaults correctly *because headset detection is
+designed to run off the RC oscillator* — which core init already starts.
+
+So the question "what is the minimum configuration necessary" has a cheaper
+prior question, answerable **without writing a single register**:
+
+> Does `MBHC_INSERT_DET_STATUS` (and the MBHC block at `0x3c0`–`0x3ff`) change
+> when a headset is physically inserted?
+
+- **If it tracks the jack**, the comparator already works unconfigured and only
+  the detection→interrupt path is missing. The minimum configuration is then
+  whichever enable gates that path — a small, well-targeted write.
+- **If nothing moves**, detection itself is off, and micbias plus the comparator
+  have to come up first.
+
+Those are materially different amounts of writing to an analog block this port
+has never touched, so measure first. rc4 should be a **read-only** poll of
+`0x14b` plus a dump of `0x3c0`–`0x3ff` across an insertion and a removal —
+neither is in the sentinel range (`0x200`–`0x3bf`), so neither has ever been
+read on this hardware.
+
+### rc3 design notes — `476d468`, pkgrel 138
 
 `arm-group` arms all seven MBHC sources at once, to find out whether the codec
 raises *anything* unconfigured. `MBHC_JACK_SWITCH` is the candidate worth the
@@ -122,19 +176,16 @@ Build script: `~/build-mbhc-irq-rc3.sh` (WSL, survives sessions).
 
 ### Exact next actions
 
-1. Run `~/build-mbhc-irq-rc3.sh` (needs interactive sudo — it authenticates
-   once up front, because pmbootstrap dies on a mistyped password with an
-   unrelated JSON error). Verifies by artifact; stages an **uncompressed**
-   `.ko` and `boot-1520-mbhc-irq-rc3.img`.
-2. `scp` the `.ko`, install it as `wcd9320.ko` into
-   `/lib/modules/6.16.12/kernel/drivers/slimbus/`, **delete the `.ko.zst`
-   beside it**, `depmod -a`.
-3. Reboot to bootloader, `fastboot boot boot-1520-mbhc-irq-rc3.img`. Allow a
-   minute for the USB network gadget before ssh.
-4. Set the clock — no working RTC, comes up a month behind, which would date
-   the evidence file wrongly.
-5. Run `wcd9320-mbhc-group-evidence.sh`. Headset out to start; it asks for an
-   insertion, then a removal.
+1. Pull back `wcd9320-mbhc-group-20260812T230939Z.txt` from the phone and
+   commit it — the conclusive negative is the evidence for choosing MBHC
+   programming over an easier stimulus.
+2. Build rc4: a **read-only** MBHC probe. Poll `0x14b`
+   `MBHC_INSERT_DET_STATUS` and dump `0x3c0`-`0x3ff` across a physical
+   insertion and removal. Write nothing.
+3. From what moves, decide the minimum configuration, then implement it.
+4. Single-source acceptance run against whichever source that makes live →
+   `wcd9320-irq-proven`.
+5. Cold-boot regression, and only then resume higher audio bring-up.
 
 ### The acceptance bar — settled 2026-08-12
 
@@ -274,27 +325,27 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 
 ## Sequence from here
 
-1. **r138 seven-source MBHC diagnostic** — does an unconfigured MBHC block
-   generate any usable event at all?
-2. Either identify the source that reproducibly tracks insertion/removal, or
-   establish that none exists
-3. **Minimal MBHC configuration** if none exists — the least setup that makes a
-   physical event detectable
-4. **Single-source physical-event acceptance run** → `wcd9320-irq-proven`
-5. **Fix the module/autoload packaging**, then at least one clean cold-boot
-   regression before anything builds on it. Hand-loading is acceptable for an
-   isolated interrupt experiment and for nothing else.
-6. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
-7. Minimal ASoC component
-8. RX DAI and IFD port programming
-9. Machine driver
-10. External MCLK / AFE clock work
-11. First 48 kHz playback route
+1. ~~r138 seven-source MBHC diagnostic~~ — **done, conclusive negative.**
+2. ~~Identify a natural source, or establish none exists~~ — **none exists.**
+3. **rc4: read-only MBHC probe** — poll `0x14b` and dump `0x3c0`–`0x3ff`
+   across an insertion and a removal. Write nothing. This decides how much
+   configuration "minimum necessary" actually means.
+4. **Minimal MBHC configuration**, scoped by what step 3 measures
+5. **Single-source physical-event acceptance run** → `wcd9320-irq-proven`
+6. Cold-boot regression. Autoload now works with an uncompressed `.ko`, but
+   that has not been deliberately regression-tested, and the `.ko.zst`
+   rejection is still unexplained. Both belong here, before anything builds on
+   the module path.
+7. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
+8. Minimal ASoC component
+9. RX DAI and IFD port programming
+10. Machine driver
+11. External MCLK / AFE clock work
+12. First 48 kHz playback route
 
-The `.ko.zst` rejection is deliberately **not** on this list before step 4. The
-uncompressed module is a controlled test path and the milestone does not depend
-on the packaging question; investigate it once the IRQ milestone is closed, and
-before step 5's cold-boot regression, which does depend on it.
+The `.ko.zst` rejection stays parked until step 6. The uncompressed module is a
+controlled test path, the milestone does not depend on the packaging question,
+and step 6's cold-boot regression is the first thing that does.
 
 ## Standing constraints
 
