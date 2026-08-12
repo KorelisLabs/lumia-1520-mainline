@@ -136,17 +136,34 @@ Build script: `~/build-mbhc-irq-rc3.sh` (WSL, survives sessions).
 5. Run `wcd9320-mbhc-group-evidence.sh`. Headset out to start; it asks for an
    insertion, then a removal.
 
-### The acceptance bar, unchanged
+### The acceptance bar — settled 2026-08-12
 
-One physical event must produce a **finite, explainable interrupt sequence and
-return to quiescence with no manual recovery**. A source that fires and stays
-asserted is a FAIL, not a partial pass. The single-source acceptance script
-splits this into: status cleared after ack (live, from the handler's own
-post-ack line), quiescence resampled 5 s later on both parent and child, and
-≤20 assertions.
+> One literal physical headset event, using the minimum hardware configuration
+> necessary, causes one known WCD9320 MBHC interrupt source to assert,
+> propagate through GPIO 72 and regmap-irq, execute its nested Linux handler,
+> ACK successfully, clear its status, and return to a quiescent masked/idle
+> state without warnings or repeated assertions.
 
-Only after that passes: tag `wcd9320-irq-proven`. The group script cannot
-produce that tag — it only finds a stimulus for the run that can.
+A source that fires and stays asserted is a FAIL, not a partial pass. The
+single-source acceptance script splits this into: status cleared after ack
+(live, from the handler's own post-ack line), quiescence resampled 5 s later on
+both parent and child, and ≤20 assertions.
+
+**A driver-triggered source is explicitly ruled out.** MICBIAS precharge and
+friends would demonstrate the internal IRQ machinery, but the whole point of
+this milestone is that a real external event enters *through the codec*.
+Proving it synthetically would weaken what `wcd9320-irq-proven` means. If the
+group diagnostic comes back empty, the answer is minimal MBHC programming —
+the least configuration that makes a physical event detectable — not an easier
+stimulus.
+
+"Minimum hardware configuration necessary" is load-bearing in both directions:
+enough to make the event detectable, and no more, so that what is proven stays
+the interrupt path rather than a pile of setup.
+
+Only after that passes: tag `wcd9320-irq-proven`. **The group diagnostic cannot
+earn the tag** — it only finds a stimulus for the run that can. If it does find
+one, go straight back to single-source and run the real proof.
 
 ## Superseded: step 4 rc1 build details
 
@@ -257,13 +274,27 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 
 ## Sequence from here
 
-1. **Step 4/5** — one MBHC source end-to-end → `wcd9320-irq-proven`
-2. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
-3. Minimal ASoC component
-4. RX DAI and IFD port programming
-5. Machine driver
-6. External MCLK / AFE clock work
-7. First 48 kHz playback route
+1. **r138 seven-source MBHC diagnostic** — does an unconfigured MBHC block
+   generate any usable event at all?
+2. Either identify the source that reproducibly tracks insertion/removal, or
+   establish that none exists
+3. **Minimal MBHC configuration** if none exists — the least setup that makes a
+   physical event detectable
+4. **Single-source physical-event acceptance run** → `wcd9320-irq-proven`
+5. **Fix the module/autoload packaging**, then at least one clean cold-boot
+   regression before anything builds on it. Hand-loading is acceptable for an
+   isolated interrupt experiment and for nothing else.
+6. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
+7. Minimal ASoC component
+8. RX DAI and IFD port programming
+9. Machine driver
+10. External MCLK / AFE clock work
+11. First 48 kHz playback route
+
+The `.ko.zst` rejection is deliberately **not** on this list before step 4. The
+uncompressed module is a controlled test path and the milestone does not depend
+on the packaging question; investigate it once the IRQ milestone is closed, and
+before step 5's cold-boot regression, which does depend on it.
 
 ## Standing constraints
 
