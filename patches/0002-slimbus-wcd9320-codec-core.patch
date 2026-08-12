@@ -1,15 +1,14 @@
 From: Lumia 1520 mainline port
 Subject: [PATCH 2/3] slimbus: WCD9320 codec core
 
-Supplies, reset, SLIMbus binding, regmap, read-only parent-interrupt
-observation, automatic idempotent CDC-core initialisation with all three
-stage snapshots readable, and a nested IRQ chip description that is
-deliberately not registered yet.
+Supplies, reset, SLIMbus binding, regmap, automatic idempotent CDC-core
+initialisation with readable stage snapshots, and a nested regmap-irq
+controller owning the parent line with every source masked.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
-+++ new/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716597973 -0400
-@@ -34,4 +34,18 @@ config SLIM_QCOM_NGD_CTRL
++++ new/drivers/slimbus/Kconfig	2026-08-11 19:39:07.113290359 -0400
+@@ -34,4 +34,19 @@ config SLIM_QCOM_NGD_CTRL
  	  communicating with slave HW directly over the bus using messaging
  	  interface, and communicating with master component residing on ADSP
  	  for bandwidth and data-channel management.
@@ -19,6 +18,7 @@ diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 +	depends on GPIOLIB && REGULATOR
 +	select REGMAP
 +	select REGMAP_SLIMBUS
++	select REGMAP_IRQ
 +	help
 +	  Core support for the Qualcomm WCD9320 "Taiko" audio codec attached
 +	  over SLIMbus: regulators, reset sequencing, SLIMbus device up/down
@@ -41,7 +41,7 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 19:29:24.976230137 -0400
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-11 20:06:04.855819947 -0400
 @@ -0,0 +1,2026 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
