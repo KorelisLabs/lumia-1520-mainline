@@ -39,9 +39,16 @@ check() {	# check <label> <actual> <expected>
 	fi
 }
 
-check_cond() {	# check_cond <label> <0|1 truth> <detail>
+# check_cond <label> <0|1 truth> <fail detail> [pass detail]
+#
+# The third argument explains a FAILURE and must not be printed on success --
+# a PASS line reading "no such line in dmesg" is computationally harmless and
+# actively misleading to anyone reading the evidence later. The optional
+# fourth argument is what to show on success; it defaults to "ok", so existing
+# three-argument callers keep working.
+check_cond() {
 	if [ "$2" = "1" ]; then
-		printf '  PASS  %-32s %s\n' "$1" "$3"
+		printf '  PASS  %-32s %s\n' "$1" "${4:-ok}"
 		PASS_N=$((PASS_N + 1))
 	else
 		printf '  FAIL  %-32s %s\n' "$1" "$3"
