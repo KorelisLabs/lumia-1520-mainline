@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-12 19:20:09.500913600 -0400
-@@ -0,0 +1,2527 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-13 16:31:53.182654600 -0400
+@@ -0,0 +1,2752 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -388,6 +388,45 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * healthy part, and headset detection is designed to run off that oscillator,
 + * so a probe that finds it dead is measuring the wrong thing.
 + */
++/*
++ * ---- insert detection, the minimum ----------------------------------------
++ *
++ * Every value here is sourced from downstream's wcd9xxx_insert_detect_setup()
++ * and wcd9xxx_swch_level_remove(); none is invented. The headers give
++ * addresses and reset values but no bit-field names, so writing a value
++ * without a citation would have been a guess.
++ *
++ * What downstream does to start insertion detection is exactly three writes,
++ * all to one register:
++ *
++ *   update_bits(0x14A, 0x01, 0)      disable first -- "avoid glitch"
++ *   write(0x14A, 0x6C | BIT(1))      = 0x6E, set up for insertion
++ *   update_bits(0x14A, 0x01, 1)      re-enable -> 0x6F
++ *
++ * It touches no micbias, no MBHC_EN_CTL, no MBHC clock. That is the whole
++ * reason to try this before anything larger: if insertion becomes visible
++ * from one register, the rest of the MBHC block is not needed for this step.
++ *
++ * The 0x6C base is the branch taken when mbhc_cfg->gpio_level_insert is
++ * false. The other branch uses 0x68 -- one bit different, bit 2 -- and this
++ * device has no MBHC GPIO (the DSDT MBHC node is unwired), so 0x6C is the
++ * right branch. 0x68 is kept as a second candidate rather than assumed wrong,
++ * because which way that config flag would have been set for this board is
++ * not knowable from here.
++ *
++ * Jack presence is bit 2 of INSERT_DET_STATUS: wcd9xxx_swch_level_remove()
++ * returns `read(0x14B) & (1 << 2)`, and wcd9320.c marks 0x14B volatile.
++ * Measured 0x0e at rest has that bit set, with no headset and detection
++ * disabled.
++ */
++#define WCD9320_A_MBHC_INSERT_DETECT		0x14a
++#define WCD9320_MBHC_DET_EN			BIT(0)
++#define WCD9320_MBHC_DET_INS			BIT(1)
++#define WCD9320_MBHC_DET_BASE			0x6c	/* no MBHC GPIO   */
++#define WCD9320_MBHC_DET_BASE_ALT		0x68	/* gpio_level_insert */
++#define WCD9320_MBHC_DET_STATUS_PRESENT		BIT(2)
++#define WCD9320_MBHC_WRITE_LOG_MAX		8
++
 +#define WCD9320_A_MBHC_INSERT_DET_STATUS	0x14b
 +#define WCD9320_A_RX_HPH_L_STATUS		0x1b3
 +#define WCD9320_A_RX_HPH_R_STATUS		0x1b9
@@ -555,6 +594,24 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + */
 +#define WCD9320_MBHC_GROUP_MAX 8
 +
++/*
++ * One logged register write.
++ *
++ * The point of logging every write is to make "what did we change" a fact
++ * rather than a recollection. After this step, any register that differs from
++ * the rc4 baseline and does NOT appear in this log changed by itself -- a
++ * hardware side effect -- and that distinction is the whole reason to write
++ * anything at all one register at a time.
++ */
++struct wcd9320_reg_write {
++	u16 reg;
++	u8 mask;
++	u8 old;			/* read before */
++	u8 want;
++	u8 got;			/* read back after */
++	int ret;
++};
++
 +struct wcd9320;
 +
 +struct wcd9320_mbhc_src {
@@ -613,6 +670,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u64 mbhc_last_ms;
 +	struct wcd9320_mbhc_src mbhc_group[WCD9320_MBHC_GROUP_MAX];
 +	unsigned int mbhc_group_n;	/* 0 when armed single-source */
++
++	/* insert-detect research hook; every write it makes is logged */
++	bool mbhc_detect_on;
++	const char *mbhc_detect_variant;
++	struct wcd9320_reg_write mbhc_writes[WCD9320_MBHC_WRITE_LOG_MAX];
++	unsigned int mbhc_write_n;
 +	bool irq_setup_done;		/* setup is once-only, and races   */
 +	unsigned int irq_count;		/* parent assertions               */
 +	unsigned int irq_spurious;	/* asserted with nothing pending   */
@@ -2245,6 +2308,157 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return 0;
 +}
 +
++/*
++ * ---- insert detection, hand-armed research hook ----------------------------
++ *
++ * The FIRST writes this port has ever made to the analog block. Scope is
++ * deliberately one register: enough to make a physical insertion visible in a
++ * status register, and nothing more. No interrupt source is unmasked here --
++ * that is the next step and only if this one succeeds.
++ */
++static int wcd9320_logged_update(struct wcd9320 *wcd, u16 reg, u8 mask, u8 val)
++{
++	struct device *dev = &wcd->sdev->dev;
++	struct wcd9320_reg_write *w;
++	unsigned int old = 0, got = 0;
++	int ret;
++
++	if (wcd->mbhc_write_n >= WCD9320_MBHC_WRITE_LOG_MAX)
++		return -ENOSPC;
++
++	w = &wcd->mbhc_writes[wcd->mbhc_write_n];
++	ret = regmap_read(wcd->regmap, reg, &old);
++	if (ret) {
++		dev_err(dev, "insert-detect: read 0x%03x failed: %d\n", reg, ret);
++		return ret;
++	}
++
++	ret = regmap_update_bits(wcd->regmap, reg, mask, val);
++	if (!ret)
++		ret = regmap_read(wcd->regmap, reg, &got);
++
++	w->reg = reg;
++	w->mask = mask;
++	w->old = old;
++	w->want = (old & ~mask) | (val & mask);
++	w->got = got;
++	w->ret = ret;
++	wcd->mbhc_write_n++;
++
++	dev_info(dev,
++		 "insert-detect write %u: reg 0x%03x mask=%02x old=%02x want=%02x -> read=%02x%s\n",
++		 wcd->mbhc_write_n, reg, mask, w->old, w->want, w->got,
++		 ret ? "  FAILED" : (w->got == w->want ? "  OK" : "  MISMATCH"));
++	return ret;
++}
++
++static int wcd9320_insert_detect_set(struct wcd9320 *wcd, bool on, u8 base)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	wcd->mbhc_write_n = 0;
++
++	if (!on) {
++		/* Back to the measured reset value, nothing else. */
++		ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
++					    0xff, 0x00);
++		if (ret)
++			return ret;
++		wcd->mbhc_detect_on = false;
++		wcd->mbhc_detect_variant = "off";
++		dev_info(dev, "insert-detect: DISABLED, 0x14a restored to 00\n");
++		return 0;
++	}
++
++	/* Downstream's three steps, in order, for the reason it gives. */
++	ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
++				    WCD9320_MBHC_DET_EN, 0);
++	if (ret)
++		return ret;
++	ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
++				    0xff, base | WCD9320_MBHC_DET_INS);
++	if (ret)
++		return ret;
++	ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
++				    WCD9320_MBHC_DET_EN, WCD9320_MBHC_DET_EN);
++	if (ret)
++		return ret;
++
++	wcd->mbhc_detect_on = true;
++	wcd->mbhc_detect_variant = (base == WCD9320_MBHC_DET_BASE) ?
++				   "default(0x6c)" : "alt(0x68)";
++	dev_info(dev,
++		 "insert-detect: ENABLED, variant %s, 3 writes to 0x14a, no other register touched\n",
++		 wcd->mbhc_detect_variant);
++	return 0;
++}
++
++static ssize_t mbhc_detect_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int det = 0, status = 0;
++	unsigned int i;
++	int len, ret;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	ret = regmap_read(wcd->regmap, WCD9320_A_MBHC_INSERT_DETECT, &det);
++	if (!ret)
++		ret = regmap_read(wcd->regmap,
++				  WCD9320_A_MBHC_INSERT_DET_STATUS, &status);
++	if (ret)
++		return sysfs_emit(buf, "read failed: %d\n", ret);
++
++	len = sysfs_emit(buf,
++			 "on=%u variant=%s detect=%02x status=%02x present_bit=%u writes=%u\n",
++			 wcd->mbhc_detect_on,
++			 wcd->mbhc_detect_variant ?: "off",
++			 det, status,
++			 !!(status & WCD9320_MBHC_DET_STATUS_PRESENT),
++			 wcd->mbhc_write_n);
++
++	/* The audit trail: exactly what this driver wrote, and nothing else. */
++	for (i = 0; i < wcd->mbhc_write_n; i++) {
++		struct wcd9320_reg_write *w = &wcd->mbhc_writes[i];
++
++		len += sysfs_emit_at(buf, len,
++				     "write=%u reg=0x%03x mask=%02x old=%02x want=%02x got=%02x ret=%d\n",
++				     i + 1, w->reg, w->mask, w->old, w->want,
++				     w->got, w->ret);
++	}
++	return len;
++}
++
++static ssize_t mbhc_detect_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->wake_lock);
++	if (sysfs_streq(buf, "on"))
++		ret = wcd9320_insert_detect_set(wcd, true,
++						WCD9320_MBHC_DET_BASE);
++	else if (sysfs_streq(buf, "on-alt"))
++		ret = wcd9320_insert_detect_set(wcd, true,
++						WCD9320_MBHC_DET_BASE_ALT);
++	else if (sysfs_streq(buf, "off"))
++		ret = wcd9320_insert_detect_set(wcd, false, 0);
++	else
++		ret = -EINVAL;
++	mutex_unlock(&wcd->wake_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(mbhc_detect);
++
 +static ssize_t mbhc_probe_show(struct device *dev,
 +			       struct device_attribute *attr, char *buf)
 +{
@@ -2337,6 +2551,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_irq_observe.attr,
 +	&dev_attr_irq_live.attr,
 +	&dev_attr_mbhc_probe.attr,
++	&dev_attr_mbhc_detect.attr,
 +	&dev_attr_rco_wake.attr,
 +	&dev_attr_core_reinit.attr,
 +	&dev_attr_mbhc_test.attr,
@@ -2534,6 +2749,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			dev_info(&sdev->dev,
 +				 "removing while armed: MBHC test disarmed first\n");
 +		}
++		/*
++		 * Leaving insert detection enabled after unbind would leave the
++		 * analog block in a state this driver configured and no longer
++		 * owns -- and would quietly invalidate the next run's baseline.
++		 */
++		if (wcd->mbhc_detect_on) {
++			wcd9320_insert_detect_set(wcd, false, 0);
++			dev_info(&sdev->dev,
++				 "removing with insert-detect on: 0x14a restored first\n");
++		}
 +		mutex_unlock(&wcd->wake_lock);
 +	}
 +
@@ -2568,6 +2793,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-probe-rc4");
++MODULE_VERSION("mbhc-detect-rc5");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");
