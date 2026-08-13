@@ -70,8 +70,15 @@ Prerequisites: a WPInternals-unlocked RM-940, `pmbootstrap`, and
    `emmc_appsboot.mbn` the build also produces. Install per
    [docs/boot-chain.md](docs/boot-chain.md).
 2. **OS** — copy `pmaports/*` into your pmaports checkout under
-   `device/testing/`, then `pmbootstrap init` (device `nokia-rm940`),
-   `pmbootstrap install`, `pmbootstrap export`.
+   `device/testing/`, **and `patches/*.patch` into
+   `device/testing/linux-postmarketos-qcom-msm8974/`** — the APKBUILD lists
+   them in `source=` but they are kept in `patches/` here so there is one
+   copy rather than two that can drift. Then `pmbootstrap init` (device
+   `nokia-rm940`), `pmbootstrap install`, `pmbootstrap export`.
+
+   `source=` and `sha512sums=` are paired **by position**, and this package's
+   order is 0001, 0003, 0002 — not numeric. A filename-keyed checksum check
+   will pass on a wrong pairing.
 3. **Verify then boot** — `python3 tools/check-bootimg.py boot.img`
    must PASS, then `fastboot boot boot.img`. Flash the rootfs image to the
    `Data` partition (`fastboot flash Data nokia-rm940.img`) or write it to

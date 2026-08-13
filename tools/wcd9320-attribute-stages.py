@@ -10,11 +10,18 @@ The question that gates reg_defaults: the 16 registers that differ from their
 documented __POR -- were they already odd after the core release (so revision
 defaults, or something the release itself sets), or did the clock sequence
 write them (so not defaults at all)?
+
+Usage:
+    wcd9320-attribute-stages.py [SNAPSHOT_DIR]
+
+SNAPSHOT_DIR holds sentinel_before.txt, sentinel_after_bringup.txt and
+sentinel_after.txt, each a hex dump of 0x200-0x3bf as the driver emits it.
+Defaults to the current directory, or $WCD9320_SNAPSHOT_DIR if set.
 """
 import json, os, re, sys
 
-S = ('/mnt/c/Users/Admin/AppData/Local/Temp/claude/'
-     'C--Users-Admin-Documents-RegenX-AE/e0d5063a-4a08-4a42-a358-24549f0f7325/scratchpad')
+S = (sys.argv[1] if len(sys.argv) > 1
+     else os.environ.get('WCD9320_SNAPSHOT_DIR', '.'))
 HDR = {int(k, 16): v for k, v in
        json.load(open(os.path.expanduser('~/ds-hdr/wcd9320-regmap.json'))).items()}
 FIRST, LAST = 0x200, 0x3bf
