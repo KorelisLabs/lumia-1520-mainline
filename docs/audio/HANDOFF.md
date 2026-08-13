@@ -1,6 +1,6 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-12. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-13. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
@@ -8,13 +8,13 @@ State as of 2026-08-12. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`2c234b6`**, pushed |
+| working branch | `research/audio-wcd9320-core-init` at **`1a91554`**, pushed |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **139 built, verified, and run on hardware** |
-| last built module | `mbhc-probe-rc4` (r139) |
-| running on the phone | `mbhc-probe-rc4` (r139), inserted by hand from `/tmp` |
+| pkgrel | **140 built, verified, and run on hardware** |
+| last built module | `mbhc-detect-rc5` (r140) |
+| running on the phone | `mbhc-detect-rc5` (r140), inserted by hand from `/tmp` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -57,7 +57,7 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4: arming proven; MBHC detection is off until configured
+## IN FLIGHT — step 4: arming proven, stimulus proven; dispatch is next
 
 ### What two hardware runs established
 
@@ -95,8 +95,9 @@ Evidence files, both **FAIL verdicts** and both worth keeping:
 ### Where the proof stands
 
 - Chain proven: enumeration → regmap → nested chip → mask/unmask → parent idle
+- Stimulus proven: three writes to `0x14a` make a physical event visible
 - Chain unproven: **dispatch**. Nothing has yet travelled codec → parent → ack.
-- The blocker is stimulus, not mechanism.
+- Nothing now blocks the acceptance run.
 
 ### rc3 (r138) RESULT: NO STIMULUS — conclusive negative, 13/13 valid
 
@@ -127,6 +128,46 @@ manual `modprobe` then failed with the same silent `EINVAL`.
 So r138's boot-time load was not proof of a fix; it was one success in a
 pattern nobody has explained yet. See the `EINVAL` trap below. Nothing may
 claim cold-boot behaviour until this is understood.
+
+### rc5 (r140) RESULT: **PASS 17/17** — minimal insert detection works
+
+**2026-08-13, `wcd9320-mbhc-detect-20260813T205339Z.txt`.** The step's
+acceptance — *physical insertion/removal → reproducible status transition* — is
+met.
+
+| state | `0x14b` | present bit |
+|---|---|---|
+| detection off | `0e` | 1 |
+| detection on, no jack | `04` | 1 |
+| **headset inserted** | `0b` | **0** |
+| **headset removed** | `04` | **1** |
+
+Removal returned it to exactly the pre-insertion value. Polled every second, so
+the sequence `1 0` then `0 1` is the measured transition, not two endpoints.
+
+**What was written: three writes, one register, nothing else.**
+
+```
+write 1  0x14a mask=01 old=00 want=00 -> 00   disable first ("avoid glitch")
+write 2  0x14a mask=ff old=00 want=6e -> 6e   0x6C | BIT(1), set up for insertion
+write 3  0x14a mask=01 old=6e want=6f -> 6f   re-enable
+restore  0x14a mask=ff old=6f want=00 -> 00   back to reset
+```
+
+Every value sourced from downstream `wcd9xxx_insert_detect_setup()`; bit 2 of
+`0x14b` as the presence bit from `wcd9xxx_swch_level_remove()`. **No micbias, no
+`MBHC_EN_CTL`, no MBHC clock** — none of it was needed, which is why measuring
+first was worth the extra build.
+
+**Side effects: none in `0x3c0`–`0x3ff`.** Zero bytes changed across all four
+transitions, so nothing in the MBHC block moved that we did not write. The only
+register that moved at all is `0x14b`, which is the status register and the
+point of the exercise.
+
+All 29 interrupt sources stayed masked at `ff ff 3f 7f` before, during and
+after. Nothing was armed.
+
+**The stimulus question is now answered, and IRQ arming is unblocked.**
 
 ### rc4 (r139) RESULT: NO SIGNAL — detection is off, 12/12 valid
 
@@ -222,16 +263,16 @@ Build script: `~/build-mbhc-irq-rc3.sh` (WSL, survives sessions).
 
 ### Exact next actions
 
-1. Commit `wcd9320-mbhc-probe-20260812T234415Z.txt` — the evidence that
-   detection is off, and the MBHC baseline everything diffs against.
-2. **Minimal MBHC configuration.** Bring up micbias and the insert-detect
-   comparator: the least that makes a physical insertion observable at
-   `0x14b` or in `0x3c0`-`0x3ff`. Re-run the rc4 probe to confirm the
-   comparator now tracks the jack — still read-only afterwards, so it stays
-   falsifiable.
-3. Then arm the matching source and run the single-source acceptance proof →
+1. Commit `wcd9320-mbhc-detect-20260813T205339Z.txt`.
+2. **The acceptance run.** Enable insert detection (`echo on >
+   mbhc_detect`), arm MBHC_INSERTION alone, then one physical insertion.
+   Both halves now exist: a source that asserts, and an arm/disarm
+   mechanism proven at the register level.
+3. If it passes the bar — finite sequence, status cleared after ack,
+   quiescence on both parent and child, no manual recovery — tag
    `wcd9320-irq-proven`.
-4. Cold-boot regression, and the silent-EINVAL investigation.
+4. Then the cold-boot regression and the silent-EINVAL investigation,
+   before anything builds on the module path.
 
 ### The acceptance bar — settled 2026-08-12
 

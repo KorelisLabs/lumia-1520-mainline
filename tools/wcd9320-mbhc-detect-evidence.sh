@@ -191,7 +191,11 @@ case "$SEQ_OUT" in *" "*) RETURNED=1 ;; esac
 	say ""
 	say "present_bit values seen during insertion : ${SEQ_IN:-none}"
 	say "present_bit values seen during removal   : ${SEQ_OUT:-none}"
-	note "0x14a while enabled" "$DET_REG (variant $(det_field variant))"
+	# The variant has to come from the header captured while enabled. Reading
+	# it here would read it after the restore, which reports "off" next to a
+	# value of 6f -- a self-contradictory line in the evidence file.
+	note "0x14a while enabled" \
+		"$DET_REG (variant $(printf '%s' "$DET_ON" | tr ' ' '\n' | sed -n 's/^variant=//p'))"
 	note "0x14a after restore" "$DET_REG_AFTER"
 
 	hdr "MBHC block 0x3c0-0x3ff: what moved that we did NOT write"
