@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-13 16:31:53.182654600 -0400
-@@ -0,0 +1,2752 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-13 17:14:26.926268200 -0400
+@@ -0,0 +1,2824 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -427,6 +427,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_MBHC_DET_STATUS_PRESENT		BIT(2)
 +#define WCD9320_MBHC_WRITE_LOG_MAX		8
 +
++/*
++ * HPHL 10K switch, the one other write downstream makes in this branch.
++ *
++ * The insert_detect branch of wcd9xxx_mbhc_init() does exactly two things:
++ * sets RX_HPH_OCP_CTL bit 1 ("Enable HPHL_10K_SW"), and requests the jack
++ * interrupt. Detection demonstrably works without it -- rc5 moved 0x14b bit 2
++ * with 0x14a alone -- so it is NOT enabled by default here. It is available as
++ * a separate, separately-logged step for the case where the comparator moves
++ * but the interrupt does not, and it should only be used if that happens.
++ */
++#define WCD9320_A_RX_HPH_OCP_CTL		0x1aa
++#define WCD9320_RX_HPH_OCP_HPHL_10K_SW		BIT(1)
++
 +#define WCD9320_A_MBHC_INSERT_DET_STATUS	0x14b
 +#define WCD9320_A_RX_HPH_L_STATUS		0x1b3
 +#define WCD9320_A_RX_HPH_R_STATUS		0x1b9
@@ -666,6 +679,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* MBHC interrupt test; nothing here runs unless armed by hand */
 +	bool mbhc_armed;
 +	int mbhc_virq;			/* single-source mode only */
++	unsigned int mbhc_single_src;	/* which source 'arm' took */
 +	unsigned int mbhc_irq_count;	/* total across everything armed */
 +	u64 mbhc_last_ms;
 +	struct wcd9320_mbhc_src mbhc_group[WCD9320_MBHC_GROUP_MAX];
@@ -673,6 +687,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* insert-detect research hook; every write it makes is logged */
 +	bool mbhc_detect_on;
++	bool mbhc_hphl_10k;		/* the optional second write */
 +	const char *mbhc_detect_variant;
 +	struct wcd9320_reg_write mbhc_writes[WCD9320_MBHC_WRITE_LOG_MAX];
 +	unsigned int mbhc_write_n;
@@ -2013,9 +2028,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	if (!wcd->mbhc_group_n)
 +		return sysfs_emit(buf,
-+				  "armed=%u mode=single source=%u name=MBHC_INSERTION child_virq=%d\n"
++				  "armed=%u mode=single source=%u name=%s child_virq=%d\n"
 +				  "irq_count=%u last_ms=%llu\n",
-+				  wcd->mbhc_armed, WCD9320_IRQ_MBHC_INSERTION,
++				  wcd->mbhc_armed, wcd->mbhc_single_src,
++				  wcd->mbhc_single_src == WCD9320_IRQ_MBHC_JACK_SWITCH ?
++					"MBHC_JACK_SWITCH" : "MBHC_INSERTION",
 +				  wcd->mbhc_virq, wcd->mbhc_irq_count,
 +				  wcd->mbhc_last_ms);
 +
@@ -2051,16 +2068,39 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	mutex_lock(&wcd->wake_lock);
 +
-+	if (sysfs_streq(buf, "arm")) {
++	if (sysfs_streq(buf, "arm") || sysfs_streq(buf, "arm-switch")) {
++		/*
++		 * Which source is the jack, and why there are two options.
++		 *
++		 * The rc5 acceptance run enabled insert detection, armed
++		 * MBHC_INSERTION alone, and got a clean physical transition on
++		 * 0x14b bit 2 with INTR_STATUS still reading 00 00 00 00. So
++		 * insert detection does not feed MBHC_INSERTION.
++		 *
++		 * Downstream says why. In the insert_detect branch of
++		 * wcd9xxx_mbhc_init() the interrupt requested for the jack is
++		 * WCD9320_IRQ_MBHC_JACK_SWITCH, handled by
++		 * wcd9xxx_mech_plug_detect_irq -- mechanical plug detect.
++		 * MBHC_INSERTION belongs to the headset-TYPE state machine
++		 * that runs after the switch fires; downstream disables it
++		 * immediately after requesting it and only enables it later.
++		 *
++		 * 'arm' keeps the original source so the earlier runs stay
++		 * reproducible. 'arm-switch' arms the one the hardware
++		 * actually drives.
++		 */
++		unsigned int src = sysfs_streq(buf, "arm-switch") ?
++				   WCD9320_IRQ_MBHC_JACK_SWITCH :
++				   WCD9320_IRQ_MBHC_INSERTION;
++
 +		if (wcd->mbhc_armed) {
 +			ret = -EBUSY;
 +			goto out;
 +		}
-+		wcd->mbhc_virq = regmap_irq_get_virq(wcd->irq_data,
-+						     WCD9320_IRQ_MBHC_INSERTION);
++		wcd->mbhc_single_src = src;
++		wcd->mbhc_virq = regmap_irq_get_virq(wcd->irq_data, src);
 +		if (wcd->mbhc_virq <= 0) {
-+			dev_err(dev, "mbhc test: no virq for source %u\n",
-+				WCD9320_IRQ_MBHC_INSERTION);
++			dev_err(dev, "mbhc test: no virq for source %u\n", src);
 +			ret = -ENXIO;
 +			goto out;
 +		}
@@ -2074,8 +2114,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		wcd->mbhc_armed = true;
 +		dev_info(dev,
-+			 "mbhc test: ARMED source %u (MBHC_INSERTION) on child virq %d -- this source is now UNMASKED, all others remain masked\n",
-+			 WCD9320_IRQ_MBHC_INSERTION, wcd->mbhc_virq);
++			 "mbhc test: ARMED source %u (%s) on child virq %d -- this source is now UNMASKED, all others remain masked\n",
++			 src,
++			 src == WCD9320_IRQ_MBHC_JACK_SWITCH ? "MBHC_JACK_SWITCH"
++							     : "MBHC_INSERTION",
++			 wcd->mbhc_virq);
 +	} else if (sysfs_streq(buf, "arm-group")) {
 +		if (wcd->mbhc_armed) {
 +			ret = -EBUSY;
@@ -2101,7 +2144,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			free_irq(wcd->mbhc_virq, wcd);
 +			dev_info(dev,
 +				 "mbhc test: DISARMED, source %u re-masked after %u interrupt(s)\n",
-+				 WCD9320_IRQ_MBHC_INSERTION,
++				 wcd->mbhc_single_src,
 +				 wcd->mbhc_irq_count);
 +		}
 +		wcd->mbhc_armed = false;
@@ -2352,7 +2395,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
-+static int wcd9320_insert_detect_set(struct wcd9320 *wcd, bool on, u8 base)
++static int wcd9320_insert_detect_set(struct wcd9320 *wcd, bool on, u8 base,
++				     bool hphl_10k)
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	int ret;
@@ -2360,11 +2404,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->mbhc_write_n = 0;
 +
 +	if (!on) {
-+		/* Back to the measured reset value, nothing else. */
++		/* Back to the measured reset values, nothing else. */
 +		ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
 +					    0xff, 0x00);
 +		if (ret)
 +			return ret;
++		if (wcd->mbhc_hphl_10k) {
++			ret = wcd9320_logged_update(wcd,
++						    WCD9320_A_RX_HPH_OCP_CTL,
++						    WCD9320_RX_HPH_OCP_HPHL_10K_SW,
++						    0);
++			if (ret)
++				return ret;
++			wcd->mbhc_hphl_10k = false;
++		}
 +		wcd->mbhc_detect_on = false;
 +		wcd->mbhc_detect_variant = "off";
 +		dev_info(dev, "insert-detect: DISABLED, 0x14a restored to 00\n");
@@ -2385,9 +2438,25 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		return ret;
 +
++	/*
++	 * Optional, and deliberately last: the other write downstream makes in
++	 * this branch. Not needed for the comparator -- rc5 proved that -- so
++	 * it is only for the case where 0x14b moves and the interrupt does not.
++	 * Separate step, separate log line, separately reversible.
++	 */
++	if (hphl_10k) {
++		ret = wcd9320_logged_update(wcd, WCD9320_A_RX_HPH_OCP_CTL,
++					    WCD9320_RX_HPH_OCP_HPHL_10K_SW,
++					    WCD9320_RX_HPH_OCP_HPHL_10K_SW);
++		if (ret)
++			return ret;
++		wcd->mbhc_hphl_10k = true;
++	}
++
 +	wcd->mbhc_detect_on = true;
 +	wcd->mbhc_detect_variant = (base == WCD9320_MBHC_DET_BASE) ?
-+				   "default(0x6c)" : "alt(0x68)";
++				   (hphl_10k ? "default+hphl10k" : "default(0x6c)") :
++				   (hphl_10k ? "alt+hphl10k" : "alt(0x68)");
 +	dev_info(dev,
 +		 "insert-detect: ENABLED, variant %s, 3 writes to 0x14a, no other register touched\n",
 +		 wcd->mbhc_detect_variant);
@@ -2445,12 +2514,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	mutex_lock(&wcd->wake_lock);
 +	if (sysfs_streq(buf, "on"))
 +		ret = wcd9320_insert_detect_set(wcd, true,
-+						WCD9320_MBHC_DET_BASE);
++						WCD9320_MBHC_DET_BASE, false);
 +	else if (sysfs_streq(buf, "on-alt"))
 +		ret = wcd9320_insert_detect_set(wcd, true,
-+						WCD9320_MBHC_DET_BASE_ALT);
++						WCD9320_MBHC_DET_BASE_ALT, false);
++	else if (sysfs_streq(buf, "on-hphl"))
++		ret = wcd9320_insert_detect_set(wcd, true,
++						WCD9320_MBHC_DET_BASE, true);
 +	else if (sysfs_streq(buf, "off"))
-+		ret = wcd9320_insert_detect_set(wcd, false, 0);
++		ret = wcd9320_insert_detect_set(wcd, false, 0, false);
 +	else
 +		ret = -EINVAL;
 +	mutex_unlock(&wcd->wake_lock);
@@ -2755,7 +2827,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 * owns -- and would quietly invalidate the next run's baseline.
 +		 */
 +		if (wcd->mbhc_detect_on) {
-+			wcd9320_insert_detect_set(wcd, false, 0);
++			wcd9320_insert_detect_set(wcd, false, 0, false);
 +			dev_info(&sdev->dev,
 +				 "removing with insert-detect on: 0x14a restored first\n");
 +		}
@@ -2793,6 +2865,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-detect-rc5");
++MODULE_VERSION("mbhc-switch-rc6");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");

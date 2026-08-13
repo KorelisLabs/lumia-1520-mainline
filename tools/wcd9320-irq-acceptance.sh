@@ -12,8 +12,18 @@
 #
 #   rc5 (r140)  three writes to 0x14a enable insert detection; a physical
 #               event moves 0x14b bit 2 and returns on removal. 17/17.
-#   rc2 (r137)  arming MBHC_INSERTION unmasks exactly INTR_REG0 bit 6 --
-#               measured live as bf ff 3f 7f -- and free_irq re-masks it.
+#   rc2 (r137)  arming one source unmasks exactly its bit, measured live,
+#               and free_irq re-masks it.
+#
+# WHICH SOURCE, AND WHY IT CHANGED
+#
+# The first acceptance attempt armed MBHC_INSERTION and got a clean
+# physical transition on 0x14b bit 2 with INTR_STATUS still 00 00 00 00.
+# Insert detection does not feed that source. Downstream says why: in the
+# insert_detect branch of wcd9xxx_mbhc_init() the jack interrupt is
+# WCD9320_IRQ_MBHC_JACK_SWITCH, handled by wcd9xxx_mech_plug_detect_irq.
+# MBHC_INSERTION belongs to the headset-type state machine that runs after
+# the switch fires, and downstream disables it immediately after request.
 #
 # No broader MBHC initialisation. No other interrupt source unmasked. No new
 # driver code: this script drives the two existing hooks in sequence.
@@ -33,7 +43,7 @@ set -u
 
 MODE="irq-acceptance"
 DIR=$(dirname "$0")
-EXPECT_VERSION="${EXPECT_VERSION:-mbhc-detect-rc5}"
+EXPECT_VERSION="${EXPECT_VERSION:-mbhc-switch-rc6}"
 . "$DIR/wcd9320-evidence-lib.sh"
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
@@ -41,7 +51,14 @@ OUTDIR="${OUTDIR:-/tmp}"
 DMESG_FILE="/tmp/.wcd9320-dmesg-accept-$$"
 SETTLE="${SETTLE:-25}"
 MASK_ALL="ff ff 3f 7f"
-MASK_ONE_ARMED="bf ff 3f 7f"
+# MBHC_JACK_SWITCH is INTR_REG3 bit 4, so arming it alone clears exactly
+# that bit: 7f & ~0x10 = 6f. MBHC_INSERTION (INTR_REG0 bit 6) would be
+# bf ff 3f 7f, which is what rc5 armed and why nothing fired.
+ARM_CMD="${ARM_CMD:-arm-switch}"
+case "$ARM_CMD" in
+	arm-switch) MASK_ONE_ARMED="ff ff 3f 6f"; SRC_NAME="MBHC_JACK_SWITCH" ;;
+	*)          MASK_ONE_ARMED="bf ff 3f 7f"; SRC_NAME="MBHC_INSERTION" ;;
+esac
 MAX_ASSERTIONS="${MAX_ASSERTIONS:-20}"
 
 require_module_version
@@ -102,9 +119,9 @@ tty_note "S0 baseline: mask=$S0_MASK status=$S0_STATUS parent=$S0_PARENT present
 # --- S1: enable detection ----------------------------------------------------
 
 tty_note "S1 enabling insert detection"
-if ! echo on > "$PGD/mbhc_detect" 2>/dev/null; then
+if ! echo "${DET_CMD:-on}" > "$PGD/mbhc_detect" 2>/dev/null; then
 	say "could not enable insert detection"
-	emit_invalid_setup "writing 'on' to mbhc_detect failed"
+	emit_invalid_setup "writing '${DET_CMD:-on}' to mbhc_detect failed"
 	exit 2
 fi
 sleep 2
@@ -122,11 +139,11 @@ tty_note "S1 detection on: 0x14a=$S1_DET status=$S1_STATUS present=$S1_PRESENT"
 # that a bit latched by the enable itself is visible BEFORE anything is
 # unmasked, rather than firing on arm and being mistaken for the jack event.
 
-tty_note "S2 arming MBHC_INSERTION"
-if ! echo arm > "$PGD/mbhc_test" 2>/dev/null; then
-	say "could not arm MBHC_INSERTION"
+tty_note "S2 arming $SRC_NAME ($ARM_CMD)"
+if ! echo "$ARM_CMD" > "$PGD/mbhc_test" 2>/dev/null; then
+	say "could not arm $SRC_NAME"
 	echo off > "$PGD/mbhc_detect" 2>/dev/null
-	emit_invalid_setup "writing 'arm' to mbhc_test failed"
+	emit_invalid_setup "writing '$ARM_CMD' to mbhc_test failed"
 	exit 2
 fi
 sleep 2
@@ -239,6 +256,7 @@ case "$PRESENT_SEQ" in *" "*) TRANSITIONED=1 ;; esac
 		"$([ -n "${CHILD_VIRQ:-}" ] && [ "$(num "${CHILD_VIRQ:-}" 0)" -gt 0 ] && echo 1 || echo 0)" \
 		"no child virq" "virq $CHILD_VIRQ"
 	check "exactly one source armed (live)" "$S2_MASK" "$MASK_ONE_ARMED"
+	note "source armed" "$SRC_NAME via $ARM_CMD"
 
 	# -- the physical event reached the codec --
 	check_cond "0x14b bit 2 transitioned" "$TRANSITIONED" \
