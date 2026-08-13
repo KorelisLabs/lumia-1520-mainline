@@ -12,9 +12,9 @@ State as of 2026-08-13. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **140 built, verified, and run on hardware** |
-| last built module | `mbhc-detect-rc5` (r140) |
-| running on the phone | `mbhc-detect-rc5` (r140), inserted by hand from `/tmp` |
+| pkgrel | **141 built, verified, and run on hardware** |
+| last built module | `mbhc-switch-rc6` (r141) |
+| running on the phone | `mbhc-switch-rc6` (r141), inserted by hand from `/tmp` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -30,6 +30,9 @@ Tags, each with an evidence log in this directory:
 - `wcd9320-cdc-rco-wake-proven` — CDC core accessible, **no external MCLK**
 - `wcd9320-core-init-proven` (`1b18fe7`) — automatic idempotent init:
   cold boot 24/24, adoption 26/26
+- **`wcd9320-irq-proven`** — one physical headset insertion through the
+  whole chain: MBHC_JACK_SWITCH → GPIO 72 → regmap-irq → nested handler →
+  ack → status clear → quiescence. 27/27, three writes to `0x14a`.
 
 Untagged but validated:
 
@@ -57,7 +60,60 @@ Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
 `REGCACHE_NONE` still stays, but now for one reason only — **volatility is
 unmeasured**, and `taiko_volatile()` has never been checked against this part.
 
-## IN FLIGHT — step 4: arming proven, stimulus proven; dispatch is next
+## STEP 4/5 COMPLETE — `wcd9320-irq-proven`
+
+**2026-08-13, `wcd9320-irq-acceptance-20260813T220429Z.txt`, PASS 27/0.**
+
+One physical headset insertion, minimum configuration, whole chain:
+
+| stage | `0x14a` | present | mask | status | parent | child |
+|---|---|---|---|---|---|---|
+| S0 baseline | `00` | 1 | `ff ff 3f 7f` | `00 00 00 00` | 4 | 0 |
+| S1 detection on | `6f` | 1 | `ff ff 3f 7f` | `00 00 00 00` | 4 | 0 |
+| S2 armed | `6f` | 1 | **`ff ff 3f 6f`** | `00 00 00 00` | 4 | 4 |
+| **S3 inserted** | `6f` | **0** | `ff ff 3f 6f` | `00 00 00 00` | **5** | **5** |
+| S4 +5 s | `6f` | - | `ff ff 3f 6f` | `00 00 00 00` | 5 | 5 |
+| S5 disarmed | `6f` | - | `ff ff 3f 7f` | - | - | - |
+| S6 detection off | `00` | - | `ff ff 3f 7f` | `00 00 00 00` | - | - |
+
+Exactly **+1** parent edge, **+1** nested dispatch, post-ack status
+`00 00 00 00`, zero quiescence drift, all 29 sources masked again, `0x14a`
+back to reset, no manual recovery. No WARNING, BUG, `nobody cared`, spurious
+or regulator complaint. Codec health identical to every prior run.
+
+**The source is `MBHC_JACK_SWITCH` (26), not `MBHC_INSERTION`.** The first
+acceptance attempt armed INSERTION and got a clean physical transition with
+`INTR_STATUS` still `00 00 00 00` - insert detection does not feed that
+source. Downstream's `insert_detect` branch requests
+`WCD9320_IRQ_MBHC_JACK_SWITCH`, handled by `wcd9xxx_mech_plug_detect_irq`;
+INSERTION belongs to the headset-type state machine that runs afterwards and
+is disabled immediately after being requested.
+
+**Total configuration: three writes to one register** (`0x14a`), every value
+sourced. No micbias, no `MBHC_EN_CTL`, no MBHC clock, no `HPHL_10K_SW`.
+
+One artifact in that evidence file, corrected here rather than edited out of
+it: the `assertions before the event 4` line is not a measurement.
+`/proc/interrupts` has no child line until the source is armed, so S1 always
+reads 0 and S1->S2 records the counter appearing rather than assertions. The
+counter is cumulative for the boot; this run's own delta is the `+1` the gate
+used. The script no longer prints that line.
+
+### What this tag does NOT cover
+
+The module was **hand-inserted from `/tmp`**.
+`/lib/modules/.../wcd9320.ko` was found to be **zero bytes**
+(`e3b0c442...`, the SHA-256 of an empty file) after having been installed and
+sha-verified earlier in the same session. That is very likely the whole
+silent-`EINVAL` story, since an empty ELF fails exactly that way, and it
+explains why `insmod` from `/tmp` always worked. With the repeated
+`mounting unchecked fs, running e2fsck is recommended` after unclean
+shutdowns, rootfs truncation is the leading suspect.
+
+**That is the next milestone. Nothing may claim cold-boot behaviour until it
+is settled.**
+
+## Superseded: the road to step 4
 
 ### What two hardware runs established
 
@@ -431,27 +487,19 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 
 ## Sequence from here
 
-1. ~~r138 seven-source MBHC diagnostic~~ — **done, conclusive negative.**
-2. ~~Identify a natural source, or establish none exists~~ — **none exists.**
-3. **rc4: read-only MBHC probe** — poll `0x14b` and dump `0x3c0`–`0x3ff`
-   across an insertion and a removal. Write nothing. This decides how much
-   configuration "minimum necessary" actually means.
-4. **Minimal MBHC configuration**, scoped by what step 3 measures
-5. **Single-source physical-event acceptance run** → `wcd9320-irq-proven`
-6. Cold-boot regression. Autoload now works with an uncompressed `.ko`, but
-   that has not been deliberately regression-tested, and the `.ko.zst`
-   rejection is still unexplained. Both belong here, before anything builds on
-   the module path.
-7. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
-8. Minimal ASoC component
-9. RX DAI and IFD port programming
-10. Machine driver
-11. External MCLK / AFE clock work
-12. First 48 kHz playback route
-
-The `.ko.zst` rejection stays parked until step 6. The uncompressed module is a
-controlled test path, the milestone does not depend on the packaging question,
-and step 6's cold-boot regression is the first thing that does.
+1. ~~rc4 read-only MBHC probe~~ — done, detection was off
+2. ~~Minimal MBHC configuration~~ — done, three writes to `0x14a`
+3. ~~Single-source physical-event acceptance~~ — **done, `wcd9320-irq-proven`**
+4. **Module integrity and cold boot.** `/lib/modules/.../wcd9320.ko` went to
+   zero bytes; `e2fsck` the rootfs, reinstall, and prove one clean cold boot
+   with autoload. This is what the silent `EINVAL` has been all along, and
+   every later milestone rests on it.
+5. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
+6. Minimal ASoC component
+7. RX DAI and IFD port programming
+8. Machine driver
+9. External MCLK / AFE clock work
+10. First 48 kHz playback route
 
 ## Standing constraints
 

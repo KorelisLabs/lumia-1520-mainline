@@ -238,12 +238,18 @@ case "$PRESENT_SEQ" in *" "*) TRANSITIONED=1 ;; esac
 	say "present bit values  : $PRESENT_SEQ"
 	say "child assertions    : +$FIRED   (S2 ${S2_CHILD:-0} -> S3 ${S3_CHILD:-0})"
 	say "parent assertions   : +$PFIRED   (S2 ${S2_PARENT:-0} -> S3 ${S3_PARENT:-0})"
-	say "driver irq_count    : $IRQ_COUNT"
-	say "handler lines       : $HANDLER_LINES"
+	say "driver irq_count    : $IRQ_COUNT   (cumulative since module load)"
+	say "handler lines       : $HANDLER_LINES   (cumulative; this run contributed $FIRED)"
 	say "post-ack status     : ${POSTACK_STATUS:-none logged}   (live, read by the handler after regmap-irq acked)"
 	say "post-ack mask       : ${POSTACK_MASK:-none logged}"
-	note "assertions before the event" \
-		"$PRE_EVENT_FIRED between enabling detection and arming -- a bit latched by the enable would show here"
+	# NOT a delta. /proc/interrupts has no child line at all until the source
+	# is armed, so S1 always reads 0 and S1->S2 measures the counter
+	# appearing, not assertions. The counter is cumulative for the boot; only
+	# S2->S3 belongs to this run.
+	note "child counter at arm" \
+		"${S2_CHILD:-0} -- cumulative for this boot; this run's event delta is +$FIRED"
+	note "latched-bit check" \
+		"S2 live status $S2_STATUS -- a bit latched by enabling detection would show here, before anything was unmasked"
 
 	hdr "acceptance checks"
 
@@ -308,7 +314,7 @@ case "$PRESENT_SEQ" in *" "*) TRANSITIONED=1 ;; esac
 		say "THE CHAIN IS PROVEN, END TO END."
 		say ""
 		say "One physical headset insertion moved 0x14b bit 2, asserted"
-		say "MBHC_INSERTION, raised GPIO 72, dispatched through regmap-irq"
+		say "$SRC_NAME, raised GPIO 72, dispatched through regmap-irq"
 		say "to the nested handler, was acknowledged, cleared its status,"
 		say "and returned to quiescence. All 29 sources masked again, 0x14a"
 		say "back to its reset value, no manual recovery."
