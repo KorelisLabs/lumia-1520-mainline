@@ -1,0 +1,234 @@
+
+=== the chain, stage by stage ===
+                        0x14a  present  mask            status          parent  child
+S0 baseline           : 00     1        ff ff 3f 7f  00 00 00 00  4       0
+S1 detection enabled  : 6f     1        ff ff 3f 7f  00 00 00 00  4       0
+S2 armed              : 6f     1        ff ff 3f 6f  00 00 00 00  4       4
+S3 after insertion    : 6f     0        ff ff 3f 6f  00 00 00 00  5       5
+S4 quiescence +5s     : 6f     -        ff ff 3f 6f  00 00 00 00  5       5
+S5 disarmed           : 6f     -        ff ff 3f 7f  -               -       -
+S6 detection off      : 00     -        ff ff 3f 7f  00 00 00 00  -       -
+
+=== the physical event ===
+waited              : 9s of 25s
+child virq          : 88
+present bit values  : 1 0
+child assertions    : +1   (S2 4 -> S3 5)
+parent assertions   : +1   (S2 4 -> S3 5)
+driver irq_count    : 5   (cumulative since module load)
+handler lines       : 5   (cumulative; this run contributed 1)
+post-ack status     : 00 00 00 00   (live, read by the handler after regmap-irq acked)
+post-ack mask       : ff ff 3f 6f
+  ....  assertions before the event      4 between enabling detection and arming -- a bit latched by the enable would show here
+
+=== acceptance checks ===
+  PASS  module version                   mbhc-switch-rc6
+  PASS  detection enabled                6f
+  PASS  masks before arming              ff ff 3f 7f
+  PASS  child irq allocated              virq 88
+  PASS  exactly one source armed (live)  ff ff 3f 6f
+  ....  source armed                     MBHC_JACK_SWITCH via arm-switch
+  PASS  0x14b bit 2 transitioned         1 -> 0
+  PASS  nested source fired              child +1
+  PASS  parent asserted                  parent +1
+  PASS  handler ran                      irq_count=5
+  PASS  handler status reads             0
+  PASS  status cleared after ack (handler) 00 00 00 00
+  PASS  status clear afterwards (live)   00 00 00 00
+  PASS  quiescence, parent               0
+  PASS  quiescence, child                0
+  PASS  finite sequence                  1 assertion(s)
+  PASS  re-masked after disarm (live)    ff ff 3f 7f
+  PASS  all 29 masked after teardown     ff ff 3f 7f
+  PASS  armed flag cleared               0
+  PASS  0x14a restored                   00
+  PASS  kernel WARNING/BUG               0
+  PASS  spurious irq complaints          0
+  PASS  regulator warnings               0
+  PASS  identity major                   0x0102
+  PASS  core_ready                       1
+  PASS  slimbus errors                   0
+  PASS  slimbus timeouts                 0
+  PASS  adsp state                       running
+
+=== finding ===
+THE CHAIN IS PROVEN, END TO END.
+
+One physical headset insertion moved 0x14b bit 2, asserted
+MBHC_JACK_SWITCH, raised GPIO 72, dispatched through regmap-irq
+to the nested handler, was acknowledged, cleared its status,
+and returned to quiescence. All 29 sources masked again, 0x14a
+back to its reset value, no manual recovery.
+
+Minimum configuration used: three writes to one register.
+
+=== run identity ===
+mode              : irq-acceptance
+date              : 2026-08-13T22:04:29Z (UTC)
+module version    : mbhc-switch-rc6   (expected mbhc-switch-rc6)
+uname -r          : 6.16.12
+uname -v          : #142-postmarketos-qcom-msm8974 SMP PREEMPT Thu Aug 13 21:21:23 U
+uptime            : 2140.37 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 92 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[  179.546599] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[  179.547650] wcd9320 217:a0:0:0: Failed to get logical address
+[  179.609430] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[  179.609546] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[  179.610381] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[  179.611582] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[  179.612342] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[  179.614698] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 87
+[  179.614812] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[  179.614903] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[  179.720362] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[  179.721332] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[  179.735619] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[  179.736870] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[  179.738092] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[  179.738237] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[  179.851996] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[  179.853084] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[  179.854549] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[  179.857216] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[  179.858667] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[  179.859765] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[  179.860582] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[  179.869762] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[  179.871622] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[  179.871829] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[  179.884956] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[  179.886454] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[  179.888933] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[  179.891986] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  179.893465] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  179.894925] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  179.896479] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  179.896646] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[  180.023444] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[  180.023563] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[  180.023649] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[  180.034675] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[  180.035275] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[  185.852668] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[  210.812905] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  344.862976] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[  344.864212] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[  344.865396] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[  344.865804] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[  346.966085] wcd9320 217:a0:1:0: mbhc test: ARMED source 26 (MBHC_JACK_SWITCH) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[  750.399083] wcd9320 217:a0:1:0: mbhc test: irq #1 at 750389 ms, post-ack status=00 00 00 00 mask=ff ff 3f 6f
+[  882.416886] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 26 re-masked after 1 interrupt(s)
+[  882.577441] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=6f want=00 -> read=00  OK
+[  882.577898] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[  912.764718] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[  912.765927] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[  912.767103] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[  912.767508] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[  914.870820] wcd9320 217:a0:1:0: mbhc test: ARMED source 26 (MBHC_JACK_SWITCH) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[  927.041330] wcd9320 217:a0:1:0: mbhc test: irq #2 at 927031 ms, post-ack status=00 00 00 00 mask=ff ff 3f 6f
+[ 1160.376752] wcd9320 217:a0:1:0: mbhc test: irq #3 at 1160367 ms, post-ack status=00 00 00 00 mask=ff ff 3f 6f
+[ 1415.580580] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 26 re-masked after 3 interrupt(s)
+[ 1415.739937] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=6f want=00 -> read=00  OK
+[ 1415.740058] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 1416.278847] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[ 1416.280263] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[ 1416.281429] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[ 1416.281538] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[ 1418.381288] wcd9320 217:a0:1:0: mbhc test: ARMED source 26 (MBHC_JACK_SWITCH) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[ 1451.472663] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 26 re-masked after 3 interrupt(s)
+[ 1452.528371] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=6f want=00 -> read=00  OK
+[ 1452.528816] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 1453.962416] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=00 want=00 -> read=00  OK
+[ 1453.962853] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 1803.821250] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=00 want=00 -> read=00  OK
+[ 1803.821720] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 1804.358554] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[ 1804.359997] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[ 1804.361179] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[ 1804.361588] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[ 1806.467030] wcd9320 217:a0:1:0: mbhc test: ARMED source 26 (MBHC_JACK_SWITCH) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[ 1817.311230] wcd9320 217:a0:1:0: mbhc test: irq #4 at 1817301 ms, post-ack status=00 00 00 00 mask=ff ff 3f 6f
+[ 1823.048944] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 26 re-masked after 4 interrupt(s)
+[ 1824.102949] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=6f want=00 -> read=00  OK
+[ 1824.103418] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 1825.542141] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=00 want=00 -> read=00  OK
+[ 1825.542583] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+[ 2119.229813] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[ 2119.231029] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[ 2119.232184] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[ 2119.232590] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[ 2121.334006] wcd9320 217:a0:1:0: mbhc test: ARMED source 26 (MBHC_JACK_SWITCH) on child virq 88 -- this source is now UNMASKED, all others remain masked
+[ 2132.058366] wcd9320 217:a0:1:0: mbhc test: irq #5 at 2132048 ms, post-ack status=00 00 00 00 mask=ff ff 3f 6f
+[ 2137.892091] wcd9320 217:a0:1:0: mbhc test: DISARMED, source 26 re-masked after 5 interrupt(s)
+[ 2138.948730] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=ff old=6f want=00 -> read=00  OK
+[ 2138.949179] wcd9320 217:a0:1:0: insert-detect: DISABLED, 0x14a restored to 00
+
+=== verdict ===
+mode   : irq-acceptance
+checks : 27 passed, 0 failed
+VERDICT: PASS (irq-acceptance)
