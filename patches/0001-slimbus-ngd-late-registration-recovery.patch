@@ -1,0 +1,107 @@
+From: Lumia 1520 mainline port <none@localhost>
+Subject: [RESEARCH] slimbus: qcom-ngd: recover when LPASS is already up at probe
+
+QCOM_SSR_AFTER_POWERUP is emitted by ssr_notify_start(), an rproc subdevice
+.start callback. It is an event at boot, not a queryable state. When the
+ADSP remoteproc is built in and finishes booting before this driver probes,
+no AFTER_POWERUP is ever delivered to a notifier registered afterwards, and
+the NGD controller never starts.
+
+mainline already provides the fix for exactly this gap:
+qcom_ssr_last_status(), exported, documented with "lpass" as its example,
+and used this way by drivers/soc/qcom/qcom_sns_reg.c. It has a
+static-inline stub returning QCOM_SSR_STATUS_UNKNOWN when remoteproc
+support is disabled, so calling it is unconditionally safe.
+
+Adds, on top of that:
+ - an idempotency guard on ctrl->qmi.handle, since PDR UP, live SSR
+   AFTER_POWERUP and the recovery path can all schedule ngd_up_work and
+   qcom_slim_ngd_enable(true) calls slim_register_controller();
+ - logging that names which of the three triggers actually started the
+   controller, and the QMI service's advertised version/instance.
+
+Deliberately NOT included, having been measured on hardware first:
+ - a wildcard QMI service lookup. This device's ADSP publishes SLIMbus
+   satellite control at version 1, instance 0, which is exactly what
+   SLIMBUS_QMI_SVC_V1 / SLIMBUS_QMI_INS_ID already request. An earlier
+   guess that downstream MSM8974's SLIMBUS_QMI_INS_ID 1 implied a packed
+   instance of 0x101 was wrong; upstream's exact match is correct here.
+ - a start-on-QMI-arrival fallback. It would mask whether this
+   late-registration fix is the thing that actually works.
+
+The logging is research scaffolding; the last_status recovery and the
+idempotency guard look like genuine upstream fixes.
+---
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -1372,6 +1372,12 @@
+ 	qmi->svc_info.sq_node = service->node;
+ 	qmi->svc_info.sq_port = service->port;
+ 
++	dev_info(ctrl->dev,
++		 "SLIM NGD: QMI service 0x%04x discovered (version %u "
++		 "instance %u) at node %u port %u\n",
++		 SLIMBUS_QMI_SVC_ID, service->version, service->instance,
++		 service->node, service->port);
++
+ 	complete(&ctrl->qmi_up);
+ 
+ 	return 0;
+@@ -1460,7 +1466,19 @@
+ 	}
+ 
+ 	mutex_lock(&ctrl->ssr_lock);
+-	qcom_slim_ngd_enable(ctrl, true);
++	/*
++	 * More than one trigger can schedule this worker (PDR UP, SSR
++	 * AFTER_POWERUP, and the late-registration recovery below).
++	 * qcom_slim_ngd_enable(true) calls slim_register_controller(),
++	 * which must not run twice. ctrl->qmi.handle is set by
++	 * qcom_slim_qmi_init() only on full success and cleared by
++	 * qcom_slim_qmi_exit(), so it is an accurate "already enabled"
++	 * flag.
++	 */
++	if (!ctrl->qmi.handle)
++		qcom_slim_ngd_enable(ctrl, true);
++	else
++		dev_info(ctrl->dev, "SLIM NGD: already enabled, skipping\n");
+ 	mutex_unlock(&ctrl->ssr_lock);
+ }
+ 
+@@ -1481,7 +1499,11 @@
+ 		mutex_unlock(&ctrl->tx_lock);
+ 		break;
+ 	case QCOM_SSR_AFTER_POWERUP:
++		dev_info(ctrl->dev, "SLIM NGD: trigger = live SSR AFTER_POWERUP\n");
++		schedule_work(&ctrl->ngd_up_work);
++		break;
+ 	case SERVREG_SERVICE_STATE_UP:
++		dev_info(ctrl->dev, "SLIM NGD: trigger = PDR avs/audio UP\n");
+ 		schedule_work(&ctrl->ngd_up_work);
+ 		break;
+ 	default:
+@@ -1596,6 +1618,24 @@
+ 		goto wq_err;
+ 	}
+ 
++	/*
++	 * ssr_notify_start() is an rproc subdevice .start callback, so
++	 * QCOM_SSR_AFTER_POWERUP is an event emitted when the remoteproc
++	 * boots, not a state that can be queried by registering late. When
++	 * the ADSP is built in and comes up before this driver probes, no
++	 * AFTER_POWERUP is ever delivered and the controller would stay
++	 * down. qcom_ssr_last_status() exists for exactly this gap
++	 * (drivers/soc/qcom/qcom_sns_reg.c uses the same idiom) and has a
++	 * static-inline stub returning QCOM_SSR_STATUS_UNKNOWN when
++	 * remoteproc support is disabled, so calling it is always safe.
++	 */
++	if (qcom_ssr_last_status("lpass") == QCOM_SSR_AFTER_POWERUP) {
++		dev_info(&pdev->dev,
++			 "SLIM NGD: trigger = late-registration recovery "
++			 "(LPASS already up at probe)\n");
++		schedule_work(&ctrl->ngd_up_work);
++	}
++
+ 	return 0;
+ wq_err:
+ 	qcom_slim_ngd_qmi_svc_event_deinit(&ctrl->qmi);

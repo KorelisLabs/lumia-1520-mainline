@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=100
+pkgrel=141
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -36,6 +36,9 @@ source="
 	$_config
 	qcom-msm8974-microsoft-common.dtsi
 	qcom-msm8974-microsoft-rm940.dts
+	0001-slimbus-ngd-late-registration-recovery.patch
+	0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
+	0002-slimbus-wcd9320-codec-core.patch
 "
 builddir="$srcdir/linux-${_tag#v}"
 
@@ -78,8 +81,11 @@ package() {
 }
 
 sha512sums="
-6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-v6.16.12-msm8974.tar.gz
-8b86f495a6c376300fb7cadb960ce2a7f21f81569f1e79016dbdc1c1c5b2e21c8037e9cc38782217a603e6548b51188d6267a10d0c8aa6227e466e47b183e4a5  config-postmarketos-qcom-msm8974.armv7
+6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-$_tag.tar.gz
+b3bf5829814c9081279e3524b975264fdd22304c6d6608f62ce9350b792640e3aa4ecdcce737f3b64b4acb3608073a30f578a5c23232f0405735f1709ff8fbf7  config-postmarketos-qcom-msm8974.armv7
 a3b467644799e0df829f0f074df849207834e9f05c40858807c9c0f6a6142e7fb6de5ddc397001864564f83c1bc5e8eb9bb6bac2f6fdf890f9f9b1c210786d72  qcom-msm8974-microsoft-common.dtsi
-b74fdc486357d22f007bb8e9abca580d6f5e011d82542057448dcedf7591cbe123463191bff898e187353027a691645c3d3d7e780ab3cb2250bd4919f893387c  qcom-msm8974-microsoft-rm940.dts
+f75884a0a2aeae0081cf663b61a08e305dea472b3f51783ee3e3130d0721de5cfdc2e53ae26767c9802c431dbe556a5cbeec427f60507bd12d3a3ab76958504f  qcom-msm8974-microsoft-rm940.dts
+1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
+ad96107feffcbe19fdcc5223f15dca7410daef7ac630a63837cfdcf5564a45f56e80b09b72a6e6abfe5f4026e2513f16c5d3d83d73c8b05f5016efb00a1101bb  0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
+cd95d002942e740acb06f5fe4e5720d1f3d7937f70dc6f4ed447615605d58602ab9736a57dd7f6bccfb8008be833d1fccc9cb622e450779d18cd7bca397bc694  0002-slimbus-wcd9320-codec-core.patch
 "
