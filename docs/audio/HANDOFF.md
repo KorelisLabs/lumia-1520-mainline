@@ -1,6 +1,6 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-13. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-14. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
@@ -8,13 +8,13 @@ State as of 2026-08-13. Everything is on GitHub unless marked otherwise.
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
 | `main` | `17db442` |
-| working branch | `research/audio-wcd9320-core-init` at **`1a91554`**, pushed |
+| working branch | `research/audio-wcd9320-core-init`, pushed; latest tag **`wcd9320-coldboot-autoload-proven`** |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
 | pkgrel | **141 built, verified, and run on hardware** |
 | last built module | `mbhc-switch-rc6` (r141) |
-| running on the phone | `mbhc-switch-rc6` (r141), inserted by hand from `/tmp` |
+| running on the phone | `mbhc-switch-rc6` (r141), **autoloaded from `/lib/modules`** |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -33,6 +33,9 @@ Tags, each with an evidence log in this directory:
 - **`wcd9320-irq-proven`** — one physical headset insertion through the
   whole chain: MBHC_JACK_SWITCH → GPIO 72 → regmap-irq → nested handler →
   ack → status clear → quiescence. 27/27, three writes to `0x14a`.
+- **`wcd9320-coldboot-autoload-proven`** — the driver autoloads from
+  `/lib/modules` on a cold restart with no manual insertion available,
+  31/31, and the IRQ chain re-proven from that boot, 27/27.
 
 Untagged but validated:
 
@@ -101,17 +104,75 @@ used. The script no longer prints that line.
 
 ### What this tag does NOT cover
 
-The module was **hand-inserted from `/tmp`**.
-`/lib/modules/.../wcd9320.ko` was found to be **zero bytes**
-(`e3b0c442...`, the SHA-256 of an empty file) after having been installed and
-sha-verified earlier in the same session. That is very likely the whole
-silent-`EINVAL` story, since an empty ELF fails exactly that way, and it
-explains why `insmod` from `/tmp` always worked. With the repeated
-`mounting unchecked fs, running e2fsck is recommended` after unclean
-shutdowns, rootfs truncation is the leading suspect.
+The module was **hand-inserted from `/tmp`**, because
+`/lib/modules/.../wcd9320.ko` was **zero bytes** (`e3b0c442...`, the SHA-256 of
+an empty file). An empty ELF is rejected early enough to log nothing, which is
+the silent `EINVAL`, and it explains why loading from `/tmp` always worked.
 
-**That is the next milestone. Nothing may claim cold-boot behaviour until it
-is settled.**
+**RESOLVED 2026-08-14** — see `wcd9320-coldboot-autoload-proven` below and
+`wcd9320-zero-byte-module.md`. Two guesses written here at the time were wrong:
+rootfs truncation was **not** the cause (the filesystem measured `clean`, and
+the `mounting unchecked fs` warning is about `/boot`, a journal-less ext2
+filesystem where it is routine), and neither was zstd decompression. It was a
+single zero-length write at install time; the mechanism remains unproven and is
+recorded as such.
+
+This tag's scope is unchanged and remains accurate: it asserts the interrupt
+chain from a hand-inserted module, and nothing about cold boot.
+
+## COLD BOOT + AUTOLOAD COMPLETE — `wcd9320-coldboot-autoload-proven`
+
+**2026-08-14, `wcd9320-coldboot-autoload-20260814T225740Z.txt`, PASS 31/0**, and
+the IRQ chain re-proven from that boot in
+`wcd9320-irq-acceptance-20260814T230022Z.txt`, **PASS 27/0**.
+
+This is what `wcd9320-irq-proven` deferred. That tag was earned with the module
+hand-inserted from `/tmp`; this one shows the driver comes up on its own.
+
+| gate | measured |
+|---|---|
+| autoload | `mbhc-switch-rc6`, first driver line **48 s into the boot** |
+| no fallback | **no `wcd9320.ko` anywhere outside `/lib/modules`** |
+| module integrity | 53264 bytes, sha `c4c772fb…` = the built artefact |
+| cold codec | `path=fresh`, `adopted=0`, `power_owned=1`, `nonzero_before=0` |
+| core init | ran once, `0 → 94 → 95`, canary `e4`, `core_ready=1` |
+| identity | major `0x0102` minor `0x0001`, 0 failures, no stale bus state |
+| nested chip | registered, `msmgpio 72`, parent count 0 |
+| masks | `ff ff 3f 7f`, nothing asserted |
+| errors | `WARNING:`/`BUG:` 0, `_regulator_put` 0, nobody-cared 0, SLIMbus 0 |
+
+Then, from that same autoloaded module, one physical insertion: `0x14b` bit 2
+`1 → 0`, parent **+1**, child **+1**, `irq_count=1`, post-ack `00 00 00 00`, no
+quiescence drift, everything re-masked and `0x14a` restored. Counters started at
+zero for that boot, so the deltas are unambiguous.
+
+### What "cold boot" means here, precisely
+
+There is no state where this SoC is unpowered and reachable — powering off
+lands at the Windows boot screen. And the port is **RAM-boot by design**:
+`fastboot boot` each time, nothing Android-bootable flashed, so the Windows
+chain stays intact (`docs/boot-chain.md`). A cold start is therefore: power off,
+restart into the bootloader, `fastboot boot` the matching image.
+
+That exercises the entire autoload path — initramfs, root mount, systemd, udev,
+`modprobe`, `/lib/modules` — and skips only fetching the kernel from flash,
+which this port never does. **The tag does not claim a flash boot.** Rather than
+argue about how cold the restart was, the run measures it: `path=fresh` with
+`nonzero_before=0` is the codec's own report that it came up dark.
+
+### The zero-byte module
+
+Root cause written up in `wcd9320-zero-byte-module.md`. In short: the module in
+`/lib/modules` was zero bytes, an empty file is not an ELF, and the loader
+rejects it early enough to log nothing — hence a silent `EINVAL` that hand-
+loading from `/tmp` always sidestepped. The rootfs was **clean**; no repair was
+needed or run. Two earlier explanations in this handoff (a zstd decompression
+problem, and "autoload is fixed") were wrong and are corrected there.
+
+The mechanism of the single zero-length write is **unproven** and recorded as
+such. The durable fix is that install is now verified by size and sha256 against
+the built artefact, and the cold-boot gate additionally requires that no module
+exists outside `/lib/modules` to mask the fault.
 
 ## Superseded: the road to step 4
 
@@ -487,19 +548,23 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 
 ## Sequence from here
 
-1. ~~rc4 read-only MBHC probe~~ — done, detection was off
-2. ~~Minimal MBHC configuration~~ — done, three writes to `0x14a`
-3. ~~Single-source physical-event acceptance~~ — **done, `wcd9320-irq-proven`**
-4. **Module integrity and cold boot.** `/lib/modules/.../wcd9320.ko` went to
-   zero bytes; `e2fsck` the rootfs, reinstall, and prove one clean cold boot
-   with autoload. This is what the silent `EINVAL` has been all along, and
-   every later milestone rests on it.
+1. ~~Minimal MBHC configuration~~ — done, three writes to `0x14a`
+2. ~~Single-source physical-event acceptance~~ — done, `wcd9320-irq-proven`
+3. ~~Module integrity and cold boot~~ — done,
+   `wcd9320-coldboot-autoload-proven`
+4. **Decide whether to merge the research branch to `main`.** Every boundary
+   from enumeration to a physical interrupt through a cold boot is now backed
+   by hardware evidence, which is the condition that was being waited for.
 5. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
 6. Minimal ASoC component
 7. RX DAI and IFD port programming
 8. Machine driver
 9. External MCLK / AFE clock work
 10. First 48 kHz playback route
+
+The pmaports recipe is now mirrored at pkgrel 141 under `pmaports/`, checksums
+rebuilt positionally against the repo's own files, so the build no longer
+exists on one machine only.
 
 ## Standing constraints
 
