@@ -44,8 +44,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 15:22:33.468218400 -0400
-@@ -0,0 +1,3681 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 17:41:05.427891100 -0400
+@@ -0,0 +1,4264 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -103,6 +103,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#include <linux/slimbus.h>
 +#include <linux/workqueue.h>
 +
++#include <sound/pcm.h>
 +#include <sound/soc.h>
 +
 +/*
@@ -1185,6 +1186,141 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +
 +/*
++ * The interface function is a DIFFERENT REGISTER SPACE, and needs its own
++ * regmap_config rather than the control function's.
++ *
++ * Both functions share the 0x800 value-element translation --
++ * wcd9xxx_slim_read_device() adds it before choosing which slim_device to
++ * address, so the interface flag selects only the target. Everything else
++ * differs: the interface space is SLIMbus port and channel configuration,
++ * the control space is codec registers.
++ *
++ * Sharing wcd9320_regmap_config between them was harmless only while the
++ * interface regmap went unused. It is actively wrong the moment a port
++ * register is written, because that config carries the control function's
++ * readable/volatile bitmaps, its 460 reg_defaults and REGCACHE_MAPLE.
++ * Interface 0x180 is RX port 16's multi-channel register; control 0x180 is
++ * TAIKO_A_BUCK_MODE_1, which is cacheable and has a registered default. A
++ * port write would be cached against a codec default and a read could be
++ * answered from that cache instead of the chip -- the silent-wrong-value
++ * failure this port has been bitten by twice, and one cache_check cannot
++ * catch, because it reports "not applicable" for the interface function and
++ * never walks it.
++ *
++ * REGCACHE_NONE here, deliberately. There is no measured reset state for the
++ * interface space -- no equivalent of the full-map capture exists for it --
++ * so there are no defensible reg_defaults, and a register file this small
++ * gains nothing from a cache. Bypassing the codec's cache for a couple of
++ * accesses would have been the wrong shape of fix: these are two different
++ * address spaces, so they get two different maps.
++ *
++ * The port layout, derived in docs/audio/wcd9320-rx-dai-mapping.md:
++ *
++ *   0x30-0x3b   port interrupt enable / status / clear
++ *   0x40-0x4c   RX port config bytes, ports 16-28
++ *   0x50-0x5f   TX port config bytes, ports 0-15
++ *   0x60-0x7f   RX / TX interrupt source
++ *   0x100-0x13d TX multi-channel, ports 0-15, two bytes per 4-byte stride
++ *   0x180-0x1b0 RX multi-channel, ports 16-28, one byte per 4-byte stride
++ */
++#define WCD9320_IFD_MAX_REGISTER	0x1b0
++
++/* Port numbering, from taiko_rx_chs[]: slave port 16 + n carries shift n. */
++#define WCD9320_RX_PORT_FIRST		16
++#define WCD9320_RX_PORT_COUNT		13
++#define WCD9320_TX_PORT_COUNT		16
++
++/*
++ * Downstream computes these by subtracting the RX port offset so that
++ * ABSOLUTE port numbers index correctly:
++ *   rx_port_ch_reg_base  = 0x180 - (16 * 4) = 0x140
++ *   port_rx_cfg_reg_base = 0x040 -  16      = 0x030
++ * They are computed offsets, not real bases: port_rx_cfg_reg_base only
++ * produces valid addresses for port >= 16, which is why RX config bytes start
++ * at 0x40 and do not collide with the interrupt block at 0x30.
++ */
++#define WCD9320_IFD_RX_CH_BASE		0x140
++#define WCD9320_IFD_RX_CFG_BASE		0x030
++
++#define WCD9320_IFD_RX_CH(port)		(WCD9320_IFD_RX_CH_BASE + 4 * (port))
++#define WCD9320_IFD_RX_CFG(port)	(WCD9320_IFD_RX_CFG_BASE + (port))
++
++/*
++ * The multi-channel register takes a BITMAP of the channels bound to the port,
++ * built downstream as (1 << ch->shift) per channel -- not a channel number.
++ * One channel on one port is 0x01.
++ */
++#define WCD9320_RX_CH_MASK_ONE		0x01
++
++/*
++ * The snapshot range: everything from the port interrupt block to the last RX
++ * multi-channel register. Captured whole rather than per-register, so that a
++ * write landing somewhere unintended shows up as drift rather than going
++ * unnoticed because nobody thought to look there.
++ */
++#define WCD9320_IFD_SNAP_FIRST		0x030
++#define WCD9320_IFD_SNAP_COUNT \
++	(WCD9320_IFD_MAX_REGISTER - WCD9320_IFD_SNAP_FIRST + 1)
++
++/* Port config byte: [watermark:2][enable:1]. 12 bytes, enabled. */
++#define WCD9320_PORT_WM_12BYTES		2
++#define WCD9320_PORT_WM_SHIFT		1
++/* Plain hex, not BIT(0): these are 8-bit register values, and BIT() is
++ * unsigned long, which makes the composed constant promote and then mismatch
++ * a %02x format. */
++#define WCD9320_PORT_ENABLE		0x01
++#define WCD9320_PORT_CFG_ENABLED \
++	((WCD9320_PORT_WM_12BYTES << WCD9320_PORT_WM_SHIFT) | WCD9320_PORT_ENABLE)
++#define WCD9320_PORT_CFG_DISABLED	0x00
++
++static bool wcd9320_ifd_readable_reg(struct device *dev, unsigned int reg)
++{
++	/* port interrupt block */
++	if (reg >= 0x30 && reg <= 0x3b)
++		return true;
++	/* RX then TX port config bytes */
++	if (reg >= 0x40 && reg <= 0x4c)
++		return true;
++	if (reg >= 0x50 && reg <= 0x5f)
++		return true;
++	/* interrupt source */
++	if (reg >= 0x60 && reg <= 0x7f)
++		return true;
++	/* TX multi-channel: two bytes at the bottom of each 4-byte stride */
++	if (reg >= 0x100 && reg <= 0x13d && (reg & 3) < 2)
++		return true;
++	/* RX multi-channel: one byte at the bottom of each 4-byte stride */
++	if (reg >= 0x180 && reg <= WCD9320_IFD_MAX_REGISTER && (reg & 3) == 0)
++		return true;
++	return false;
++}
++
++/*
++ * Nothing in the port space is write-only, and nothing is read-only either --
++ * the same addresses are configured and read back, which is what makes a
++ * write verifiable. Interrupt status and clear are the exception in principle,
++ * but this driver does not touch them yet, so they are simply readable.
++ */
++static bool wcd9320_ifd_writeable_reg(struct device *dev, unsigned int reg)
++{
++	return wcd9320_ifd_readable_reg(dev, reg);
++}
++
++static const struct regmap_config wcd9320_ifd_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 8,
++	.reg_base = WCD9320_REGISTER_START_OFFSET,
++	.max_register = WCD9320_IFD_MAX_REGISTER,
++
++	.readable_reg = wcd9320_ifd_readable_reg,
++	.writeable_reg = wcd9320_ifd_writeable_reg,
++
++	/* See the comment above: no measured reset state, so no defaults and
++	 * nothing to cache against. */
++	.cache_type = REGCACHE_NONE,
++};
++
++/*
 + * One armed MBHC source. Each request_threaded_irq gets its own dev_id so the
 + * handler can name which source fired without re-deriving it from the status
 + * register -- with several sources armed at once, deriving it that way would
@@ -1330,7 +1466,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool core_adopted;	/* found ready; this driver wrote nothing */
 +	unsigned int core_init_calls;	/* every entry, including no-ops */
 +	unsigned int core_init_runs;	/* entries that actually wrote   */
++
++	/* ---- RX slave-port programming, research-triggered for now ---- */
++	bool rx_port_on;		/* this driver has a port enabled */
++	unsigned int rx_port_num;	/* which one */
++	unsigned int rx_port_writes;	/* register writes made */
++	bool have_ifd_before, have_ifd_after, have_ifd_teardown;
++	u8 ifd_before[WCD9320_IFD_SNAP_COUNT];
++	u8 ifd_after[WCD9320_IFD_SNAP_COUNT];
++	u8 ifd_teardown[WCD9320_IFD_SNAP_COUNT];
 +};
++
++/*
++ * The two SLIMbus functions are two driver instances, and the port path needs
++ * both: the registers live on the interface function, but the decision that
++ * the hardware is usable belongs to the control function, which is where
++ * core_ready is. Downstream keeps both handles in one struct; here they probe
++ * independently, so the interface instance publishes itself for the control
++ * instance to find.
++ *
++ * A module-scope pointer is honest about the cardinality -- there is exactly
++ * one codec on this device -- and the mutex covers the window where one
++ * function is unbinding while the other is mid-operation.
++ */
++static DEFINE_MUTEX(wcd9320_ifd_lock);
++static struct wcd9320 *wcd9320_ifd_instance;
 +
 +/* ---------------------------------------------------------------- power -- */
 +
@@ -3424,7 +3584,120 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(bringup);
 +
++/*
++ * Forward declaration. The production port-programming helper is defined with
++ * the DAI that will call it, further down; the research hook below and
++ * wcd9320_remove() both need it earlier. Declared rather than moved so the
++ * helper stays next to the DAI ops it exists for -- and declared exactly once,
++ * so there is still only one implementation.
++ */
++static int wcd9320_rx_port_program(struct wcd9320 *wcd, unsigned int port,
++				   u8 ch_mask, bool enable);
++
++/*
++ * Research hook: exercise the RX slave-port path with no sound card.
++ *
++ * There is deliberately no card and no machine driver at this milestone, so
++ * ASoC will never invoke the DAI's hw_params. This calls the SAME production
++ * function that hw_params calls -- the register sequence is not duplicated
++ * here, and cannot drift from what the DAI will do. Only the trigger is
++ * research; the path is production.
++ *
++ * Token-guarded and write-only, in the pattern core_reinit and mbhc_test
++ * already established, so it cannot be tripped by a stray "1".
++ *
++ *   echo rx-port-on  > rx_port_test    program slave port 16
++ *   echo rx-port-off > rx_port_test    tear it down
++ */
++static ssize_t rx_port_test_store(struct device *dev,
++				  struct device_attribute *attr,
++				  const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "rx-port-on")) {
++		dev_info(dev, "rx-port test: programming slave port %u\n",
++			 WCD9320_RX_PORT_FIRST);
++		ret = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
++					      WCD9320_RX_CH_MASK_ONE, true);
++	} else if (sysfs_streq(buf, "rx-port-off")) {
++		if (!wcd->rx_port_on) {
++			dev_info(dev, "rx-port test: nothing programmed\n");
++			return len;
++		}
++		dev_info(dev, "rx-port test: tearing down slave port %u\n",
++			 wcd->rx_port_num);
++		ret = wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
++	} else {
++		return -EINVAL;
++	}
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(rx_port_test);
++
++/* Counters and the three snapshots, so every write is attributable. */
++static ssize_t rx_port_state_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int i;
++	int len;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	len = sysfs_emit(buf,
++			 "rx_port_on=%u rx_port_num=%u writes=%u\n"
++			 "ifd_bound=%u\n"
++			 "snap_first=0x%03x snap_count=%u\n"
++			 "have_before=%u have_after=%u have_teardown=%u\n"
++			 "ch_reg=0x%03x cfg_reg=0x%03x cfg_enabled=0x%02x\n",
++			 wcd->rx_port_on, wcd->rx_port_num, wcd->rx_port_writes,
++			 wcd9320_ifd_instance ? 1 : 0,
++			 WCD9320_IFD_SNAP_FIRST, WCD9320_IFD_SNAP_COUNT,
++			 wcd->have_ifd_before, wcd->have_ifd_after,
++			 wcd->have_ifd_teardown,
++			 WCD9320_IFD_RX_CH(WCD9320_RX_PORT_FIRST),
++			 WCD9320_IFD_RX_CFG(WCD9320_RX_PORT_FIRST),
++			 WCD9320_PORT_CFG_ENABLED);
++
++	if (wcd->have_ifd_before) {
++		len += sysfs_emit_at(buf, len, "before:\n");
++		for (i = 0; i < WCD9320_IFD_SNAP_COUNT; i++)
++			len += sysfs_emit_at(buf, len, "%02x%s", wcd->ifd_before[i],
++					     (i % 32 == 31) ? "\n" : "");
++		if (WCD9320_IFD_SNAP_COUNT % 32)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	if (wcd->have_ifd_after) {
++		len += sysfs_emit_at(buf, len, "after:\n");
++		for (i = 0; i < WCD9320_IFD_SNAP_COUNT; i++)
++			len += sysfs_emit_at(buf, len, "%02x%s", wcd->ifd_after[i],
++					     (i % 32 == 31) ? "\n" : "");
++		if (WCD9320_IFD_SNAP_COUNT % 32)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	if (wcd->have_ifd_teardown) {
++		len += sysfs_emit_at(buf, len, "teardown:\n");
++		for (i = 0; i < WCD9320_IFD_SNAP_COUNT; i++)
++			len += sysfs_emit_at(buf, len, "%02x%s",
++					     wcd->ifd_teardown[i],
++					     (i % 32 == 31) ? "\n" : "");
++		if (WCD9320_IFD_SNAP_COUNT % 32)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	return len;
++}
++static DEVICE_ATTR_RO(rx_port_state);
++
 +static struct attribute *wcd9320_attrs[] = {
++	&dev_attr_rx_port_test.attr,
++	&dev_attr_rx_port_state.attr,
 +	&dev_attr_identity.attr,
 +	&dev_attr_bringup.attr,
 +	&dev_attr_irq_observe.attr,
@@ -3447,6 +3720,198 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +ATTRIBUTE_GROUPS(wcd9320);
 +
 +/* ---------------------------------------------------------------- probe -- */
++
++/* ------------------------------------------------- RX slave-port path -- */
++
++/*
++ * Snapshot the interface function's port space.
++ *
++ * Bypass is not needed and not used: the interface regmap is REGCACHE_NONE, so
++ * every read already reaches the chip. Unreadable addresses are skipped and
++ * recorded as 00, the same convention wcd9320_snapshot_range() uses.
++ */
++static int wcd9320_ifd_snapshot(struct wcd9320 *ifd, u8 *buf, const char *what)
++{
++	unsigned int i;
++	int ret = 0;
++
++	for (i = 0; i < WCD9320_IFD_SNAP_COUNT; i++) {
++		unsigned int reg = WCD9320_IFD_SNAP_FIRST + i, v;
++
++		if (!wcd9320_ifd_readable_reg(&ifd->sdev->dev, reg)) {
++			buf[i] = 0;
++			continue;
++		}
++		ret = regmap_read(ifd->regmap, reg, &v);
++		if (ret) {
++			dev_err(&ifd->sdev->dev,
++				"%s snapshot read failed at 0x%03x: %d\n",
++				what, reg, ret);
++			break;
++		}
++		buf[i] = v;
++	}
++	return ret;
++}
++
++/*
++ * Program one RX slave port, or tear it down. THE production path.
++ *
++ * This is the function the RX DAI's hw_params will call once a card exists to
++ * invoke it. The research hook calls this same function -- the register
++ * sequence is written once, so what a hook exercises is what a DAI will
++ * execute, and the two cannot drift apart.
++ *
++ * Two writes, both on the interface function:
++ *
++ *   0x140 + 4*port   multi-channel   bitmap of channels bound to the port
++ *   0x030 + port     port config     [watermark:2][enable:1]
++ *
++ * For slave port 16 that is 0x180 and 0x040. The bitmap is 0x01 for a single
++ * channel: it is a mask built from each channel's shift, not a channel number
++ * -- channel numbers are a separate namespace starting at 128.
++ *
++ * WHAT THIS DOES NOT DO. It does not allocate, define or activate a SLIMbus
++ * channel. On this device the ADSP is the bus master and owns the NGD, so
++ * those are requests to a remote master rather than local register writes, and
++ * none of that is exercised here. Configuring the codec's side of a port is
++ * not a data path.
++ *
++ * No MCLK is involved: these are bus-clocked register accesses, the same class
++ * as every access already proven. Nothing here touches the codec's audio clock.
++ */
++static int wcd9320_rx_port_program(struct wcd9320 *wcd, unsigned int port,
++				   u8 ch_mask, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	struct wcd9320 *ifd;
++	unsigned int ch_reg, cfg_reg, got;
++	u8 cfg_val;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	/*
++	 * Guarded on the control function's state rather than on probe
++	 * ordering. The component registers before enumeration completes,
++	 * which is safe only while it is inert; a path that reaches hardware
++	 * cannot inherit that assumption.
++	 */
++	if (!wcd->online) {
++		dev_err(dev, "rx-port: codec is not online\n");
++		return -ENODEV;
++	}
++	if (!wcd->core_ready) {
++		dev_err(dev, "rx-port: core is not ready\n");
++		return -EAGAIN;
++	}
++	if (port < WCD9320_RX_PORT_FIRST ||
++	    port >= WCD9320_RX_PORT_FIRST + WCD9320_RX_PORT_COUNT) {
++		dev_err(dev, "rx-port: %u is not an RX slave port (%u..%u)\n",
++			port, WCD9320_RX_PORT_FIRST,
++			WCD9320_RX_PORT_FIRST + WCD9320_RX_PORT_COUNT - 1);
++		return -EINVAL;
++	}
++
++	mutex_lock(&wcd9320_ifd_lock);
++	ifd = wcd9320_ifd_instance;
++	if (!ifd || !ifd->regmap) {
++		mutex_unlock(&wcd9320_ifd_lock);
++		dev_err(dev, "rx-port: the interface function is not bound\n");
++		return -ENODEV;
++	}
++	if (!ifd->online) {
++		mutex_unlock(&wcd9320_ifd_lock);
++		dev_err(dev, "rx-port: the interface function is not online\n");
++		return -ENODEV;
++	}
++
++	ch_reg = WCD9320_IFD_RX_CH(port);
++	cfg_reg = WCD9320_IFD_RX_CFG(port);
++	cfg_val = enable ? WCD9320_PORT_CFG_ENABLED : WCD9320_PORT_CFG_DISABLED;
++
++	if (enable && !wcd->have_ifd_before) {
++		ret = wcd9320_ifd_snapshot(ifd, wcd->ifd_before, "ifd-before");
++		if (ret)
++			goto out;
++		wcd->have_ifd_before = true;
++	}
++
++	/*
++	 * Channel bitmap first, then the config byte that enables the port --
++	 * the port should not be enabled before it knows which channels it
++	 * carries. Teardown reverses that: disable, then clear the bitmap.
++	 */
++	if (enable) {
++		ret = regmap_write(ifd->regmap, ch_reg, ch_mask);
++		if (ret)
++			goto fail_ch;
++		wcd->rx_port_writes++;
++		ret = regmap_read(ifd->regmap, ch_reg, &got);
++		dev_info(dev,
++			 "rx-port %u: multi-channel 0x%03x want %02x -> read %02x%s\n",
++			 port, ch_reg, ch_mask, ret ? 0 : got,
++			 ret ? " (readback failed)" : "");
++
++		ret = regmap_write(ifd->regmap, cfg_reg, cfg_val);
++		if (ret)
++			goto fail_cfg;
++		wcd->rx_port_writes++;
++		ret = regmap_read(ifd->regmap, cfg_reg, &got);
++		dev_info(dev,
++			 "rx-port %u: config 0x%03x want %02x -> read %02x%s\n",
++			 port, cfg_reg, cfg_val, ret ? 0 : got,
++			 ret ? " (readback failed)" : "");
++
++		wcd->rx_port_on = true;
++		wcd->rx_port_num = port;
++		ret = wcd9320_ifd_snapshot(ifd, wcd->ifd_after, "ifd-after");
++		if (!ret)
++			wcd->have_ifd_after = true;
++	} else {
++		ret = regmap_write(ifd->regmap, cfg_reg, cfg_val);
++		if (ret)
++			goto fail_cfg;
++		wcd->rx_port_writes++;
++		ret = regmap_read(ifd->regmap, cfg_reg, &got);
++		dev_info(dev,
++			 "rx-port %u: config 0x%03x want %02x -> read %02x%s\n",
++			 port, cfg_reg, cfg_val, ret ? 0 : got,
++			 ret ? " (readback failed)" : "");
++
++		ret = regmap_write(ifd->regmap, ch_reg, 0x00);
++		if (ret)
++			goto fail_ch;
++		wcd->rx_port_writes++;
++		ret = regmap_read(ifd->regmap, ch_reg, &got);
++		dev_info(dev,
++			 "rx-port %u: multi-channel 0x%03x want 00 -> read %02x%s\n",
++			 port, ch_reg, ret ? 0 : got,
++			 ret ? " (readback failed)" : "");
++
++		wcd->rx_port_on = false;
++		ret = wcd9320_ifd_snapshot(ifd, wcd->ifd_teardown, "ifd-teardown");
++		if (!ret)
++			wcd->have_ifd_teardown = true;
++	}
++
++	dev_info(dev, "rx-port %u: %s, %u write(s) total\n",
++		 port, enable ? "PROGRAMMED" : "TORN DOWN", wcd->rx_port_writes);
++	ret = 0;
++	goto out;
++
++fail_ch:
++	dev_err(dev, "rx-port %u: multi-channel write to 0x%03x failed: %d\n",
++		port, ch_reg, ret);
++	goto out;
++fail_cfg:
++	dev_err(dev, "rx-port %u: config write to 0x%03x failed: %d\n",
++		port, cfg_reg, ret);
++out:
++	mutex_unlock(&wcd9320_ifd_lock);
++	return ret;
++}
 +
 +/*
 + * The ASoC component: registration only, and deliberately empty.
@@ -3471,6 +3936,84 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static const struct snd_soc_component_driver wcd9320_soc_component = {
 +	.name = "wcd9320-codec",
 +	.endianness = 1,
++};
++
++/*
++ * One RX DAI, and nothing else.
++ *
++ * The ops below are the intended production path: hw_params programs the RX
++ * slave port, hw_free tears it down, both through wcd9320_rx_port_program().
++ *
++ * ASoC will not call them yet. DAI ops are invoked from PCM operations on a
++ * sound card, and snd_soc_dai_driver.probe runs from soc_probe_component()
++ * when a card binds the component -- there is deliberately no card and no
++ * machine driver at this milestone, so nothing drives them. They are written
++ * now so that the register sequence exists in exactly one place: the research
++ * hook calls the same function, so what is exercised on hardware today is what
++ * the DAI will execute when a card arrives, rather than a rehearsal that could
++ * drift from it.
++ *
++ * The rate and format are the narrowest honest declaration -- one channel,
++ * 48 kHz, S16_LE -- not a capability claim. Nothing has streamed, and the
++ * codec's audio clock is not even running.
++ */
++#define WCD9320_RX_RATES	SNDRV_PCM_RATE_48000
++#define WCD9320_RX_FORMATS	SNDRV_PCM_FMTBIT_S16_LE
++
++static int wcd9320_rx_hw_params(struct snd_pcm_substream *substream,
++				struct snd_pcm_hw_params *params,
++				struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++
++	if (!wcd)
++		return -ENODEV;
++
++	return wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
++				       WCD9320_RX_CH_MASK_ONE, true);
++}
++
++static int wcd9320_rx_hw_free(struct snd_pcm_substream *substream,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++
++	if (!wcd)
++		return -ENODEV;
++	if (!wcd->rx_port_on)
++		return 0;
++
++	return wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
++}
++
++static const struct snd_soc_dai_ops wcd9320_rx_dai_ops = {
++	.hw_params = wcd9320_rx_hw_params,
++	.hw_free = wcd9320_rx_hw_free,
++};
++
++/*
++ * Named for the slave port, not for an audio path. Downstream tracing
++ * established that path selection is runtime-muxed: taiko_rx_chs[] fixes
++ * slave port 16 + n to channel shift n, so port 16 is SLIM RX1, but which
++ * codec output it eventually drives is a DAPM routing decision that does not
++ * exist here. Calling this "rx1" after the port is accurate; calling it after
++ * a speaker or a headphone would not be.
++ */
++static struct snd_soc_dai_driver wcd9320_dais[] = {
++	{
++		.name = "wcd9320-slim-rx1",
++		.id = 0,
++		.playback = {
++			.stream_name = "WCD9320 SLIM RX1 Playback",
++			.rates = WCD9320_RX_RATES,
++			.formats = WCD9320_RX_FORMATS,
++			.rate_min = 48000,
++			.rate_max = 48000,
++			.channels_min = 1,
++			.channels_max = 1,
++		},
++		.ops = &wcd9320_rx_dai_ops,
++	},
 +};
 +
 +static int wcd9320_probe(struct slim_device *sdev)
@@ -3502,13 +4045,26 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 */
 +	wcd->is_ifd = (sdev->e_addr.dev_index == 0);
 +	if (wcd->is_ifd) {
++		/*
++		 * Its OWN config, not the control function's. The two are
++		 * different register spaces; see wcd9320_ifd_regmap_config.
++		 */
 +		wcd->regmap = devm_regmap_init_slimbus(sdev,
-+						       &wcd9320_regmap_config);
++						&wcd9320_ifd_regmap_config);
 +		if (IS_ERR(wcd->regmap))
 +			return dev_err_probe(dev, PTR_ERR(wcd->regmap),
 +					     "failed to init interface regmap\n");
++
++		/* Publish for the control function's port path to find. */
++		mutex_lock(&wcd9320_ifd_lock);
++		wcd9320_ifd_instance = wcd;
++		mutex_unlock(&wcd9320_ifd_lock);
++
 +		dev_info(dev,
 +			 "interface function: no power or reset taken, waiting for enumeration\n");
++		dev_info(dev,
++			 "interface regmap: own config, max_register 0x%03x, uncached\n",
++			 WCD9320_IFD_MAX_REGISTER);
 +		return 0;
 +	}
 +
@@ -3601,12 +4157,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * control with its own lifecycle -- not this call.
 +	 */
 +	ret = devm_snd_soc_register_component(dev, &wcd9320_soc_component,
-+					      NULL, 0);
++					      wcd9320_dais,
++					      ARRAY_SIZE(wcd9320_dais));
 +	if (ret)
 +		return dev_err_probe(dev, ret,
 +				     "failed to register ASoC component\n");
-+	dev_info(dev, "ASoC component registered: %s, 0 DAIs\n",
-+		 wcd9320_soc_component.name);
++	dev_info(dev, "ASoC component registered: %s, %zu DAI(s): %s\n",
++		 wcd9320_soc_component.name, ARRAY_SIZE(wcd9320_dais),
++		 wcd9320_dais[0].name);
 +
 +	if (adopt) {
 +		dev_info(dev,
@@ -3660,6 +4218,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static void wcd9320_remove(struct slim_device *sdev)
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(&sdev->dev);
++
++	/*
++	 * Unpublish the interface function before anything can look it up
++	 * again. The port path takes the same lock, so a lookup either
++	 * completes before this or fails cleanly after it.
++	 */
++	if (wcd && wcd->is_ifd) {
++		mutex_lock(&wcd9320_ifd_lock);
++		if (wcd9320_ifd_instance == wcd)
++			wcd9320_ifd_instance = NULL;
++		mutex_unlock(&wcd9320_ifd_lock);
++	}
++
++	/*
++	 * A slave port left enabled after unbind would leave the interface
++	 * function configured by a driver that no longer owns it, and would
++	 * quietly invalidate the next run's before-snapshot -- the same reason
++	 * insert detection is restored below.
++	 */
++	if (wcd && !wcd->is_ifd && wcd->rx_port_on) {
++		dev_info(&sdev->dev,
++			 "removing with RX port %u programmed: tearing it down first\n",
++			 wcd->rx_port_num);
++		wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
++	}
 +
 +	/*
 +	 * The MBHC test hook uses plain request_irq rather than devm, so that
@@ -3724,6 +4307,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("asoc-component-rc1");
-+MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component");
++MODULE_VERSION("rx-dai-rc1");
++MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");

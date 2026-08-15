@@ -12,9 +12,9 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **145 built, verified, and run on hardware** |
-| last built module | `asoc-component-rc1` (r145), sha256 `ac9632b8…` |
-| running on the phone | `asoc-component-rc1` (r145), autoloaded from `/lib/modules` |
+| pkgrel | **146 built, verified, and run on hardware** |
+| last built module | `rx-dai-rc1` (r146), sha256 `e01c4a3c…` |
+| running on the phone | `rx-dai-rc1` (r146), autoloaded from `/lib/modules` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -700,6 +700,31 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   `pmbootstrap: command not found` — after prompting for a password and doing
   all the precondition work. Build scripts should prepend `~/.local/bin`
   themselves and check for the binary before asking for sudo.
+- **The PGD and the IFD are different register spaces and need different
+  `regmap_config`s.** They share only the `0x800` value-element translation;
+  the interface space is SLIMbus port and channel configuration, the control
+  space is codec registers. Sharing one config was harmless only while the
+  interface regmap went unused — at the first port write it would have cached
+  interface `0x180` (RX port 16's multi-channel register) against the
+  *codec's* `TAIKO_A_BUCK_MODE_1` default, and `cache_check` structurally
+  cannot catch it because it reports "not applicable" for the IFD and never
+  walks it. The IFD now has its own config, `max_register 0x1b0`,
+  `REGCACHE_NONE`, no defaults. Do not "fix" a future case of this by
+  bypassing the codec's cache for a few accesses.
+- **Run the cold-boot gate FIRST on a boot, and copy nothing into `/tmp`
+  until the evidence set is complete.** It asserts `parent idle = 0` against
+  `/proc/interrupts`, which is cumulative for the boot, so any earlier run
+  that fires an interrupt makes it fail; and it asserts no module exists
+  outside `/lib/modules`, which a post-boot `scp` of the `.ko` into `/tmp`
+  breaks. Both cost a run before the ordering was written down. The order
+  that works: cold-boot, then the milestone's own run, then regcache, then
+  IRQ acceptance last because it is the one that fires an interrupt.
+- **The interface function probes more than once per boot** — three times on
+  r146, twice on r145 — so anything published from its probe must tolerate
+  being republished. The module-scope IFD pointer does: each probe overwrites
+  it, and `remove` only clears it when it still points at the instance being
+  removed. Not yet understood, and worth understanding before the machine
+  driver.
 - **A trailing backslash before a closing quote breaks a pasted path.** A
   Windows destination like `"...\docs\audio\"` is fine in PowerShell but, if
   pasted into a POSIX shell, `\"` escapes the quote and the shell sits at a
@@ -723,7 +748,9 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
    unmeasured assumption under the cache.
 9. ~~Minimal ASoC component~~ — done, `asoc-component-rc1`/r145, zero DAIs,
    see `wcd9320-asoc-component.md`
-10. RX DAI and IFD port programming
+10. ~~RX DAI and IFD port programming~~ — done, `rx-dai-rc1`/r146, one RX DAI
+    and the IFD port path proven reversible, see `wcd9320-rx-dai-mapping.md`.
+    The IFD now has its **own** regmap config; see the trap below.
 11. Machine driver
 12. External MCLK / AFE clock work
 13. First 48 kHz playback route

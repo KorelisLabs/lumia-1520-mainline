@@ -21,6 +21,7 @@ import glob
 import hashlib
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -208,6 +209,9 @@ def main():
     ap.add_argument("--expect-asoc", action="store_true",
                     help="also assert the ASoC component symbols (rc from "
                          "asoc-component-rc1 onwards)")
+    ap.add_argument("--expect-dais", type=int, default=0,
+                    help="how many DAIs the component must declare "
+                         "(0 for asoc-component-rc1, 1 from rx-dai-rc1)")
     args = ap.parse_args()
     if args.bootimg is None:
         args.bootimg = "boot-1520-%s.img" % args.expect_version
@@ -333,19 +337,73 @@ def main():
         nreg = e.count_relocs_to("devm_snd_soc_register_component")
         check("registered from exactly one site", nreg == 1,
               "%d call site(s) -- the control function only" % nreg)
-        # Zero DAIs is the scope of this milestone, and it is checkable:
-        # a DAI array would appear as its own symbol.
-        dai_syms = [s for s in e.syms if "dai" in s.lower() and "wcd9320" in s.lower()]
-        check("no DAI table in the module", not dai_syms,
-              "found: %s" % dai_syms)
-        if PATCH.exists():
-            ptext = PATCH.read_text(errors="replace")
-            check("registered with NULL dais, count 0",
-                  "&wcd9320_soc_component,\n+\t\t\t\t\t      NULL, 0)" in ptext
-                  or "NULL, 0)" in ptext,
+        ptext = PATCH.read_text(errors="replace") if PATCH.exists() else ""
+        check("Kconfig depends on SND_SOC", "depends on SND_SOC" in ptext)
+
+        if args.expect_dais == 0:
+            dai_syms = [s for s in e.syms
+                        if "dai" in s.lower() and "wcd9320" in s.lower()]
+            check("no DAI table in the module", not dai_syms,
+                  "found: %s" % dai_syms)
+            check("registered with NULL dais, count 0", "NULL, 0)" in ptext,
                   "source-level")
-            check("Kconfig depends on SND_SOC",
-                  "depends on SND_SOC" in ptext)
+        else:
+            check("wcd9320_dais present", "wcd9320_dais" in e.syms,
+                  "the DAI table")
+            # One DAI, and it is a playback DAI. Counted from the source of
+            # the array rather than guessed from a symbol size, because
+            # snd_soc_dai_driver's layout is kernel-version dependent.
+            m = re.search(r'static struct snd_soc_dai_driver wcd9320_dais\[\]'
+                          r' = \{(.*?)\n\+\};', ptext, re.S)
+            body = m.group(1) if m else ""
+            nstream = body.count(".stream_name")
+            check("exactly %d DAI declared" % args.expect_dais,
+                  nstream == args.expect_dais,
+                  "%d stream_name(s) in wcd9320_dais[]" % nstream)
+            # check() prints its detail on pass and fail alike, so the detail
+            # states a fact rather than explaining a failure -- a PASS line
+            # reading "found a .capture member" would be actively misleading.
+            check("no capture stream (no TX DAI)", ".capture" not in body,
+                  "playback only")
+            check("DAI registered with ARRAY_SIZE(wcd9320_dais)",
+                  "ARRAY_SIZE(wcd9320_dais)" in ptext)
+
+        # The interface function must have its own regmap config -- different
+        # register space, and it must not inherit the codec's cache.
+        check("wcd9320_ifd_regmap_config present",
+              "wcd9320_ifd_regmap_config" in e.syms,
+              "the interface function's own config")
+        check("IFD config is REGCACHE_NONE",
+              re.search(r'wcd9320_ifd_regmap_config = \{.*?REGCACHE_NONE',
+                        ptext, re.S) is not None,
+              "source-level")
+        check("IFD probe uses the IFD config",
+              "&wcd9320_ifd_regmap_config" in ptext)
+        check("IFD max_register is 0x1b0",
+              "WCD9320_IFD_MAX_REGISTER\t0x1b0" in ptext
+              or "WCD9320_IFD_MAX_REGISTER		0x1b0" in ptext,
+              "source-level")
+
+        # The register sequence must exist once. The research hook may call
+        # the production helper but must not re-implement it.
+        # Count DEFINITIONS, not declarations: there is one forward
+        # declaration so the research hook (which appears earlier in the file)
+        # can call the helper. A definition's parameter list is followed by an
+        # opening brace; a declaration by a semicolon.
+        ndef = len(re.findall(r'bool enable\)\n\+\{', ptext))
+        ndecl = len(re.findall(r'bool enable\);', ptext))
+        check("one production port-programming helper", ndef == 1,
+              "%d definition(s)" % ndef)
+        check("at most one forward declaration of it", ndecl <= 1,
+              "%d declaration(s)" % ndecl)
+        hook = re.search(r'static ssize_t rx_port_test_store\(.*?\n\+\}',
+                         ptext, re.S)
+        hb = hook.group(0) if hook else ""
+        check("hook calls the production helper",
+              "wcd9320_rx_port_program(" in hb)
+        check("hook does not duplicate the register sequence",
+              "regmap_write" not in hb,
+              "no regmap_write in the hook body")
 
     print()
     print("=== 6. modpost ===")

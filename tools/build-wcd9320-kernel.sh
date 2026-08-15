@@ -300,7 +300,6 @@ print(d[64:576].rstrip(b'\0').decode())
 	esac
 	python3 "$REPO/tools/patch-cmdline.py" "$BUILT" "$OUTIMG" = "$NEW" ||
 		die "cmdline patch failed"
-	echo "wrote $OUTIMG"
 
 	step "verify the image"
 	python3 - "$BUILT" "$OUTIMG" <<'PY' || die "image differs outside the cmdline field"
@@ -326,16 +325,24 @@ fi
 step "artefact gate"
 GATE_ARGS="--pkgrel $PKGREL --expect-version $VERSION"
 case "$VERSION" in
-asoc-*) GATE_ARGS="$GATE_ARGS --expect-asoc" ;;
+asoc-*)   GATE_ARGS="$GATE_ARGS --expect-asoc --expect-dais 0" ;;
+rx-dai-*) GATE_ARGS="$GATE_ARGS --expect-asoc --expect-dais 1" ;;
 esac
-if [ "$VERIFY_ONLY" = "1" ] || [ -z "${OUTIMG:-}" ]; then
-	GATE_ARGS="$GATE_ARGS --skip-bootimg"
-else
-	GATE_ARGS="$GATE_ARGS --bootimg $OUTIMG"
-fi
+#
+# The image path is passed as its own quoted argument, never folded into
+# GATE_ARGS. A staging directory containing a space would otherwise word-split
+# when GATE_ARGS is expanded unquoted, and the gate would reject the tail of
+# the path as an unrecognised option -- failing a build that was fine.
 # shellcheck disable=SC2086
-python3 "$REPO/tools/wcd9320-verify-artifact.py" $GATE_ARGS ||
-	die "artefact verification failed -- do NOT flash this"
+if [ "$VERIFY_ONLY" = "1" ] || [ -z "${OUTIMG:-}" ]; then
+	python3 "$REPO/tools/wcd9320-verify-artifact.py" $GATE_ARGS \
+		--skip-bootimg ||
+		die "artefact verification failed -- do NOT flash this"
+else
+	python3 "$REPO/tools/wcd9320-verify-artifact.py" $GATE_ARGS \
+		--bootimg "$OUTIMG" ||
+		die "artefact verification failed -- do NOT flash this"
+fi
 
 step "done"
 if [ "$VERIFY_ONLY" = "1" ]; then

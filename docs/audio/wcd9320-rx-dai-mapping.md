@@ -1,10 +1,32 @@
-# RX DAI and the IFD port path: the map, before any code
+# RX DAI and the IFD port path: the map, and the result
 
-Pre-implementation mapping for the first RX DAI milestone. Nothing here has
-been built or booted. The point is to know exactly which registers, bitfields,
+Written as pre-implementation mapping, and kept as the record of what was
+implemented from it. The point was to know exactly which registers, bitfields,
 clocks and bus objects are involved *before* writing callbacks that touch
-hardware — and two structural problems surfaced during the mapping that have to
-be settled first.
+hardware — and two structural problems surfaced during the mapping that had to
+be settled first. Both were, and neither would have been found by building.
+
+**PROVEN ON HARDWARE 2026-08-15**, `rx-dai-rc1` (pkgrel 146), one boot, four
+runs, 117 checks, zero failures:
+
+| run | verdict |
+|---|---|
+| `wcd9320-coldboot-autoload-20260815T215351Z.txt` | PASS 31/0 |
+| `wcd9320-rx-dai-20260815T215404Z.txt` | PASS 34/0 |
+| `wcd9320-regcache-20260815T215415Z.txt` | PASS 25/0 |
+| `wcd9320-irq-acceptance-20260815T215455Z.txt` | PASS 27/0 |
+
+The port programming reached hardware exactly as mapped, and reversed:
+
+```
+0x180 multi-channel : 00 -> 01 -> 00
+0x040 port config   : 00 -> 05 -> 00
+bytes changed by programming       : 2  [0x040 00->05  0x180 00->01]
+bytes still changed after teardown : 0
+```
+
+Two registers moved across the whole `0x030`–`0x1b0` space and no others, which
+is what makes every write attributable rather than merely plausible.
 
 This closes an item `wcd9320-asoc-survey.md` §5 recorded as open: *"the
 `SB_PGD_*` port register offsets ... are defined in a header not yet fetched.
