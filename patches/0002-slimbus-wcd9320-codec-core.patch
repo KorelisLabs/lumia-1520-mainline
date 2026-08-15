@@ -42,8 +42,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-13 17:14:26.926268200 -0400
-@@ -0,0 +1,2824 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 11:32:39.814965200 -0400
+@@ -0,0 +1,2964 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -369,6 +369,32 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_CDC_FIRST		0x200
 +#define WCD9320_CDC_LAST		0x3bf
 +#define WCD9320_CDC_COUNT		(WCD9320_CDC_LAST - WCD9320_CDC_FIRST + 1)
++
++/*
++ * ---- the low half, 0x000-0x1ff -------------------------------------------
++ *
++ * The sentinel covers 0x200-0x3bf, which is why the reg_defaults work could
++ * attribute the CDC region and not the analog one. 57 cacheable registers read
++ * something other than their documented __POR; 6 are this driver's own writes
++ * and 23 sit in the CDC region where the three-stage snapshots already settle
++ * them. The remaining 28 live down here, and with no snapshot taken between
++ * reset release and core init there was no way to tell a revision-dependent
++ * reset value from something written after reset -- the ADSP is running and
++ * owns the NGD, so that is not a hypothetical.
++ *
++ * Snapshotting this half at the same three moments closes that. Together with
++ * the existing CDC snapshots it gives the complete 1024-register map at each
++ * stage, without reading the same 448 registers three more times.
++ *
++ * 0x1fd RC_OSC_TUNER is the specific question: __POR 00, measured 15, and it
++ * sits beside the oscillator registers the RCO sequence drives. If it is
++ * populated by hardware as a consequence of that sequence, it will be 00
++ * before bring-up and non-zero after -- which the before/after-bringup pair
++ * shows directly, and which would make it neither a default nor cacheable.
++ */
++#define WCD9320_LOW_FIRST		0x000
++#define WCD9320_LOW_LAST		0x1ff
++#define WCD9320_LOW_COUNT		(WCD9320_LOW_LAST - WCD9320_LOW_FIRST + 1)
 +
 +/*
 + * ---- MBHC observation window, READ ONLY ------------------------------------
@@ -723,6 +749,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * a stage rather than guessed at: as-found, after the core release,
 +	 * after clocking. Teardown is a fourth, taken only if reversed.
 +	 */
++	/*
++	 * The low half at the same three moments, so the complete map is
++	 * available at each stage and the analog reset state can be attributed
++	 * rather than guessed.
++	 */
++	u8 low_before[WCD9320_LOW_COUNT];		/* as found       */
++	u8 low_after_bringup[WCD9320_LOW_COUNT];	/* after stage 1  */
++	u8 low_after[WCD9320_LOW_COUNT];		/* after stage 2  */
++	bool have_low_before, have_low_after_bringup, have_low_after;
++
 +	u8 cdc_before[WCD9320_CDC_COUNT];		/* as found       */
 +	u8 cdc_after_bringup[WCD9320_CDC_COUNT];	/* after stage 1  */
 +	u8 cdc_after[WCD9320_CDC_COUNT];		/* after stage 2  */
@@ -1274,6 +1310,30 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return n;
 +}
 +
++/*
++ * The low half, read the same way as the sentinel: one register at a time, so
++ * a failure names the address it happened at rather than failing as a block.
++ */
++static int wcd9320_snapshot_low(struct wcd9320 *wcd, u8 *buf)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < WCD9320_LOW_COUNT; i++) {
++		unsigned int v;
++
++		ret = regmap_read(wcd->regmap, WCD9320_LOW_FIRST + i, &v);
++		if (ret) {
++			dev_err(&wcd->sdev->dev,
++				"low snapshot read failed at 0x%03x: %d\n",
++				WCD9320_LOW_FIRST + i, ret);
++			return ret;
++		}
++		buf[i] = v;
++	}
++	return 0;
++}
++
 +static int wcd9320_snapshot_cdc(struct wcd9320 *wcd, u8 *buf)
 +{
 +	unsigned int i;
@@ -1539,6 +1599,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->have_before = true;
 +	wcd->nz_before = wcd9320_count_nonzero(wcd->cdc_before);
 +
++	/*
++	 * Taken here, before the adoption branch, so it exists on both paths.
++	 * This is the earliest point at which the whole map is readable and
++	 * nothing this driver does has touched it yet.
++	 */
++	if (!wcd9320_snapshot_low(wcd, wcd->low_before))
++		wcd->have_low_before = true;
++
 +	if (wcd->nz_before >= WCD9320_CDC_MIN_NONZERO) {
 +		/*
 +		 * Adoption. The core is already reachable, so the bring-up and
@@ -1567,6 +1635,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev, "core init: after release, %u/%u non-zero\n",
 +			 wcd->nz_after_bringup, WCD9320_CDC_COUNT);
 +	}
++	/* Between the core release and the clock sequence: this is what
++	 * separates "the RCO sequence did it" from "it was already there". */
++	if (!wcd9320_snapshot_low(wcd, wcd->low_after_bringup))
++		wcd->have_low_after_bringup = true;
 +
 +	ret = wcd9320_enable_rco(wcd);
 +	if (ret)
@@ -1576,6 +1648,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		goto out;
 +	wcd->have_after = true;
 +	wcd->nz_after = wcd9320_count_nonzero(wcd->cdc_after);
++	if (!wcd9320_snapshot_low(wcd, wcd->low_after))
++		wcd->have_low_after = true;
 +
 +	ret = wcd9320_verify_core_accessible(wcd);
 +	if (!ret) {
@@ -1839,6 +1913,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->have_before = false;
 +	wcd->have_after_bringup = false;
 +	wcd->have_after = false;
++	/* The low-half snapshots follow the same lifecycle: a re-entry must not
++	 * leave a previous run's dump readable as if it belonged to this one. */
++	wcd->have_low_before = false;
++	wcd->have_low_after_bringup = false;
++	wcd->have_low_after = false;
 +	wcd->nz_before = 0;
 +	wcd->nz_after_bringup = 0;
 +	wcd->nz_after = 0;
@@ -2159,6 +2238,25 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RW(mbhc_test);
 +
++static ssize_t wcd9320_emit_dump_n(char *buf, const u8 *d, bool have,
++				   unsigned int count)
++{
++	int len = 0;
++	unsigned int i;
++
++	if (!have)
++		return sysfs_emit(buf, "not captured\n");
++
++	for (i = 0; i < count; i++) {
++		len += sysfs_emit_at(buf, len, "%02x", d[i]);
++		if ((i & 31) == 31)
++			len += sysfs_emit_at(buf, len, "\n");
++	}
++	if (count & 31)
++		len += sysfs_emit_at(buf, len, "\n");
++	return len;
++}
++
 +static ssize_t wcd9320_emit_dump(char *buf, const u8 *d, bool have)
 +{
 +	int len = 0;
@@ -2185,6 +2283,45 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return wcd9320_emit_dump(buf, wcd->cdc_before, wcd->have_before);
 +}
 +static DEVICE_ATTR_RO(sentinel_before);
++
++/*
++ * ---- the low half at each stage, 0x000-0x1ff ------------------------------
++ *
++ * low_before is the one that matters: the earliest point at which the whole
++ * map is readable and this driver has written nothing. It is what makes the
++ * analog-region reset state attributable instead of guessed, and it is taken
++ * before the adoption branch so it exists on both paths.
++ */
++static ssize_t low_before_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump_n(buf, wcd->low_before, wcd->have_low_before,
++				   WCD9320_LOW_COUNT);
++}
++static DEVICE_ATTR_RO(low_before);
++
++static ssize_t low_after_bringup_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump_n(buf, wcd->low_after_bringup,
++				   wcd->have_low_after_bringup,
++				   WCD9320_LOW_COUNT);
++}
++static DEVICE_ATTR_RO(low_after_bringup);
++
++static ssize_t low_after_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	return wcd9320_emit_dump_n(buf, wcd->low_after, wcd->have_low_after,
++				   WCD9320_LOW_COUNT);
++}
++static DEVICE_ATTR_RO(low_after);
 +
 +static ssize_t sentinel_after_show(struct device *dev,
 +				   struct device_attribute *attr, char *buf)
@@ -2628,6 +2765,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_core_reinit.attr,
 +	&dev_attr_mbhc_test.attr,
 +	&dev_attr_sentinel_before.attr,
++	&dev_attr_low_before.attr,
++	&dev_attr_low_after_bringup.attr,
++	&dev_attr_low_after.attr,
 +	&dev_attr_sentinel_after.attr,
 +	&dev_attr_sentinel_after_bringup.attr,
 +	&dev_attr_sentinel_teardown.attr,
@@ -2865,6 +3005,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("mbhc-switch-rc6");
++MODULE_VERSION("fullmap-rc7");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
 +MODULE_LICENSE("GPL");

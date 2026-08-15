@@ -12,9 +12,9 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **141 built, verified, and run on hardware** |
-| last built module | `mbhc-switch-rc6` (r141) |
-| running on the phone | `mbhc-switch-rc6` (r141), **autoloaded from `/lib/modules`** |
+| pkgrel | **142 built, verified, and run on hardware** |
+| last built module | `fullmap-rc7` (r142) |
+| running on the phone | `fullmap-rc7` (r142), autoloaded from `/lib/modules` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -65,6 +65,41 @@ but only for `0x200`–`0x3bf`, which is what the sentinel covers. **Updated
 reason `REGCACHE_NONE` stays. It is measured for the MBHC path only, the
 analog-region reset state is unattributed, and both reasons are set out in
 `wcd9320-volatility-and-defaults.md` below.
+
+## Full-map capture closes the defaults gap — `wcd9320-reg-defaults.md`
+
+**2026-08-15, `wcd9320-fullmap-20260815T154307Z.txt`, 16/16, fresh path.**
+`fullmap-rc7` snapshots `0x000`-`0x1ff` at the same three moments as the
+sentinel, giving the complete 1024-register map at each stage of core init.
+
+| class | count |
+|---|---|
+| `matches-por` | 424 |
+| `volatile` | 379 |
+| `unresolved` (undocumented holes, all zero) | 163 |
+| `reset-default` | 50 |
+| `driver-write` | 7 |
+| `hw-side-effect` | 1 |
+
+**The 27 analog mismatches are attributable.** Each reads identically at
+pre-init, after core release and after RCO — stable from reset, never written
+by us, differing from `__POR`. Revision-dependent defaults for this die.
+
+**`0x1fd RC_OSC_TUNER` resolved, and not as predicted.** It was already `14` at
+reset, so the RCO sequence did not populate it from nothing; but it moved
+`14 → 15` with no write from us. Hardware side effect — excluded from defaults
+and **must be added to `volatile_reg`**. It is the one place this hardware
+contradicts `taiko_volatile()`.
+
+**Eligible for `reg_defaults`: 474**, of which **229 non-zero**. Nothing
+hardware-populated, volatile or unresolved is in that set. The 7 driver-write
+registers all read their documented `__POR` at pre-init, so they could be
+included at that value — a judgement call, not a gap.
+
+**Remaining before `cache_type` changes** — implementation, not evidence: add
+`0x1fd` to `volatile_reg`; add `readable_reg` limited to the 673 documented
+addresses so the 163 holes are never touched; build the 229-entry table; decide
+on the 7.
 
 ## Volatility measured; the cache stays off — `wcd9320-volatility-and-defaults.md`
 
@@ -595,9 +630,8 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 4. ~~Merge the research branch to `main`~~ — done, `fabe7e2`
 5. ~~Measure volatility~~ — done; **cache stays off**, see
    `wcd9320-volatility-and-defaults.md`
-6. **Full-map post-reset snapshot** — extend `sentinel_before` to all 1024
-   registers. Settles the 28 unattributed analog defaults and the `0x1fd`
-   question, and is the prerequisite for any `reg_defaults`/cache work.
+6. ~~Full-map post-reset snapshot~~ — done, `fullmap-rc7`/r142; defaults
+   gap closed, see `wcd9320-reg-defaults.md`
 7. Provoked runs per volatile family — digital gain, clip-detect, VBAT, IIR
    and ANC windows are all still unexercised
 8. Minimal ASoC component
