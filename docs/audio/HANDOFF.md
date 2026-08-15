@@ -43,6 +43,12 @@ Tags, each with an evidence log in this directory:
   that same boot. Scope and the one open question are in
   `wcd9320-regcache.md`.
 
+  Additional evidence against the same tag, not a new milestone: the
+  **adoption regression**, 30/30, staged with `core_reinit` from a clean
+  fresh boot. Adopting an already-initialised codec writes nothing — the whole
+  dmesg delta is one line — and leaves no cacheable read stale. The tag was
+  not moved.
+
 Untagged but validated:
 
 - `core-init-rc1` regression — stage split is behaviour-neutral
@@ -573,6 +579,11 @@ Added for the regcache work:
   and reports strays. Encodes the two faults that have voided runs.
 - `wcd9320-gen-cache-tables.py` — generates the three tables from a full-map
   capture. The tables are generated, not hand-edited.
+- `wcd9320-adoption-cache-evidence.sh` — stages a re-entry with `core_reinit`
+  and proves adoption leaves no cacheable read stale. Use this rather than
+  unbind/rebind: `handoff_on_remove` leaves supplies enabled while devres
+  frees the handles, which produces one `_regulator_put` warning per supply.
+  Note the scope in its header — `core_reinit` keeps the existing regmap.
 
 Every run gates on `/sys/module/wcd9320/version` and writes **no evidence file
 at all** on mismatch. Exit 0 PASS, 1 FAIL, 2 INVALID.
