@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=141
+pkgrel=144
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -87,5 +87,5 @@ a3b467644799e0df829f0f074df849207834e9f05c40858807c9c0f6a6142e7fb6de5ddc39700186
 f75884a0a2aeae0081cf663b61a08e305dea472b3f51783ee3e3130d0721de5cfdc2e53ae26767c9802c431dbe556a5cbeec427f60507bd12d3a3ab76958504f  qcom-msm8974-microsoft-rm940.dts
 1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
 ad96107feffcbe19fdcc5223f15dca7410daef7ac630a63837cfdcf5564a45f56e80b09b72a6e6abfe5f4026e2513f16c5d3d83d73c8b05f5016efb00a1101bb  0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
-cd95d002942e740acb06f5fe4e5720d1f3d7937f70dc6f4ed447615605d58602ab9736a57dd7f6bccfb8008be833d1fccc9cb622e450779d18cd7bca397bc694  0002-slimbus-wcd9320-codec-core.patch
+139bc2acd53001b017047a3ef09fc66e663f219fedc836df43c9c0edd859e31ea9e6bc4c943e196273d010234424667d76de726b3414be567cdfe5f202836b38  0002-slimbus-wcd9320-codec-core.patch
 "
