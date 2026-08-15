@@ -7,7 +7,7 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | | |
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
-| `main` | `fabe7e2` — the audio foundation is merged and published |
+| `main` | audio foundation merged and published; every milestone tag is an ancestor |
 | working branch | `research/audio-wcd9320-core-init`, pushed; latest tag **`wcd9320-coldboot-autoload-proven`** |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
@@ -126,18 +126,17 @@ means this test never exercised those registers; they stay volatile on
 downstream's `reg < 0x100` and on regmap-irq having demonstrably dispatched,
 not on measurement.
 
-**`REGCACHE_NONE` stays.** Not caution — three specific reasons: the volatile
-predicate is verified on 1 register of 379; 28 candidate defaults in the analog
-region are unattributed because no snapshot exists between reset release and
-core init; and with no ASoC or DAI yet the cache would optimise an access
-pattern that does not exist while adding a stale-read failure mode to a stack
-whose interrupt path depends on uncached reads below `0x100`.
+**`REGCACHE_NONE` stayed at the time**, on three grounds: the volatile
+predicate verified on 1 register of 379; 28 analog-region defaults
+unattributed; and no consumer to benefit.
 
-**What would settle it:** extend `sentinel_before` from 448 registers to all
-1024. The driver already captures it between reset release and core init, so
-one change attributes all 28 analog differences, shows whether `0x1fd`
-`RC_OSC_TUNER` is hardware-populated by the RCO sequence, and yields defensible
-defaults for the whole cacheable set.
+**Two of those three are now resolved** by the full-map capture above — the 28
+are attributed and `0x1fd` is identified as hardware-populated. The volatility
+position is unchanged and, per the standard agreed for this work, does not need
+to change: a cacheable register needs a defensible reason to be cached, drawn
+from measurement where a stimulus exists, register semantics, or downstream
+knowledge unless this hardware contradicts it. `0x1fd` is the single
+contradiction found so far.
 
 ## STEP 4/5 COMPLETE — `wcd9320-irq-proven`
 
