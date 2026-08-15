@@ -12,9 +12,9 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **142 built, verified, and run on hardware** |
-| last built module | `fullmap-rc7` (r142) |
-| running on the phone | `fullmap-rc7` (r142), autoloaded from `/lib/modules` |
+| pkgrel | **144 built, verified, and run on hardware** |
+| last built module | `regcache-rc9` (r144), sha256 `4f3eb9ce…` |
+| running on the phone | `regcache-rc9` (r144), autoloaded from `/lib/modules` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -36,6 +36,12 @@ Tags, each with an evidence log in this directory:
 - **`wcd9320-coldboot-autoload-proven`** — the driver autoloads from
   `/lib/modules` on a cold restart with no manual insertion available,
   31/31, and the IRQ chain re-proven from that boot, 27/27.
+- **`wcd9320-regcache-proven`** — `REGCACHE_MAPLE` with evidence-derived
+  tables, certified against the live codec: 460 cacheable registers read
+  through the cache and again bypassed, **0 mismatches**, from a cold boot of
+  `regcache-rc9`. Cold-boot 31/31, regcache 25/25, IRQ acceptance 27/27 from
+  that same boot. Scope and the one open question are in
+  `wcd9320-regcache.md`.
 
 Untagged but validated:
 
@@ -101,7 +107,15 @@ included at that value — a judgement call, not a gap.
 addresses so the 163 holes are never touched; build the 229-entry table; decide
 on the 7.
 
-## Volatility measured; the cache stays off — `wcd9320-volatility-and-defaults.md`
+## Volatility measured; the cache stayed off *at the time* — `wcd9320-volatility-and-defaults.md`
+
+> **SUPERSEDED 2026-08-15.** The cache is now **on**: `REGCACHE_MAPLE`,
+> certified on hardware with 0 mismatches across 460 cacheable registers. See
+> `wcd9320-regcache.md`. The reasoning below is kept because it is why the
+> cache waited, and two of its three objections were answered by measurement
+> rather than waived. The third — that most of the volatile predicate rests on
+> downstream's authority — is still true and is recorded as a limit of the
+> `wcd9320-regcache-proven` tag, not as something the tag resolved.
 
 **2026-08-15, `wcd9320-volatility-20260815T150932Z.txt`.** Six full
 1024-register snapshots across idle, detection enable, a physical insertion, a
@@ -542,6 +556,24 @@ Scripts in `tools/`: `wcd9320-coldboot-evidence.sh`,
 `wcd9320-evidence-selftest.sh` (offline, 12 cases),
 `wcd9320-attribute-stages.py`, `check-modpost.sh`, `patch-cmdline.py`.
 
+Added for the regcache work:
+
+- `wcd9320-regcache-evidence.sh` — the cache/hardware comparison gate. Also
+  asserts the 460/209/669 population counts and that regmap's debugfs cache
+  files exist, because `mismatches=0` alone is satisfiable by a run that
+  checked nothing and by a driver with no cache at all.
+- `wcd9320-verify-artifact.py` — the post-build gate. Parses the module's ELF
+  directly (the host binutils is x86 and refuses the ARM object) and asserts
+  the tables, the classification invariants, and that
+  `regcache_cache_bypass` still has exactly 10 call sites. Run it against a
+  known-good module first if you ever change it: a gate that cannot fail is
+  worse than no gate.
+- `wcd9320-install-module.sh` — installs to `/lib/modules` and verifies the
+  **installed** copy by sha, removes any `.ko.zst` beside it, runs `depmod`,
+  and reports strays. Encodes the two faults that have voided runs.
+- `wcd9320-gen-cache-tables.py` — generates the three tables from a full-map
+  capture. The tables are generated, not hand-edited.
+
 Every run gates on `/sys/module/wcd9320/version` and writes **no evidence file
 at all** on mismatch. Exit 0 PASS, 1 FAIL, 2 INVALID.
 
@@ -556,9 +588,9 @@ at all** on mismatch. Exit 0 PASS, 1 FAIL, 2 INVALID.
    subpartitions" on `mmcblk0p28`.
 3. **Push the `.ko` to `/lib/modules` separately** and `depmod -a`. This has
    voided two runs. Always check `/sys/module/wcd9320/version`.
-4. `fastboot.exe` is Windows-side only, not on PATH:
-   `C:\Users\Admin\AppData\Local\Android\Sdk\platform-tools\fastboot.exe`,
-   and PowerShell needs the `&` call operator.
+4. `fastboot.exe` is Windows-side only and not on PATH — it lives under the
+   Android SDK's `platform-tools\`, and PowerShell needs the `&` call
+   operator because the path is quoted.
 
 Recovery images, untouched: `boot-1520.img` (pre-audio),
 `boot-1520-core-init-rc2.img`, `boot-1520-nested-irq-rc1.img`.
@@ -620,6 +652,24 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   `check-modpost.sh`.
 - Confirm pushes by `git ls-remote`. Backgrounded git commands have reported a
   commit while leaving the push undone.
+- **The `pmaports/` mirror in this repo is deliberately NOT a byte copy of the
+  live tree.** It is debranded: the live `APKBUILD` and
+  `qcom-msm8974-microsoft-common.dtsi` each carry a private-substrate string
+  that must never reach a public repo. Consequently the mirror's `sha512sums`
+  for the dtsi legitimately differs from the live tree's, because the
+  debranded file is a genuinely different file. Compute each tree's sums
+  against **its own** files; syncing live → mirror verbatim would both leak
+  the branding and look like a checksum fix.
+- **`pmbootstrap` is only on the PATH of a login shell** (`~/.local/bin`, added
+  by `.profile`). `wsl -d Ubuntu bash ~/script.sh` is non-login and dies with
+  `pmbootstrap: command not found` — after prompting for a password and doing
+  all the precondition work. Build scripts should prepend `~/.local/bin`
+  themselves and check for the binary before asking for sudo.
+- **A trailing backslash before a closing quote breaks a pasted path.** A
+  Windows destination like `"...\docs\audio\"` is fine in PowerShell but, if
+  pasted into a POSIX shell, `\"` escapes the quote and the shell sits at a
+  continuation prompt swallowing whatever you type next. Omit the trailing
+  separator.
 
 ## Sequence from here
 
@@ -627,19 +677,22 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 2. ~~Single-source physical-event acceptance~~ — `wcd9320-irq-proven`
 3. ~~Module integrity and cold boot~~ — `wcd9320-coldboot-autoload-proven`
 4. ~~Merge the research branch to `main`~~ — done, `fabe7e2`
-5. ~~Measure volatility~~ — done; **cache stays off**, see
-   `wcd9320-volatility-and-defaults.md`
+5. ~~Measure volatility~~ — done; the cache stayed off *then*, see
+   `wcd9320-volatility-and-defaults.md` (superseded by step 7)
 6. ~~Full-map post-reset snapshot~~ — done, `fullmap-rc7`/r142; defaults
    gap closed, see `wcd9320-reg-defaults.md`
-7. Provoked runs per volatile family — digital gain, clip-detect, VBAT, IIR
-   and ANC windows are all still unexercised
-8. Minimal ASoC component
-9. RX DAI and IFD port programming
-10. Machine driver
-11. External MCLK / AFE clock work
-12. First 48 kHz playback route
+7. ~~Enable the register cache~~ — done, `regcache-rc9`/r144,
+   `wcd9320-regcache-proven`, see `wcd9320-regcache.md`
+8. Provoked runs per volatile family — digital gain, clip-detect, VBAT, IIR
+   and ANC windows are all still unexercised. This is now the largest
+   unmeasured assumption under the cache.
+9. Minimal ASoC component
+10. RX DAI and IFD port programming
+11. Machine driver
+12. External MCLK / AFE clock work
+13. First 48 kHz playback route
 
-The pmaports recipe is now mirrored at pkgrel 141 under `pmaports/`, checksums
+The pmaports recipe is now mirrored at pkgrel 144 under `pmaports/`, checksums
 rebuilt positionally against the repo's own files, so the build no longer
 exists on one machine only.
 
