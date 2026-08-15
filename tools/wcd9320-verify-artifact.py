@@ -197,12 +197,20 @@ def main():
     ap.add_argument("--apk")
     ap.add_argument("--pkgrel", type=int, default=144)
     ap.add_argument("--expect-version", default="regcache-rc9")
-    # Relative by default: the image is staged outside this repo, and where
-    # that is differs per machine. The build script passes an absolute path.
-    ap.add_argument("--bootimg", default="boot-1520-regcache-rc9.img",
-                    help="boot image to check (default: relative to cwd)")
+    # Relative by default and derived from --expect-version, not a literal:
+    # the image is staged outside this repo, where it lives differs per
+    # machine, and its name tracks the milestone. The build script passes an
+    # absolute path.
+    ap.add_argument("--bootimg", default=None,
+                    help="boot image to check "
+                         "(default: ./boot-1520-<expect-version>.img)")
     ap.add_argument("--skip-bootimg", action="store_true")
+    ap.add_argument("--expect-asoc", action="store_true",
+                    help="also assert the ASoC component symbols (rc from "
+                         "asoc-component-rc1 onwards)")
     args = ap.parse_args()
+    if args.bootimg is None:
+        args.bootimg = "boot-1520-%s.img" % args.expect_version
 
     tmp = tempfile.mkdtemp(prefix="wcd9320-verify-")
     apk = None
@@ -314,6 +322,31 @@ def main():
                      ("dev_attr_cache_check", "sysfs attribute the gate reads")):
         check("%s present" % sym, sym in e.syms, why)
 
+    if args.expect_asoc:
+        print()
+        print("=== 5b. the ASoC component ===")
+        check("wcd9320_soc_component present", "wcd9320_soc_component" in e.syms,
+              "the snd_soc_component_driver")
+        check("devm_snd_soc_register_component linked",
+              e.is_undefined("devm_snd_soc_register_component"),
+              "resolved by SND_SOC at load time")
+        nreg = e.count_relocs_to("devm_snd_soc_register_component")
+        check("registered from exactly one site", nreg == 1,
+              "%d call site(s) -- the control function only" % nreg)
+        # Zero DAIs is the scope of this milestone, and it is checkable:
+        # a DAI array would appear as its own symbol.
+        dai_syms = [s for s in e.syms if "dai" in s.lower() and "wcd9320" in s.lower()]
+        check("no DAI table in the module", not dai_syms,
+              "found: %s" % dai_syms)
+        if PATCH.exists():
+            ptext = PATCH.read_text(errors="replace")
+            check("registered with NULL dais, count 0",
+                  "&wcd9320_soc_component,\n+\t\t\t\t\t      NULL, 0)" in ptext
+                  or "NULL, 0)" in ptext,
+                  "source-level")
+            check("Kconfig depends on SND_SOC",
+                  "depends on SND_SOC" in ptext)
+
     print()
     print("=== 6. modpost ===")
     mp = REPO / "tools/check-modpost.sh"
@@ -341,8 +374,13 @@ def main():
             for w in want:
                 check("cmdline carries %s" % w.decode().split("=")[0],
                       w in head, w.decode().split("=")[1])
-            check("image name is boot-1520-regcache-rc9.img",
-                  bi.name == "boot-1520-regcache-rc9.img", bi.name)
+            # Derived from the expected version, never hardcoded: the build
+            # script names the image boot-1520-$WANT_VERSION.img for exactly
+            # the reason this check exists, and a literal here goes stale on
+            # the next milestone and fails a perfectly good artefact.
+            want_img = "boot-1520-%s.img" % args.expect_version
+            check("image name matches the build", bi.name == want_img,
+                  "%s (want %s)" % (bi.name, want_img))
 
     print()
     print("=" * 72)

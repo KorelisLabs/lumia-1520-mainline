@@ -12,9 +12,9 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **144 built, verified, and run on hardware** |
-| last built module | `regcache-rc9` (r144), sha256 `4f3eb9ce…` |
-| running on the phone | `regcache-rc9` (r144), autoloaded from `/lib/modules` |
+| pkgrel | **145 built, verified, and run on hardware** |
+| last built module | `asoc-component-rc1` (r145), sha256 `ac9632b8…` |
+| running on the phone | `asoc-component-rc1` (r145), autoloaded from `/lib/modules` |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -584,6 +584,12 @@ Added for the regcache work:
   unbind/rebind: `handoff_on_remove` leaves supplies enabled while devres
   frees the handles, which produces one `_regulator_put` warning per supply.
   Note the scope in its header — `core_reinit` keeps the existing regmap.
+- `wcd9320-asoc-component-evidence.sh` — asserts the component against ASoC's
+  own list. **Match on the device name, not the driver's `.name`** —
+  `snd_soc_component_initialize()` sets `component->name` from
+  `fmt_single_name(dev, ...)`, so `wcd9320-codec` never appears in
+  `/sys/kernel/debug/asoc/components`; `217:a0:1:0` does. Getting this wrong
+  failed a correctly registered component once.
 
 Every run gates on `/sys/module/wcd9320/version` and writes **no evidence file
 at all** on mismatch. Exit 0 PASS, 1 FAIL, 2 INVALID.
@@ -697,7 +703,8 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 8. Provoked runs per volatile family — digital gain, clip-detect, VBAT, IIR
    and ANC windows are all still unexercised. This is now the largest
    unmeasured assumption under the cache.
-9. Minimal ASoC component
+9. ~~Minimal ASoC component~~ — done, `asoc-component-rc1`/r145, zero DAIs,
+   see `wcd9320-asoc-component.md`
 10. RX DAI and IFD port programming
 11. Machine driver
 12. External MCLK / AFE clock work

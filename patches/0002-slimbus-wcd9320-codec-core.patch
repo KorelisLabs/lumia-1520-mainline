@@ -8,8 +8,8 @@ deliberately not registered yet.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
-+++ new/drivers/slimbus/Kconfig	2026-08-11 19:39:07.113290359 -0400
-@@ -34,4 +34,19 @@ config SLIM_QCOM_NGD_CTRL
++++ new/drivers/slimbus/Kconfig	2026-08-15 15:22:20.978338300 -0400
+@@ -34,4 +34,21 @@ config SLIM_QCOM_NGD_CTRL
  	  communicating with slave HW directly over the bus using messaging
  	  interface, and communicating with master component residing on ADSP
  	  for bandwidth and data-channel management.
@@ -17,6 +17,7 @@ diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 +config SLIM_WCD9320
 +	tristate "WCD9320 (Taiko) codec core"
 +	depends on GPIOLIB && REGULATOR
++	depends on SND_SOC
 +	select REGMAP
 +	select REGMAP_SLIMBUS
 +	select REGMAP_IRQ
@@ -25,7 +26,8 @@ diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 +	  over SLIMbus: regulators, reset sequencing, SLIMbus device up/down
 +	  handling, register map and identity validation.
 +
-+	  This registers no sound card and implements no audio paths yet.
++	  Registers an ASoC component with no DAIs. It still implements no
++	  audio paths and cannot be bound into a sound card.
 +
 +	  If unsure, say N.
  endif
@@ -42,8 +44,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +wcd9320-y				:= wcd9320-core.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 13:39:45.721916900 -0400
-@@ -0,0 +1,3631 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 15:22:33.468218400 -0400
+@@ -0,0 +1,3681 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -100,6 +102,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#include <linux/regulator/consumer.h>
 +#include <linux/slimbus.h>
 +#include <linux/workqueue.h>
++
++#include <sound/soc.h>
 +
 +/*
 + * RESEARCH ONLY. Leaves the codec powered and out of reset when this
@@ -3444,6 +3448,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +/* ---------------------------------------------------------------- probe -- */
 +
++/*
++ * The ASoC component: registration only, and deliberately empty.
++ *
++ * Everything proven so far sits below ASoC -- enumeration, regmap, core init,
++ * the interrupt chain, the register cache. This is the first piece that
++ * presents the codec to the sound subsystem, and it presents nothing yet: no
++ * DAIs, no controls, no DAPM widgets, no routes.
++ *
++ * That is the point rather than a shortcut. A component with zero DAIs
++ * registers and appears in the ASoC component list, but cannot be bound into a
++ * card, so this exercises registration and teardown in isolation. If something
++ * is wrong with how this driver enters ASoC, it shows up here with nothing
++ * else in the frame to blame -- the same reason every earlier milestone was
++ * taken one mechanism at a time.
++ *
++ * .endianness = 1 declares that the component imposes no endianness
++ * constraint. That is the honest answer for a codec whose data path is not
++ * described yet, and it stops ASoC narrowing formats on its behalf before
++ * there is a DAI to narrow them for.
++ */
++static const struct snd_soc_component_driver wcd9320_soc_component = {
++	.name = "wcd9320-codec",
++	.endianness = 1,
++};
++
 +static int wcd9320_probe(struct slim_device *sdev)
 +{
 +	struct device *dev = &sdev->dev;
@@ -3555,6 +3584,29 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	ret = devm_add_action_or_reset(dev, wcd9320_power_release, wcd);
 +	if (ret)
 +		return ret;
++
++	/*
++	 * The control function only -- the interface function returned above,
++	 * and giving it a component too would put a second, mute codec into
++	 * any card that later binds this one.
++	 *
++	 * Placed here, before the adoption/fresh branch, so it happens on every
++	 * path out of probe rather than on one of them; and devm so teardown is
++	 * the exact reverse without wcd9320_remove() growing a new
++	 * responsibility it could forget.
++	 *
++	 * Registration touches no register, so it is safe this early and does
++	 * not wait for enumeration or core_ready. Nothing in the component
++	 * reads the codec yet, and when something does it will be a DAI or a
++	 * control with its own lifecycle -- not this call.
++	 */
++	ret = devm_snd_soc_register_component(dev, &wcd9320_soc_component,
++					      NULL, 0);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to register ASoC component\n");
++	dev_info(dev, "ASoC component registered: %s, 0 DAIs\n",
++		 wcd9320_soc_component.name);
 +
 +	if (adopt) {
 +		dev_info(dev,
@@ -3672,6 +3724,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("regcache-rc9");
-+MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap");
++MODULE_VERSION("asoc-component-rc1");
++MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component");
 +MODULE_LICENSE("GPL");
