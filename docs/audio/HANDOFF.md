@@ -556,6 +556,24 @@ it is now, the cold-boot way.
 
 ## Build and test loop
 
+**`tools/build-wcd9320-kernel.sh` is the durable recipe.** Every milestone up
+to `wcd9320-asoc-component-proven` was built by a script in one developer's
+home directory that hardcoded that machine's paths, so the tags were
+reproducible only by whoever held that file. This one derives the repo from its
+own location, takes pmaports from `$PMB` (default `~/.local/var/pmbootstrap`),
+and takes the staging directory as an argument:
+
+```
+tools/build-wcd9320-kernel.sh --pkgrel 145 --version asoc-component-rc1 \
+                              --stage <dir>
+```
+
+`--verify-only` runs the preconditions, the guard strings and the artefact gate
+against an existing package and needs **no sudo**, so the published tree can be
+checked on a machine that cannot build. It deliberately does not stage the
+patch, pkgrel or checksums — it verifies them and refuses, because silently
+regenerating a checksum is how a build stops corresponding to its source.
+
 Scripts in `tools/`: `wcd9320-coldboot-evidence.sh`,
 `wcd9320-adoption-evidence.sh`, `wcd9320-nested-idle-evidence.sh`,
 `wcd9320-mbhc-irq-evidence.sh`, `wcd9320-evidence-lib.sh`,
