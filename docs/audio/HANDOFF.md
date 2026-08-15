@@ -1,13 +1,13 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-14. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
 | | |
 |---|---|
 | public repo | `KorelisLabs/lumia-1520-mainline` |
-| `main` | `17db442` |
+| `main` | `fabe7e2` — the audio foundation is merged and published |
 | working branch | `research/audio-wcd9320-core-init`, pushed; latest tag **`wcd9320-coldboot-autoload-proven`** |
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
@@ -59,9 +59,50 @@ from `__POR` are already at final values after the core release, so they are
 reset-state values for this die (consistent with revision-dependent defaults
 for minor `0x0001`). See `wcd9320-core-release-vs-clock.md`.
 
-Consequence: `reg_defaults` can be built from the **measured** stage-2 dump.
-`REGCACHE_NONE` still stays, but now for one reason only — **volatility is
-unmeasured**, and `taiko_volatile()` has never been checked against this part.
+Consequence: `reg_defaults` can be built from the **measured** stage-2 dump —
+but only for `0x200`–`0x3bf`, which is what the sentinel covers. **Updated
+2026-08-15:** volatility is no longer unmeasured, and that is no longer the
+reason `REGCACHE_NONE` stays. It is measured for the MBHC path only, the
+analog-region reset state is unattributed, and both reasons are set out in
+`wcd9320-volatility-and-defaults.md` below.
+
+## Volatility measured; the cache stays off — `wcd9320-volatility-and-defaults.md`
+
+**2026-08-15, `wcd9320-volatility-20260815T150932Z.txt`.** Six full
+1024-register snapshots across idle, detection enable, a physical insertion, a
+removal, and detection disable. Four writes, all to `0x14a`, all logged.
+
+| bucket | count |
+|---|---|
+| observed volatile, downstream agrees | **1** (`0x14b`) |
+| observed volatile, downstream does **not** mark | **0** |
+| downstream volatile, never exercised by this test | **378** |
+
+`taiko_volatile()` marks 379 of 1024 volatile (37%); 645 cacheable, 237 of
+those non-zero, 57 differing from documented `__POR` — of which 6 are this
+driver's own rco-wake writes.
+
+**Hardware finding: a masked source does not latch.** `INTR_STATUS`
+(`0x098`–`0x09b`) read `00 00 00 00` in all six snapshots across a real
+insertion and removal with all 29 sources masked. Masking gates the status
+latch itself, not just the interrupt output — which also explains why the first
+IRQ acceptance attempt saw `INTR_STATUS` flat while `0x14b` moved. It equally
+means this test never exercised those registers; they stay volatile on
+downstream's `reg < 0x100` and on regmap-irq having demonstrably dispatched,
+not on measurement.
+
+**`REGCACHE_NONE` stays.** Not caution — three specific reasons: the volatile
+predicate is verified on 1 register of 379; 28 candidate defaults in the analog
+region are unattributed because no snapshot exists between reset release and
+core init; and with no ASoC or DAI yet the cache would optimise an access
+pattern that does not exist while adding a stale-read failure mode to a stack
+whose interrupt path depends on uncached reads below `0x100`.
+
+**What would settle it:** extend `sentinel_before` from 448 registers to all
+1024. The driver already captures it between reset release and core init, so
+one change attributes all 28 analog differences, shows whether `0x1fd`
+`RC_OSC_TUNER` is hardware-populated by the RCO sequence, and yields defensible
+defaults for the whole cacheable set.
 
 ## STEP 4/5 COMPLETE — `wcd9320-irq-proven`
 
@@ -548,19 +589,22 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 
 ## Sequence from here
 
-1. ~~Minimal MBHC configuration~~ — done, three writes to `0x14a`
-2. ~~Single-source physical-event acceptance~~ — done, `wcd9320-irq-proven`
-3. ~~Module integrity and cold boot~~ — done,
-   `wcd9320-coldboot-autoload-proven`
-4. **Decide whether to merge the research branch to `main`.** Every boundary
-   from enumeration to a physical interrupt through a cold boot is now backed
-   by hardware evidence, which is the condition that was being waited for.
-5. Measure volatility, then `reg_defaults` from the stage-2 dump, then cache
-6. Minimal ASoC component
-7. RX DAI and IFD port programming
-8. Machine driver
-9. External MCLK / AFE clock work
-10. First 48 kHz playback route
+1. ~~Minimal MBHC configuration~~ — done
+2. ~~Single-source physical-event acceptance~~ — `wcd9320-irq-proven`
+3. ~~Module integrity and cold boot~~ — `wcd9320-coldboot-autoload-proven`
+4. ~~Merge the research branch to `main`~~ — done, `fabe7e2`
+5. ~~Measure volatility~~ — done; **cache stays off**, see
+   `wcd9320-volatility-and-defaults.md`
+6. **Full-map post-reset snapshot** — extend `sentinel_before` to all 1024
+   registers. Settles the 28 unattributed analog defaults and the `0x1fd`
+   question, and is the prerequisite for any `reg_defaults`/cache work.
+7. Provoked runs per volatile family — digital gain, clip-detect, VBAT, IIR
+   and ANC windows are all still unexercised
+8. Minimal ASoC component
+9. RX DAI and IFD port programming
+10. Machine driver
+11. External MCLK / AFE clock work
+12. First 48 kHz playback route
 
 The pmaports recipe is now mirrored at pkgrel 141 under `pmaports/`, checksums
 rebuilt positionally against the repo's own files, so the build no longer
