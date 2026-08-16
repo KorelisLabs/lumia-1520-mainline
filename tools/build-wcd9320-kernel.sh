@@ -78,6 +78,8 @@ MODULE_DIR=""
 VERIFY_ONLY=0
 FORCE_BUILD=0
 EXTRA_GUARDS=""
+EXPECT_ASOC=0
+EXPECT_DAIS=""
 
 die()  { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n=== %s ===\n' "$*"; }
@@ -94,6 +96,8 @@ while [ $# -gt 0 ]; do
 ${2:-}"; shift 2 ;;
 	--verify-only) VERIFY_ONLY=1; shift ;;
 	--force-build) FORCE_BUILD=1; shift ;;
+	--expect-asoc) EXPECT_ASOC=1; shift ;;
+	--expect-dais) EXPECT_DAIS="${2:-}"; shift 2 ;;
 	-h|--help)    usage 0 ;;
 	*) printf 'unknown argument: %s\n' "$1" >&2; usage 1 ;;
 	esac
@@ -174,14 +178,22 @@ print(f"{len(src)} sources aligned with {len(names)} sums")
 PY
 
 # --- module extraction helper -------------------------------------------
-extract_module() {	# extract_module <apk> <destdir> -> echoes path
+extract_module() {	# extract_module <apk> <destdir> -> echoes the codec module's path
 	_w="$1_x"
 	rm -rf "$_w"; mkdir -p "$_w"
 	( cd "$_w" && tar -xzf "$2" 2>/dev/null )
-	_k="$_w/usr/lib/modules/$KVER/kernel/drivers/slimbus/wcd9320.ko"
-	if [ -f "$_k.zst" ]; then
-		zstd -dqf "$_k.zst" -o "$_k" 2>/dev/null || return 1
-	fi
+	_d="$_w/usr/lib/modules/$KVER/kernel/drivers/slimbus"
+	#
+	# Decompress EVERY wcd9320* module, not only the codec: the machine
+	# driver is a separate module and the staging step needs it too.
+	# Modules ship .zst, and the device is handed uncompressed ones -- see
+	# the staging comment for why.
+	#
+	for _z in "$_d"/wcd9320*.ko.zst; do
+		[ -e "$_z" ] || continue
+		zstd -dqf "$_z" -o "${_z%.zst}" 2>/dev/null || return 1
+	done
+	_k="$_d/wcd9320.ko"
 	[ -f "$_k" ] || return 1
 	printf '%s\n' "$_k"
 }
@@ -266,11 +278,28 @@ done || die "a guard string is missing from the built module"
 if [ "$VERIFY_ONLY" = "0" ]; then
 	step "stage"
 	mkdir -p "$MODULE_DIR" "$STAGE" || die "cannot create staging directories"
-	cp "$KO" "$MODULE_DIR/wcd9320.ko" || die "could not stage the module"
-	[ -s "$MODULE_DIR/wcd9320.ko" ] || die "staged module is empty"
-	echo "module : $MODULE_DIR/wcd9320.ko"
-	echo "size   : $(stat -c%s "$MODULE_DIR/wcd9320.ko") bytes"
-	echo "sha256 : $(sha256sum "$MODULE_DIR/wcd9320.ko" | cut -d' ' -f1)"
+
+	#
+	# Stage EVERY wcd9320* module the package contains, not just the codec.
+	# The machine driver is deliberately a separate module, and staging only
+	# wcd9320.ko would leave the device running a new codec against no card
+	# -- a difference that would show up as a confusing absence rather than
+	# an error.
+	#
+	MODDIR=$(dirname "$KO")
+	STAGED=0
+	for m in "$MODDIR"/wcd9320*.ko; do
+		[ -e "$m" ] || continue
+		b=$(basename "$m")
+		cp "$m" "$MODULE_DIR/$b" || die "could not stage $b"
+		[ -s "$MODULE_DIR/$b" ] || die "staged $b is empty"
+		printf '  %-28s %8s bytes  %s\n' "$b" \
+			"$(stat -c%s "$MODULE_DIR/$b")" \
+			"$(sha256sum "$MODULE_DIR/$b" | cut -d' ' -f1)"
+		STAGED=$((STAGED + 1))
+	done
+	[ "$STAGED" -gt 0 ] || die "no wcd9320 modules staged"
+	echo "staged $STAGED module(s) into $MODULE_DIR"
 
 	# --- install, export, image ---------------------------------------
 	step "install and export (interactive sudo)"
@@ -323,11 +352,14 @@ fi
 # classification invariants and the bypass call sites, so a build that quietly
 # produced different tables cannot reach the device.
 step "artefact gate"
+#
+# The gate's expectations are STATED, not inferred from the version string.
+# Inferring them was a real bug: a `asoc-*` glob matched `asoc-card-rc1` and
+# asserted zero DAIs against a build that has one, failing a good artefact.
+# Acceptance semantics are the caller's intent and must be written down.
 GATE_ARGS="--pkgrel $PKGREL --expect-version $VERSION"
-case "$VERSION" in
-asoc-*)   GATE_ARGS="$GATE_ARGS --expect-asoc --expect-dais 0" ;;
-rx-dai-*) GATE_ARGS="$GATE_ARGS --expect-asoc --expect-dais 1" ;;
-esac
+[ "$EXPECT_ASOC" = "1" ] && GATE_ARGS="$GATE_ARGS --expect-asoc"
+[ -n "$EXPECT_DAIS" ] && GATE_ARGS="$GATE_ARGS --expect-dais $EXPECT_DAIS"
 #
 # The image path is passed as its own quoted argument, never folded into
 # GATE_ARGS. A staging directory containing a space would otherwise word-split

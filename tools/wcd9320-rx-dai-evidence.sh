@@ -49,6 +49,19 @@ DAI_NAME="${DAI_NAME:-wcd9320-slim-rx1}"
 # The addresses this milestone programs, derived in
 # docs/audio/wcd9320-rx-dai-mapping.md. Stated here so the run asserts against
 # the mapping rather than against whatever the driver happened to do.
+#
+# How many sound cards this run expects.
+#
+# 0 is the original meaning and the default: when wcd9320-rx-dai-proven was
+# taken, no machine driver existed anywhere, and "no card" was part of that
+# milestone's scope -- a DAI on a component no card had bound.
+#
+# The minimal-card milestone deliberately crosses that boundary. Re-running
+# this script on a boot where the card is loaded must therefore be told so,
+# rather than have the check quietly relaxed: the expectation is stated by the
+# caller, and a card appearing when none was expected is still a failure.
+EXPECT_CARDS="${EXPECT_CARDS:-0}"
+
 RX_PORT="${RX_PORT:-16}"
 CH_REG=$((0x140 + 4 * RX_PORT))		# 0x180 for port 16
 CFG_REG=$((0x030 + RX_PORT))		# 0x040 for port 16
@@ -197,7 +210,7 @@ LIVE_MASK=$(sed -n 's/^status=[0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]* mask=\([0-
 		"$ASOC_DEBUGFS/dais is not readable" "$ASOC_DEBUGFS/dais"
 	check "the RX DAI is registered" "$DAI_MATCH" "1"
 	check "no other WCD9320 DAI (no TX)" "$DAI_OTHER" "0"
-	check "sound cards" "$CARDS" "0"
+	check "sound cards" "$CARDS" "$EXPECT_CARDS"
 	check_cond "component still present" \
 		"$(printf '%s\n' "$COMPONENTS" | grep -Fxc "$PGD_NAME")" \
 		"$PGD_NAME is not in the component list" "$PGD_NAME"
@@ -262,8 +275,16 @@ LIVE_MASK=$(sed -n 's/^status=[0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]* mask=\([0-
 	if [ "$FAIL_N" -eq 0 ]; then
 		say "THE RX PORT PATH WORKS, AND REVERSES."
 		say ""
-		say "One RX DAI, '$DAI_NAME', is registered and visible to ASoC. No"
-		say "other DAI exists, and no sound card does."
+		say "One RX DAI, '$DAI_NAME', is registered and visible to ASoC, and"
+		say "no other WCD9320 DAI exists."
+		if [ "$EXPECT_CARDS" = "0" ]; then
+			say "No sound card exists."
+		else
+			say "$CARDS sound card(s) exist: this run was told to expect them"
+			say "(EXPECT_CARDS=$EXPECT_CARDS), because the minimal-card"
+			say "milestone has since been reached. When this milestone was"
+			say "first proven there was no card anywhere."
+		fi
 		say ""
 		say "The production port-programming path was executed against slave"
 		say "port $RX_PORT through the research hook, and reached hardware:"
@@ -275,13 +296,24 @@ LIVE_MASK=$(sed -n 's/^status=[0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]* mask=\([0-
 		say "so none of this went near the codec's register cache -- which"
 		say "still reports 460 cacheable registers agreeing with the chip."
 		say ""
-		say "WHAT THIS DOES NOT CLAIM. ASoC did not invoke the DAI callback:"
-		say "that needs a card, which does not exist yet. The hook called the"
-		say "same production function hw_params calls, so the path is proven,"
-		say "not the framework binding. And no SLIMbus channel was allocated,"
-		say "defined or activated -- configuring the codec's side of a port is"
-		say "not a data path. Nothing has streamed and nothing has made a"
-		say "sound."
+		say "WHAT THIS RUN CLAIMS. The port path was reached through the"
+		say "research hook -- origin=$(kv "$STATE_FILE" origin) -- not through ASoC."
+		if [ "$EXPECT_CARDS" = "0" ]; then
+			say "ASoC did not invoke the DAI callback: that needs a card,"
+			say "which does not exist. The hook called the same production"
+			say "function hw_params calls, so the path is proven, not the"
+			say "framework binding."
+		else
+			say "This run says nothing about whether ASoC can invoke the"
+			say "callback -- that is the minimal-card milestone's claim and"
+			say "is evidenced separately. What it shows is that the manual"
+			say "entry point still produces the same hardware transition"
+			say "with a card present."
+		fi
+		say ""
+		say "No SLIMbus channel was allocated, defined or activated:"
+		say "configuring the codec's side of a port is not a data path."
+		say "Nothing has streamed and nothing has made a sound."
 	else
 		say "NOT PROVEN. $FAIL_N check(s) failed above."
 		say ""

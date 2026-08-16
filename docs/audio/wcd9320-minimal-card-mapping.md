@@ -64,7 +64,15 @@ So the platform slot must name it explicitly:
 |---|---|
 | CPU | `COMP_DUMMY()` |
 | CODEC | `COMP_CODEC("217:a0:1:0", "wcd9320-slim-rx1")` |
-| PLATFORM | `COMP_PLATFORM("snd-soc-dummy")` |
+| PLATFORM | ~~`COMP_PLATFORM("snd-soc-dummy")`~~ — see below |
+
+> **CORRECTED after the run.** Naming the dummy platform explicitly is
+> **necessary but not sufficient**, and using it failed. `dummy_dma_open()`
+> returns early when the rtd contains `dummy_platform` — always true when it
+> *is* the platform — so `runtime->hw` is never installed, `.info` stays 0,
+> and `snd_pcm_open()` fails with `-EINVAL` from an empty ACCESS mask. The
+> card must supply its own platform component. Full analysis in
+> `wcd9320-asoc-callback.md`.
 
 ## 3. The names are confirmed by the device, not guessed
 
@@ -204,6 +212,18 @@ first two IFD probes are each followed by `Failed to get logical address`, and
 only the third coincides with `interface function UP`. That is the deferral
 shape rather than the double-bind shape — but it is a hint from a log, not a
 measurement, and this instrumentation is what turns it into one.
+
+> **AND THE HINT WAS WRONG.** The instrumentation shipped and measured the
+> opposite: **both probes return 0** — the driver binds successfully each time
+> — with an **identical `slim_device` pointer** and no intervening `remove`.
+> That is the double-bind shape, not deferral. The count also varies by build
+> (3 on r146, 2 on r147 and r148), which points at a race rather than a fixed
+> sequence. Written up in `wcd9320-asoc-callback.md`; still unexplained, and
+> worth understanding before anything depends on IFD probe ordering.
+>
+> Kept here rather than edited out, because reading a plausible story into a
+> log and then having the measurement contradict it is exactly why the
+> instrumentation was worth shipping.
 
 ## 8. Acceptance gate
 

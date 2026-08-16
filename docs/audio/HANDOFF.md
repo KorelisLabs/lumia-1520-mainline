@@ -12,9 +12,9 @@ State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
 | pmaports | `~/.local/var/pmbootstrap/cache_git/pmaports`, same branch under `device/testing/linux-postmarketos-qcom-msm8974` — **local only**, origin is upstream postmarketOS and is not writable |
 | driver patch | `patches/0002-slimbus-wcd9320-codec-core.patch` — the durable copy |
 | driver source | `~/corepatch/new/drivers/slimbus/wcd9320-core.c` (WSL, not in git) |
-| pkgrel | **146 built, verified, and run on hardware** |
-| last built module | `rx-dai-rc1` (r146), sha256 `e01c4a3c…` |
-| running on the phone | `rx-dai-rc1` (r146), autoloaded from `/lib/modules` |
+| pkgrel | **148 built, verified, and run on hardware** |
+| last built modules | `asoc-card-rc1` (codec, sha `861d312b…`) and `lumia-card-rc2` (card, sha `3205f07c…`) |
+| running on the phone | both, r148; the codec autoloads, **the card does not** — it is modprobed explicitly |
 
 **The scratchpad does not survive a session.** Only `~/corepatch`, pmaports
 and this repo do. Regenerate build scripts from the patterns below.
@@ -719,12 +719,27 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   breaks. Both cost a run before the ordering was written down. The order
   that works: cold-boot, then the milestone's own run, then regcache, then
   IRQ acceptance last because it is the one that fires an interrupt.
+- **`snd-soc-dummy` cannot be a card's sole platform.** Naming it with
+  `COMP_PLATFORM("snd-soc-dummy")` is necessary but NOT sufficient:
+  `dummy_dma_open()` returns early when the rtd contains `dummy_platform` —
+  always true when it *is* the platform — so `runtime->hw` is never installed,
+  `.info` stays 0, and `snd_pcm_open()` fails `-EINVAL` from an empty ACCESS
+  mask. **Silently**, because ASoC's own open succeeded first. A card needs its
+  own platform component that calls `snd_soc_set_runtime_hwparams()`; it still
+  need not allocate any buffer. Dynamic debug on `soc-pcm.c` is what found it:
+  seeing the constraint intersection printed and *then* `-EINVAL` proves the
+  failure is after ASoC's open, not inside it.
+- **The machine driver does not autoload.** It creates its own platform device
+  in `module_init`, so no alias matches and udev never loads it. Every run must
+  `modprobe wcd9320-lumia-card` explicitly and say that it did.
 - **The interface function probes more than once per boot** — three times on
   r146, twice on r145 — so anything published from its probe must tolerate
   being republished. The module-scope IFD pointer does: each probe overwrites
   it, and `remove` only clears it when it still points at the instance being
-  removed. Not yet understood, and worth understanding before the machine
-  driver.
+  removed. **Measured in r148 and it is NOT deferral**: both probes return 0
+  with an identical `slim_device` pointer and no intervening `remove` — the
+  double-bind shape. The count varies by build (3 on r146, 2 on r147/r148),
+  which points at a race. Still unexplained.
 - **A trailing backslash before a closing quote breaks a pasted path.** A
   Windows destination like `"...\docs\audio\"` is fine in PowerShell but, if
   pasted into a POSIX shell, `\"` escapes the quote and the shell sits at a
@@ -751,6 +766,10 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 10. ~~RX DAI and IFD port programming~~ — done, `rx-dai-rc1`/r146, one RX DAI
     and the IFD port path proven reversible, see `wcd9320-rx-dai-mapping.md`.
     The IFD now has its **own** regmap config; see the trap below.
+11. ~~Minimal card, so ASoC invokes the real callback~~ — done, r148,
+    `asoc-card-rc1` + `lumia-card-rc2`. ASoC entered the production
+    `hw_params()` and produced a delta byte-identical to the manual path.
+    See `wcd9320-asoc-callback.md`.
 11. Machine driver
 12. External MCLK / AFE clock work
 13. First 48 kHz playback route

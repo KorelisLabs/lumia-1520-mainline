@@ -8,8 +8,8 @@ deliberately not registered yet.
 
 diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 --- orig/drivers/slimbus/Kconfig	2026-07-31 16:05:21.716434993 -0400
-+++ new/drivers/slimbus/Kconfig	2026-08-15 15:22:20.978338300 -0400
-@@ -34,4 +34,21 @@ config SLIM_QCOM_NGD_CTRL
++++ new/drivers/slimbus/Kconfig	2026-08-15 19:35:40.309873100 -0400
+@@ -34,4 +34,42 @@ config SLIM_QCOM_NGD_CTRL
  	  communicating with slave HW directly over the bus using messaging
  	  interface, and communicating with master component residing on ADSP
  	  for bandwidth and data-channel management.
@@ -26,15 +26,36 @@ diff -uprN orig/drivers/slimbus/Kconfig new/drivers/slimbus/Kconfig
 +	  over SLIMbus: regulators, reset sequencing, SLIMbus device up/down
 +	  handling, register map and identity validation.
 +
-+	  Registers an ASoC component with no DAIs. It still implements no
-+	  audio paths and cannot be bound into a sound card.
++	  Registers an ASoC component with one playback DAI and can program a
++	  SLIMbus RX slave port. It still implements no audio path: no channel
++	  is allocated on the bus and no samples move.
++
++	  If unsure, say N.
++
++config SLIM_WCD9320_LUMIA_CARD
++	tristate "Minimal ASoC card for the WCD9320 on Lumia RM-940"
++	depends on SLIM_WCD9320
++	depends on SND_SOC
++	help
++	  A laboratory fixture: a minimal sound card that binds the WCD9320
++	  RX DAI against ASoC's dummy CPU DAI and dummy platform, so that the
++	  framework itself invokes the codec's hw_params().
++
++	  There is no DMA and no audio path. A PCM node appears and can be
++	  configured, but samples cannot be written, because the dummy
++	  platform preallocates no buffer. This exists to prove ASoC lifecycle
++	  and callback provenance, not to play audio.
++
++	  It is a separate module from the codec on purpose, so that replacing
++	  the dummy CPU with a real q6/AFE one later does not touch the codec
++	  driver.
 +
 +	  If unsure, say N.
  endif
 diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 --- orig/drivers/slimbus/Makefile	2026-07-31 16:05:21.716681882 -0400
-+++ new/drivers/slimbus/Makefile	2026-07-31 16:05:21.716822880 -0400
-@@ -11,3 +11,7 @@ slim-qcom-ctrl-y			:= qcom-ctrl.o
++++ new/drivers/slimbus/Makefile	2026-08-15 19:35:27.841952100 -0400
+@@ -11,3 +11,12 @@ slim-qcom-ctrl-y			:= qcom-ctrl.o
  
  obj-$(CONFIG_SLIM_QCOM_NGD_CTRL)	+= slim-qcom-ngd-ctrl.o
  slim-qcom-ngd-ctrl-y			:= qcom-ngd-ctrl.o
@@ -42,10 +63,15 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +#Codecs
 +obj-$(CONFIG_SLIM_WCD9320)		+= wcd9320.o
 +wcd9320-y				:= wcd9320-core.o
++
++#Machine driver, deliberately a SEPARATE module: the codec must not learn
++#about Lumia card topology, so that swapping the dummy CPU for a q6/AFE one
++#later leaves the codec side untouched.
++obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 17:41:05.427891100 -0400
-@@ -0,0 +1,4264 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 20:08:38.679742600 -0400
+@@ -0,0 +1,4333 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -104,6 +130,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#include <linux/workqueue.h>
 +
 +#include <sound/pcm.h>
++#include <sound/pcm_params.h>	/* params_format(); params_rate() alone is not enough */
 +#include <sound/soc.h>
 +
 +/*
@@ -1467,10 +1494,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int core_init_calls;	/* every entry, including no-ops */
 +	unsigned int core_init_runs;	/* entries that actually wrote   */
 +
-+	/* ---- RX slave-port programming, research-triggered for now ---- */
++	/* ---- RX slave-port programming ---- */
 +	bool rx_port_on;		/* this driver has a port enabled */
 +	unsigned int rx_port_num;	/* which one */
 +	unsigned int rx_port_writes;	/* register writes made */
++	/*
++	 * Who last entered the port path. Recorded by the CALLER immediately
++	 * before it calls, so the production helper stays caller-agnostic --
++	 * it must behave identically however it is reached, which is the whole
++	 * point of both entry points sharing it.
++	 */
++	const char *rx_port_origin;
 +	bool have_ifd_before, have_ifd_after, have_ifd_teardown;
 +	u8 ifd_before[WCD9320_IFD_SNAP_COUNT];
 +	u8 ifd_after[WCD9320_IFD_SNAP_COUNT];
@@ -1491,6 +1525,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + */
 +static DEFINE_MUTEX(wcd9320_ifd_lock);
 +static struct wcd9320 *wcd9320_ifd_instance;
++
++/* Counts entries to the interface function's probe; see the classification
++ * comment at its call site. */
++static unsigned int ifd_probe_seq;
 +
 +/* ---------------------------------------------------------------- power -- */
 +
@@ -3620,6 +3658,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +
 +	if (sysfs_streq(buf, "rx-port-on")) {
++		wcd->rx_port_origin = "manual";
++		dev_info(dev, "RX path invocation: manual (rx_port_test)\n");
 +		dev_info(dev, "rx-port test: programming slave port %u\n",
 +			 WCD9320_RX_PORT_FIRST);
 +		ret = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
@@ -3629,6 +3669,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			dev_info(dev, "rx-port test: nothing programmed\n");
 +			return len;
 +		}
++		wcd->rx_port_origin = "manual";
++		dev_info(dev, "RX path invocation: manual (rx_port_test)\n");
 +		dev_info(dev, "rx-port test: tearing down slave port %u\n",
 +			 wcd->rx_port_num);
 +		ret = wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
@@ -3653,11 +3695,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	len = sysfs_emit(buf,
 +			 "rx_port_on=%u rx_port_num=%u writes=%u\n"
++			 "origin=%s\n"
 +			 "ifd_bound=%u\n"
 +			 "snap_first=0x%03x snap_count=%u\n"
 +			 "have_before=%u have_after=%u have_teardown=%u\n"
 +			 "ch_reg=0x%03x cfg_reg=0x%03x cfg_enabled=0x%02x\n",
 +			 wcd->rx_port_on, wcd->rx_port_num, wcd->rx_port_writes,
++			 wcd->rx_port_origin ? wcd->rx_port_origin : "none",
 +			 wcd9320_ifd_instance ? 1 : 0,
 +			 WCD9320_IFD_SNAP_FIRST, WCD9320_IFD_SNAP_COUNT,
 +			 wcd->have_ifd_before, wcd->have_ifd_after,
@@ -3831,7 +3875,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	cfg_reg = WCD9320_IFD_RX_CFG(port);
 +	cfg_val = enable ? WCD9320_PORT_CFG_ENABLED : WCD9320_PORT_CFG_DISABLED;
 +
-+	if (enable && !wcd->have_ifd_before) {
++	/*
++	 * Re-taken on EVERY enable, not just the first. Two callers now reach
++	 * this path and the milestone compares their deltas against each
++	 * other, so each invocation needs its own before-state; a snapshot
++	 * captured once and kept would make the second caller's delta be
++	 * measured against the first caller's starting point.
++	 */
++	if (enable) {
++		wcd->have_ifd_after = false;
++		wcd->have_ifd_teardown = false;
 +		ret = wcd9320_ifd_snapshot(ifd, wcd->ifd_before, "ifd-before");
 +		if (ret)
 +			goto out;
@@ -3969,6 +4022,18 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!wcd)
 +		return -ENODEV;
 +
++	/*
++	 * Provenance, recorded here rather than inside the helper so the
++	 * helper cannot behave differently for one caller than the other.
++	 * This line is what distinguishes "ASoC drove it" from "the research
++	 * hook drove it" in the evidence -- the milestone's entire claim.
++	 */
++	wcd->rx_port_origin = "asoc-hw_params";
++	dev_info(&wcd->sdev->dev,
++		 "RX path invocation: ASoC hw_params (dai %s, rate %u, ch %u, fmt %u)\n",
++		 dai->name, params_rate(params), params_channels(params),
++		 (unsigned int)params_format(params));
++
 +	return wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
 +				       WCD9320_RX_CH_MASK_ONE, true);
 +}
@@ -3982,6 +4047,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +	if (!wcd->rx_port_on)
 +		return 0;
++
++	wcd->rx_port_origin = "asoc-hw_free";
++	dev_info(&wcd->sdev->dev, "RX path invocation: ASoC hw_free (dai %s)\n",
++		 dai->name);
 +
 +	return wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
 +}
@@ -4046,6 +4115,30 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->is_ifd = (sdev->e_addr.dev_index == 0);
 +	if (wcd->is_ifd) {
 +		/*
++		 * The interface function probes more than once per boot --
++		 * three times on r146, twice on r145 -- and nobody has
++		 * explained why. Component binding is about to make lifecycle
++		 * behaviour matter, so classify it now rather than guess.
++		 *
++		 * The distinction being drawn:
++		 *
++		 *   probe #1 -> no logical address -> deferred/retried
++		 *   probe #2 -> no logical address -> deferred/retried
++		 *   probe #3 -> bind succeeds
++		 *
++		 * versus an unexpected second and third BIND of an
++		 * already-bound device, which would have opposite
++		 * implications. The device pointer tells them apart: repeated
++		 * probing of the same slim_device is a retry, three different
++		 * pointers would be three devices.
++		 */
++		ifd_probe_seq++;
++		dev_info(dev,
++			 "IFD probe #%u: sdev=%p dev=%s laddr=0x%02x laddr_valid=%u status=%d\n",
++			 ifd_probe_seq, sdev, dev_name(dev), sdev->laddr,
++			 sdev->is_laddr_valid, sdev->status);
++
++		/*
 +		 * Its OWN config, not the control function's. The two are
 +		 * different register spaces; see wcd9320_ifd_regmap_config.
 +		 */
@@ -4065,6 +4158,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev,
 +			 "interface regmap: own config, max_register 0x%03x, uncached\n",
 +			 WCD9320_IFD_MAX_REGISTER);
++		dev_info(dev, "IFD probe #%u: returning 0 (bound)\n",
++			 ifd_probe_seq);
 +		return 0;
 +	}
 +
@@ -4307,6 +4402,253 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("rx-dai-rc1");
++MODULE_VERSION("asoc-card-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
+diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
+--- orig/drivers/slimbus/wcd9320-lumia-card.c	1969-12-31 19:00:00.000000000 -0500
++++ new/drivers/slimbus/wcd9320-lumia-card.c	2026-08-16 13:30:43.178137800 -0400
+@@ -0,0 +1,243 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Minimal ASoC card for the Nokia Lumia 1520 (RM-940) WCD9320.
++ *
++ * WHAT THIS IS FOR
++ *
++ * The WCD9320 RX DAI and its SLIMbus slave-port programming path are already
++ * proven on hardware (wcd9320-rx-dai-proven), but they were reached through a
++ * research hook because ASoC never calls a DAI on a component no card has
++ * bound. This card exists to close exactly that gap: to make the framework
++ * itself invoke wcd9320-slim-rx1's hw_params(), so the production path has
++ * been entered by ASoC and not only by hand.
++ *
++ * It is a laboratory fixture, not a product topology.
++ *
++ * WHY THE CPU AND PLATFORM ARE DUMMIES
++ *
++ * CONFIG_SND_SOC_QCOM is not set on this port: there is no q6afe, no q6asm,
++ * no q6routing, so there is no CPU DAI to link against. Enabling that whole
++ * front end would drag q6 DT nodes and live ADSP audio services into a
++ * milestone meant to prove framework plumbing, so the CPU side is ASoC's
++ * dummy and the platform side is the dummy platform.
++ *
++ * The consequence is deliberate and must not be papered over: the dummy
++ * platform provides only .open and has no pcm_construct, so there is NO DMA
++ * buffer. A PCM node appears and can be opened and configured, but samples
++ * cannot be written. hw_params() runs; a subsequent write fails. That is the
++ * expected shape of a successful experiment here.
++ *
++ * When the q6 work lands, the CPU slot changes and nothing else does -- which
++ * is the reason this lives in its own module and the codec driver knows
++ * nothing about Lumia card topology.
++ *
++ * COMP_DUMMY() IS NOT VALID FOR THE PLATFORM SLOT
++ *
++ * soc-core.c: "COMP_DUMMY() creates size 0 array on dai_link. Fill it as
++ * dummy DAI in case of CPU/Codec here. Do nothing for Platform."
++ *
++ * COMP_DUMMY() is an empty macro; the zero-sized array is the signal, and the
++ * core substitutes snd_soc_dummy_dlc for CPU and codec only. A COMP_DUMMY()
++ * platform slot would not fail loudly -- it would stay zero-sized and resolve
++ * no platform component at all. So the platform is named explicitly.
++ */
++
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/platform_device.h>
++
++#include <sound/pcm.h>
++#include <sound/soc.h>
++
++#define DRV_NAME "wcd9320-lumia-card"
++
++/*
++ * The codec component name is a DEVICE name, and device names are not an ABI.
++ * It has been "217:a0:1:0" on every boot recorded on this hardware and derives
++ * deterministically from the SLIMbus enumeration address, but it is exposed as
++ * a read-only module parameter rather than hardcoded so that:
++ *
++ *   - the normal hardware path needs no arguments;
++ *   - an enumeration change fails VISIBLY instead of silently binding
++ *     something else;
++ *   - the fixture stays reusable without a device name baked into its logic.
++ *
++ * There is deliberately no fallback and no scanning. A changed component name
++ * is evidence, and the failure path prints both values so it is legible.
++ */
++static char *codec_component = "217:a0:1:0";
++module_param(codec_component, charp, 0444);
++MODULE_PARM_DESC(codec_component,
++		 "WCD9320 ASoC component (device) name to bind against");
++
++/*
++ * The DAI name is fixed on purpose: it is the interface under test. Only the
++ * component/device instance name is the unstable part.
++ */
++#define WCD9320_RX_DAI_NAME "wcd9320-slim-rx1"
++
++/*
++ * OUR OWN PLATFORM COMPONENT, because snd-soc-dummy cannot be the sole
++ * platform for a card. Measured, not assumed:
++ *
++ * snd_soc_runtime_calc_hw() fills only channels, rates and formats into
++ * runtime->hw. It does NOT set .info, .buffer_bytes_max, .period_bytes_* or
++ * .periods_*. Those come from the platform calling
++ * snd_soc_set_runtime_hwparams().
++ *
++ * soc-utils.c's dummy_dma_open() is supposed to install dummy_dma_hardware,
++ * but it first walks the rtd's components and returns early if any of them is
++ * dummy_platform:
++ *
++ *     for_each_rtd_components(rtd, i, component)
++ *             if (component->driver == &dummy_platform)
++ *                     return 0;
++ *
++ * When snd-soc-dummy IS the platform, that condition is always true of
++ * itself, so runtime->hw is never installed and .info stays 0.
++ *
++ * snd_pcm_hw_constraints_complete() then builds the ACCESS mask FROM
++ * hw->info -- with info 0 neither INTERLEAVED nor NONINTERLEAVED is set, the
++ * mask is empty, and snd_pcm_open() fails with -EINVAL. ASoC's own open
++ * succeeded, so nothing is logged and the failure looks like it came from
++ * nowhere. That cost a run to find.
++ *
++ * This component exists solely to install a sane runtime->hw. It allocates no
++ * buffer and moves no data: there is still no DMA, so a write after a
++ * successful hw_params will still fail, which is the expected shape here.
++ */
++static const struct snd_pcm_hardware wcd9320_lumia_pcm_hw = {
++	.info			= SNDRV_PCM_INFO_INTERLEAVED |
++				  SNDRV_PCM_INFO_BLOCK_TRANSFER,
++	.buffer_bytes_max	= 128 * 1024,
++	.period_bytes_min	= 4096,
++	.period_bytes_max	= 4096 * 2,
++	.periods_min		= 2,
++	.periods_max		= 128,
++};
++
++static int wcd9320_lumia_pcm_open(struct snd_soc_component *component,
++				  struct snd_pcm_substream *substream)
++{
++	snd_soc_set_runtime_hwparams(substream, &wcd9320_lumia_pcm_hw);
++	return 0;
++}
++
++static const struct snd_soc_component_driver wcd9320_lumia_platform = {
++	.name	= "wcd9320-lumia-platform",
++	.open	= wcd9320_lumia_pcm_open,
++};
++
++SND_SOC_DAILINK_DEFS(wcd9320_rx,
++	DAILINK_COMP_ARRAY(COMP_DUMMY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, WCD9320_RX_DAI_NAME)),
++	DAILINK_COMP_ARRAY(COMP_PLATFORM(NULL)));
++
++static struct snd_soc_dai_link wcd9320_lumia_dai_links[] = {
++	{
++		.name = "WCD9320 SLIM RX1",
++		.stream_name = "WCD9320 SLIM RX1 Playback",
++		.playback_only = 1,
++		SND_SOC_DAILINK_REG(wcd9320_rx),
++	},
++};
++
++static struct snd_soc_card wcd9320_lumia_card = {
++	.name = "wcd9320-lumia",
++	.long_name = "Nokia Lumia 1520 WCD9320 (minimal)",
++	.dai_link = wcd9320_lumia_dai_links,
++	.num_links = ARRAY_SIZE(wcd9320_lumia_dai_links),
++};
++
++static int wcd9320_lumia_probe(struct platform_device *pdev)
++{
++	struct snd_soc_card *card = &wcd9320_lumia_card;
++	int ret;
++
++	card->dev = &pdev->dev;
++
++	/*
++	 * The platform component must exist before the card binds, so register
++	 * it first. It lives on this same device, so ASoC names it after the
++	 * device -- which is what the link's platform slot is pointed at below.
++	 */
++	ret = devm_snd_soc_register_component(&pdev->dev,
++					      &wcd9320_lumia_platform, NULL, 0);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret,
++				     "failed to register the platform component\n");
++
++	/*
++	 * Filled at probe rather than at compile time: the codec name comes
++	 * from a module parameter, and the platform name is this device's own,
++	 * which is not known until now.
++	 */
++	wcd9320_lumia_dai_links[0].codecs[0].name = codec_component;
++	wcd9320_lumia_dai_links[0].platforms[0].name = dev_name(&pdev->dev);
++
++	ret = devm_snd_soc_register_card(&pdev->dev, card);
++	if (ret) {
++		/*
++		 * -EPROBE_DEFER is expected and self-correcting: the codec
++		 * component and its DAI may not have registered yet. Anything
++		 * else is a real failure, and both names are printed so a
++		 * changed enumeration name is immediately legible rather than
++		 * hidden behind a generic "component not found".
++		 */
++		if (ret != -EPROBE_DEFER)
++			dev_err(&pdev->dev,
++				"failed to register card (%d)\n  codec_component=%s\n  codec_dai=%s\n",
++				ret, codec_component, WCD9320_RX_DAI_NAME);
++		return ret;
++	}
++
++	dev_info(&pdev->dev,
++		 "minimal card registered: codec_component=%s codec_dai=%s cpu=dummy platform=%s (own, no DMA)\n",
++		 codec_component, WCD9320_RX_DAI_NAME, dev_name(&pdev->dev));
++	return 0;
++}
++
++static struct platform_driver wcd9320_lumia_driver = {
++	.driver = {
++		.name = DRV_NAME,
++		.pm = &snd_soc_pm_ops,
++	},
++	.probe = wcd9320_lumia_probe,
++};
++
++/*
++ * No DT node. The permanent RM-940 topology is explicitly undecided, and a
++ * proof fixture should not invent one -- so the module creates its own
++ * platform device and binds to it.
++ */
++static struct platform_device *wcd9320_lumia_pdev;
++
++static int __init wcd9320_lumia_init(void)
++{
++	int ret;
++
++	ret = platform_driver_register(&wcd9320_lumia_driver);
++	if (ret)
++		return ret;
++
++	wcd9320_lumia_pdev = platform_device_register_simple(DRV_NAME, -1,
++							     NULL, 0);
++	if (IS_ERR(wcd9320_lumia_pdev)) {
++		platform_driver_unregister(&wcd9320_lumia_driver);
++		return PTR_ERR(wcd9320_lumia_pdev);
++	}
++	return 0;
++}
++module_init(wcd9320_lumia_init);
++
++static void __exit wcd9320_lumia_exit(void)
++{
++	platform_device_unregister(wcd9320_lumia_pdev);
++	platform_driver_unregister(&wcd9320_lumia_driver);
++}
++module_exit(wcd9320_lumia_exit);
++
++MODULE_VERSION("lumia-card-rc2");
++MODULE_DESCRIPTION("Minimal ASoC card binding the WCD9320 RX DAI on Lumia RM-940");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRV_NAME);
