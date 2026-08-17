@@ -61,8 +61,9 @@ resolve() {	# resolve <dir> [env assignments...]
 			DIR="$1"
 			. "$2"
 			resolve_expectations
-			printf "V=%s S=%s SRC=%s\n" \
-				"${EXPECT_VERSION:-}" "${EXPECT_SHA:-}" "$EXPECT_SOURCE"
+			printf "V=%s S=%s SRC=%s SHASRC=%s MF=%s\n" \
+				"${EXPECT_VERSION:-}" "${EXPECT_SHA:-}" \
+				"$EXPECT_SOURCE" "$EXPECT_SHA_SOURCE" "$MANIFEST_PATH"
 		' _ "$_d" "$LIB" 2>&1
 	echo "rc=$?"
 }
@@ -89,8 +90,13 @@ check "version from manifest" \
 check "sha from manifest" \
 	"$(printf '%s\n' "$OUT" | sed -n 's/.*S=\([^ ]*\).*/\1/p')" \
 	"91461ca6704d169b1f1dc3b9c6be261a86651f7912166e9e44ca3ff350090beb"
-check "source is recorded as the manifest" \
-	"$(printf '%s\n' "$OUT" | grep -c 'SRC=manifest')" "1"
+check "version source recorded as manifest" \
+	"$(printf '%s\n' "$OUT" | sed -n 's/.* SRC=\([^ ]*\).*/\1/p')" "manifest"
+check "sha source recorded as manifest" \
+	"$(printf '%s\n' "$OUT" | sed -n 's/.*SHASRC=\([^ ]*\).*/\1/p')" "manifest"
+check "manifest path recorded" \
+	"$(printf '%s\n' "$OUT" | sed -n 's/.*MF=\(.*\)/\1/p')" \
+	"$W/m2/wcd9320-artifact.manifest"
 check "exit 0" "$(printf '%s\n' "$OUT" | sed -n 's/^rc=//p')" "0"
 
 # ---------------------------------------------------------------- case 3 --
@@ -99,8 +105,8 @@ mkmanifest "$W/m3" "stale-from-manifest" "aaaa"
 OUT=$(resolve "$W/m3" EXPECT_VERSION=explicit-from-env)
 check "environment overrides the manifest" \
 	"$(printf '%s\n' "$OUT" | sed -n 's/.*V=\([^ ]*\).*/\1/p')" "explicit-from-env"
-check "source is recorded as the environment" \
-	"$(printf '%s\n' "$OUT" | grep -c 'SRC=environment')" "1"
+check "version source recorded as environment" \
+	"$(printf '%s\n' "$OUT" | sed -n 's/.* SRC=\([^ ]*\).*/\1/p')" "environment"
 
 # ---------------------------------------------------------------- case 4 --
 echo "case 4: environment sets only the version -> sha still comes from manifest"
@@ -117,6 +123,8 @@ mkmanifest "$W/m5" "v" "manifest-sha"
 OUT=$(resolve "$W/m5" EXPECT_VERSION=v EXPECT_SHA=env-sha)
 check "explicit sha survives" \
 	"$(printf '%s\n' "$OUT" | sed -n 's/.*S=\([^ ]*\).*/\1/p')" "env-sha"
+check "sha source recorded as environment" \
+	"$(printf '%s\n' "$OUT" | sed -n 's/.*SHASRC=\([^ ]*\).*/\1/p')" "environment"
 
 # ---------------------------------------------------------------- case 6 --
 echo "case 6: ARTIFACT_MANIFEST points somewhere else -> that file is used"

@@ -40,7 +40,11 @@ SLIM_DEVICES="${SLIM_DEVICES:-/sys/bus/slimbus/devices}"
 # script; the module tree is the fallback for a manifest installed with the
 # modules themselves.
 ARTIFACT_MANIFEST="${ARTIFACT_MANIFEST:-}"
+# Recorded and printed into every evidence file, so the proof says WHY it
+# trusted the identity it checked against -- not just that it checked.
 EXPECT_SOURCE="unresolved"
+EXPECT_SHA_SOURCE="none"
+MANIFEST_PATH="none"
 
 resolve_expectations() {
 	_mf=""
@@ -52,6 +56,7 @@ resolve_expectations() {
 			[ -r "$_c" ] && { _mf="$_c"; break; }
 		done
 	fi
+	[ -r "${_mf:-/nonexistent}" ] && MANIFEST_PATH="$_mf"
 
 	# The environment always wins, and says so, so a deliberate override is
 	# never silently replaced by a manifest that happens to be lying around.
@@ -59,10 +64,13 @@ resolve_expectations() {
 		EXPECT_SOURCE="environment"
 	elif [ -n "$_mf" ]; then
 		EXPECT_VERSION=$(sed -n 's/^version=//p' "$_mf" | head -n1)
-		EXPECT_SOURCE="manifest $_mf"
+		[ -n "${EXPECT_VERSION:-}" ] && EXPECT_SOURCE="manifest"
 	fi
-	if [ -z "${EXPECT_SHA:-}" ] && [ -n "$_mf" ]; then
+	if [ -n "${EXPECT_SHA:-}" ]; then
+		EXPECT_SHA_SOURCE="environment"
+	elif [ -n "$_mf" ]; then
 		EXPECT_SHA=$(sed -n 's/^sha256=//p' "$_mf" | head -n1)
+		[ -n "${EXPECT_SHA:-}" ] && EXPECT_SHA_SOURCE="manifest"
 	fi
 	EXPECT_SHA="${EXPECT_SHA:-}"
 
@@ -304,6 +312,15 @@ collect_evidence() {
 	say "mode              : $MODE"
 	say "date              : $(date -u '+%Y-%m-%dT%H:%M:%SZ') (UTC)"
 	say "module version    : $RUNNING_VERSION   (expected $EXPECT_VERSION)"
+	#
+	# Where the expectation came from, not just what it was. An evidence file
+	# that says which build it checked, without saying how it decided what to
+	# check against, cannot be audited later -- and "a stale default nobody
+	# noticed" is exactly the failure this harness was hardened against.
+	#
+	say "expect_version_source : $EXPECT_SOURCE"
+	say "expect_sha_source     : $EXPECT_SHA_SOURCE"
+	say "artifact_manifest     : $MANIFEST_PATH"
 	say "uname -r          : $(uname -r)"
 	say "uname -v          : $(uname -v)"
 	say "uptime            : $(cut -d' ' -f1 /proc/uptime 2>/dev/null) s"
