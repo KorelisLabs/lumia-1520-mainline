@@ -156,9 +156,17 @@ run_case() {
 	printf '#!/bin/sh\ncat "%s/dmesg.txt"\n' "$_c" > "$_c/bin/dmesg"
 	chmod +x "$_c/bin/dmesg"
 
+	# The harness expectation is stated, not inherited. It used to come from
+	# the lib's hard-coded default; that default is gone, because a stale one
+	# that still matches quietly validates the wrong artefact on real
+	# hardware. Here it is legitimately fixed: these are synthetic fixtures
+	# that report core-init-rc2, and the "stale-ko" cases deliberately report
+	# something else so the mismatch path is exercised.
 	PATH="$_c/bin:$PATH" \
 	MODULE_VERSION_PATH="$_c/sys/module/wcd9320/version" \
 	SLIM_DEVICES="$_c/sys/bus/slimbus/devices" \
+	EXPECT_VERSION="${SELFTEST_EXPECT:-core-init-rc2}" \
+	ARTIFACT_MANIFEST="$_c/no-such-manifest" \
 	OUTDIR="$_c/out" \
 		sh "$DIR/$_script" > "$_c/stdout.txt" 2>&1
 	_got=$?
@@ -226,6 +234,8 @@ _c="$WORK/no-module"
 mkdir -p "$_c/out" "$_c/sys/bus/slimbus/devices"
 MODULE_VERSION_PATH="$_c/sys/module/wcd9320/version" \
 SLIM_DEVICES="$_c/sys/bus/slimbus/devices" \
+EXPECT_VERSION="${SELFTEST_EXPECT:-core-init-rc2}" \
+ARTIFACT_MANIFEST="$_c/no-such-manifest" \
 OUTDIR="$_c/out" \
 	sh "$DIR/wcd9320-coldboot-evidence.sh" > "$_c/stdout.txt" 2>&1
 _got=$?

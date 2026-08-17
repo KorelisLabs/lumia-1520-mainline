@@ -98,7 +98,8 @@ DIR=$(dirname "$0")
 # config and DT -- so its MODULE_VERSION cannot tell us the right image is
 # booted. The device tree itself is the gate: see the apr-node check below.
 #
-EXPECT_VERSION="${EXPECT_VERSION:-asoc-card-rc1}"
+# EXPECT_VERSION is resolved by the lib: environment, then the artefact
+# manifest, then a hard failure. No stale default lives here any more.
 . "$DIR/wcd9320-evidence-lib.sh"
 
 DT_BASE="${DT_BASE:-/sys/firmware/devicetree/base}"

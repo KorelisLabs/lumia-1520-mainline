@@ -44,7 +44,8 @@ set -u
 
 MODE="adoption-cache"
 DIR=$(dirname "$0")
-EXPECT_VERSION="${EXPECT_VERSION:-regcache-rc9}"
+# EXPECT_VERSION is resolved by the lib: environment, then the artefact
+# manifest, then a hard failure. No stale default lives here any more.
 . "$DIR/wcd9320-evidence-lib.sh"
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')

@@ -761,13 +761,31 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   refuses an empty source *because this fault voided two earlier runs*. Hand
   writing an `install` command for a different module skips that protection.
   Printing the sha alongside is not the same as checking it.
-- **Evidence scripts carry STALE `EXPECT_VERSION` / `EXPECT_SHA` defaults**,
-  frozen at whatever build was current when each was written --
-  `mbhc-switch-rc6`, `rx-dai-rc1`, `regcache-rc9`, and a `c4c772fb...` module
-  hash. Every run needs them passed explicitly:
-  `sudo env EXPECT_VERSION=<ver> EXPECT_SHA=<sha> sh <script>`. A baseline that
-  depends on remembering four environment variables will eventually be run
-  wrong and believed.
+- ~~**Evidence scripts carry STALE `EXPECT_VERSION` / `EXPECT_SHA`
+  defaults**~~ — **FIXED.** Sixteen scripts carried one each, frozen at
+  whatever build was current when they were written (`mbhc-switch-rc6`,
+  `rx-dai-rc1`, `regcache-rc9`, a `c4c772fb...` module hash), and the shared
+  lib carried `core-init-rc2` -- eight milestones stale. They failed loudly
+  the day the version moved on, which was luck: the dangerous shape is a stale
+  default that still MATCHES, silently validating the wrong artefact and
+  leaving every later milestone to inherit the doubt.
+
+  Every hard-coded default is gone. Expectations now resolve **environment ->
+  artefact manifest -> fail closed**, with no fourth option.
+  `build-wcd9320-kernel.sh` writes `wcd9320-artifact.manifest` into its
+  staging directory (version, sha256, size, pkgrel, kernel, build time); copy
+  it to the phone beside the tools and every run picks up the right
+  expectation with no arguments. An explicit environment value always wins
+  over a manifest, so a deliberate override is never silently replaced by a
+  file lying around. `wcd9320-install-module.sh` resolves the same way but
+  standalone, since it must work as a bare root tool.
+
+  Proven offline by `wcd9320-expectation-selftest.sh` -- 8 cases, 17
+  assertions, no hardware: fail-closed with nothing supplied, resolution from
+  a manifest, environment beating manifest in both directions, partial
+  environment still filling the sha from the manifest, `ARTIFACT_MANIFEST`
+  redirection, a version-less manifest still failing closed, and a grep
+  asserting no hard-coded default has crept back into `tools/`.
 - **The 117-check baseline is coldboot(31) + rx-dai(34) + regcache(25) +
   irq-acceptance(27).** `asoc-callback` (29) is a fifth run, NOT part of it.
   Substituting it silently gives 121 and looks like drift.

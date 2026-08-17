@@ -13,13 +13,76 @@
 # mismatched MODULE_VERSION aborts before a single register is read, and no
 # evidence file is written at all, so there is nothing to mistake for a result.
 
-EXPECT_VERSION="${EXPECT_VERSION:-core-init-rc2}"
+# NO HARD-CODED DEFAULT FOR EXPECT_VERSION. There used to be one here, frozen
+# at "core-init-rc2" -- eight milestones stale -- and one in every evidence
+# script besides, each frozen at whatever build was current when it was
+# written. They failed loudly the day the version moved on, which was lucky:
+# the dangerous shape of that bug is a default that still MATCHES something
+# and quietly validates the wrong artefact. A gate whose expectation can drift
+# out from under it is not a gate.
+#
+# Expectations now come from, in order:
+#   1. the environment          -- EXPECT_VERSION / EXPECT_SHA, explicit
+#   2. an artefact manifest     -- written by build-wcd9320-kernel.sh at stage
+#                                  time, so it describes the build that was
+#                                  actually produced
+#   3. nothing                  -- and then the run FAILS CLOSED
+#
+# There is deliberately no fourth option.
 
 # Paths are overridable for the offline self-test (wcd9320-evidence-selftest.sh)
 # only. On the device, leave them alone -- pointing them somewhere else is how
 # you get a confident PASS from a tree that is not the codec.
 MODULE_VERSION_PATH="${MODULE_VERSION_PATH:-/sys/module/wcd9320/version}"
 SLIM_DEVICES="${SLIM_DEVICES:-/sys/bus/slimbus/devices}"
+
+# Where the manifest may live. $DIR is the tools directory of the calling
+# script; the module tree is the fallback for a manifest installed with the
+# modules themselves.
+ARTIFACT_MANIFEST="${ARTIFACT_MANIFEST:-}"
+EXPECT_SOURCE="unresolved"
+
+resolve_expectations() {
+	_mf=""
+	if [ -n "$ARTIFACT_MANIFEST" ]; then
+		_mf="$ARTIFACT_MANIFEST"
+	else
+		for _c in "${DIR:-.}/wcd9320-artifact.manifest" \
+			  "/lib/modules/$(uname -r)/wcd9320-artifact.manifest"; do
+			[ -r "$_c" ] && { _mf="$_c"; break; }
+		done
+	fi
+
+	# The environment always wins, and says so, so a deliberate override is
+	# never silently replaced by a manifest that happens to be lying around.
+	if [ -n "${EXPECT_VERSION:-}" ]; then
+		EXPECT_SOURCE="environment"
+	elif [ -n "$_mf" ]; then
+		EXPECT_VERSION=$(sed -n 's/^version=//p' "$_mf" | head -n1)
+		EXPECT_SOURCE="manifest $_mf"
+	fi
+	if [ -z "${EXPECT_SHA:-}" ] && [ -n "$_mf" ]; then
+		EXPECT_SHA=$(sed -n 's/^sha256=//p' "$_mf" | head -n1)
+	fi
+	EXPECT_SHA="${EXPECT_SHA:-}"
+
+	if [ -z "${EXPECT_VERSION:-}" ]; then
+		say "INVALID RUN: no artefact expectation, and no default to fall back on."
+		say ""
+		say "  This run cannot say which build it is supposed to be checking,"
+		say "  so it will not check anything. Nothing was collected."
+		say ""
+		say "  Supply one of:"
+		say "    EXPECT_VERSION=<ver> [EXPECT_SHA=<sha256>] sudo -E sh <script>"
+		say "    a manifest at \$DIR/wcd9320-artifact.manifest"
+		say "    ARTIFACT_MANIFEST=<path>"
+		say ""
+		say "  build-wcd9320-kernel.sh writes the manifest into its staging"
+		say "  directory; copy it to the phone beside these scripts and every"
+		say "  run picks up the right expectation with no arguments at all."
+		exit 2
+	fi
+}
 
 PASS_N=0
 FAIL_N=0
@@ -61,6 +124,10 @@ note() { printf '  ....  %-32s %s\n' "$1" "$2"; }
 # ------------------------------------------------------------ version gate --
 
 require_module_version() {
+	# Resolve before anything else: a run that cannot name the build it is
+	# checking must abort before it reads a single register, not after.
+	resolve_expectations
+
 	if [ ! -r "$MODULE_VERSION_PATH" ]; then
 		say "INVALID RUN: $MODULE_VERSION_PATH is missing."
 		say "  The wcd9320 module is not loaded, or the running kernel has it"

@@ -27,8 +27,31 @@
 set -u
 
 SRC="${1:-/tmp/wcd9320.ko}"
+DIR=$(dirname "$0")
+
+#
+# This script deliberately does NOT source the evidence lib -- it has to work
+# as a standalone root tool -- so it resolves the artefact manifest itself.
+# Same order as the lib: environment first (an explicit override must never be
+# replaced by a manifest that happens to be lying around), then the manifest,
+# then nothing. It already fails closed on an empty EXPECT_SHA below, which is
+# the behaviour the rest of the harness has now been brought into line with.
+#
 EXPECT_SHA="${EXPECT_SHA:-}"
 EXPECT_VERSION="${EXPECT_VERSION:-}"
+MANIFEST="${ARTIFACT_MANIFEST:-}"
+if [ -z "$MANIFEST" ]; then
+	for _c in "$DIR/wcd9320-artifact.manifest" \
+		  "/lib/modules/$(uname -r)/wcd9320-artifact.manifest"; do
+		[ -r "$_c" ] && { MANIFEST="$_c"; break; }
+	done
+fi
+if [ -n "$MANIFEST" ]; then
+	[ -n "$EXPECT_SHA" ] ||
+		EXPECT_SHA=$(sed -n 's/^sha256=//p' "$MANIFEST" | head -n1)
+	[ -n "$EXPECT_VERSION" ] ||
+		EXPECT_VERSION=$(sed -n 's/^version=//p' "$MANIFEST" | head -n1)
+fi
 
 KREL=$(uname -r)
 DESTDIR="/lib/modules/$KREL/kernel/drivers/slimbus"
@@ -38,7 +61,11 @@ die() { printf '\nREFUSED: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
 [ "$(id -u)" = "0" ] || die "must run as root (sudo sh $0)"
-[ -n "$EXPECT_SHA" ] || die "EXPECT_SHA is not set -- refusing to install an unverified module"
+[ -n "$EXPECT_SHA" ] || die "EXPECT_SHA is not set and no manifest supplied it.
+       Refusing to install an unverified module.
+       Pass EXPECT_SHA=<sha256>, or put wcd9320-artifact.manifest beside this
+       script (build-wcd9320-kernel.sh writes one into its staging directory)."
+[ -n "$MANIFEST" ] && say "manifest: $MANIFEST"
 [ -f "$SRC" ] || die "no source module at $SRC"
 
 say "=== source ==="

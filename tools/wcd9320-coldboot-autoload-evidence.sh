@@ -28,7 +28,8 @@ set -u
 
 MODE="coldboot-autoload"
 DIR=$(dirname "$0")
-EXPECT_VERSION="${EXPECT_VERSION:-mbhc-switch-rc6}"
+# EXPECT_VERSION is resolved by the lib: environment, then the artefact
+# manifest, then a hard failure. No stale default lives here any more.
 . "$DIR/wcd9320-evidence-lib.sh"
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
@@ -38,7 +39,7 @@ MASK_ALL="ff ff 3f 7f"
 KREL=$(uname -r)
 KO="/lib/modules/$KREL/kernel/drivers/slimbus/wcd9320.ko"
 # sha256 of the built artefact this run must match; override per build.
-EXPECT_SHA="${EXPECT_SHA:-c4c772fbea0856b7f8e5aa444a24c3c0f8c526f26d2b2b66408cc04529637163}"
+EXPECT_SHA="${EXPECT_SHA:-}"	# resolved by the lib from the manifest
 # A probe later than this many seconds into the boot did not come from udev.
 MAX_PROBE_S="${MAX_PROBE_S:-120}"
 
