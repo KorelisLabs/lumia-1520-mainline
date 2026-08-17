@@ -204,25 +204,134 @@ MODULES=$(lsmod 2>/dev/null | grep -c '^q6core \|^snd_soc_qdsp6 ')
 # table. So the presence of a query is not inferred from silence -- it is
 # asserted only if a probe mechanism that can trigger one is actually present.
 # If none is, the verdict is C0 and no firmware claim is made.
+DBG="${DBG:-/sys/kernel/debug/q6_inventory}"
+TOKEN_ARM="arm-q6-inventory"
+TOKEN_FIRE="fire-q6-inventory"
+
+# The object is q6inventory_probe.o, so lsmod shows "q6inventory_probe" --
+# no underscore after q6, and no dash for lsmod to translate. Like q6core it
+# cannot autoload, so load it explicitly.
+PROBE_FILE=0
+PROBE_LOADED=0
+if modinfo q6inventory_probe >/dev/null 2>&1; then
+	PROBE_FILE=1
+	modprobe q6inventory_probe 2>/dev/null
+	sleep 1
+fi
+lsmod 2>/dev/null | grep -q '^q6inventory_probe ' && PROBE_LOADED=1
+
 QUERY_MECHANISM=0
 QUERY_MECHANISM_NAME="none"
-# The object is q6inventory_probe.o, so lsmod shows "q6inventory_probe" --
-# no underscore after q6, and no dash for lsmod to translate.
-if lsmod 2>/dev/null | grep -q '^q6inventory_probe '; then
+if [ "$PROBE_LOADED" = "1" ] && [ -d "$DBG" ]; then
 	QUERY_MECHANISM=1
 	QUERY_MECHANISM_NAME="q6inventory_probe.ko"
-elif [ -r /sys/kernel/tracing/trace ] &&
-	grep -q 'q6core_callback' /sys/kernel/tracing/kprobe_events 2>/dev/null; then
-	QUERY_MECHANISM=1
-	QUERY_MECHANISM_NAME="kprobe on q6core_callback"
 fi
 
-DMESG_APR=$(dmesg 2>/dev/null | grep -iE 'apr|q6core|adsp|avcs' | tail -40)
-# Only the probe module reports an inventory; nothing in stock q6core does.
-INVENTORY_RAW=$(dmesg 2>/dev/null | grep -iE 'q6-inventory|num_services|svc_api_info' | tail -20)
-NUM_SERVICES=$(printf '%s\n' "$INVENTORY_RAW" |
-	sed -n 's/.*num_services[=: ]*\([0-9]*\).*/\1/p' | tail -n1)
-[ -n "${NUM_SERVICES:-}" ] || NUM_SERVICES=""
+#
+# FIRING IS IRREVERSIBLE AND THERE IS ONE QUERY PER BOOT, so it is opt-in.
+# Without FIRE=1 this script observes and reports; it never spends the boot's
+# only transaction as a side effect of someone looking at the state.
+#
+FIRE="${FIRE:-0}"
+ARM_RESULT="not attempted"
+FIRE_RESULT="not attempted"
+if [ "$QUERY_MECHANISM" = "1" ] && [ "$FIRE" = "1" ]; then
+	if printf '%s' "$TOKEN_ARM" > "$DBG/arm" 2>/dev/null; then
+		ARM_RESULT="ok"
+		# The module refuses ARM unless the observer is registered AND
+		# q6core is bound, so reaching here means both held.
+		if printf '%s' "$TOKEN_FIRE" > "$DBG/fire" 2>/dev/null; then
+			FIRE_RESULT="ok"
+		else
+			FIRE_RESULT="refused (errno $?)"
+		fi
+	else
+		ARM_RESULT="refused -- observer unregistered or q6core unbound"
+	fi
+	sleep 1
+fi
+
+# ------------------------------------------------------- read the harness --
+st() { sed -n "s/^$1=//p" /tmp/.q6inv-status-$$ 2>/dev/null | head -n1; }
+
+STATUS_TEXT=""
+if [ "$QUERY_MECHANISM" = "1" ] && [ -r "$DBG/status" ]; then
+	cat "$DBG/status" > /tmp/.q6inv-status-$$ 2>/dev/null
+	STATUS_TEXT=$(cat /tmp/.q6inv-status-$$ 2>/dev/null)
+fi
+
+HARNESS_STATE=$(st state)
+PROBE_REGISTERED=$(st probe_registered)
+RESOLVED_ADDR=$(st resolved_address)
+CALLBACK_HITS=$(st callback_hits)
+FWK_SEEN=$(st fwk_response_seen)
+BASIC_SEEN=$(st basic_rsp_seen)
+BASIC_OPCODE=$(st basic_rsp_original_opcode)
+BASIC_STATUS=$(st basic_rsp_status)
+BASIC_UNSUPP=$(st basic_rsp_is_unsupported)
+LEGACY_SEEN=$(st legacy_response_seen)
+PAYLOAD_SEEN=$(st inventory_payload_seen)
+INV_OPCODE=$(st inventory_opcode)
+PAYLOAD_SIZE=$(st payload_size)
+CAPTURED_SIZE=$(st captured_size)
+TRUNCATED=$(st truncated)
+: "${HARNESS_STATE:=unknown}" "${PROBE_REGISTERED:=0}" "${CALLBACK_HITS:=0}"
+: "${FWK_SEEN:=0}" "${BASIC_SEEN:=0}" "${LEGACY_SEEN:=0}" "${PAYLOAD_SEEN:=0}"
+: "${TRUNCATED:=0}" "${PAYLOAD_SIZE:=0}" "${CAPTURED_SIZE:=0}"
+
+# --------------------------------------------------- decode the raw table --
+#
+# od -tu4 prints 32-bit words in HOST byte order, which on this ARM is the
+# same little-endian the ADSP wrote -- so the words come out directly and no
+# byte-swapping is needed. Decoding here rather than in the kernel keeps the
+# firmware's actual bytes in inventory_raw, so a parser found wrong later can
+# be re-run against them.
+#
+#   AVCS_CMDRSP_GET_FWK_VERSION 0x0001292d
+#       w0..w3 build major/minor/branch/subbranch, w4 num_services,
+#       then triples {service_id, api_version, api_branch_version}
+#   AVCS_GET_VERSIONS_RSP       0x00012906
+#       w0 build_id, w1 num_services,
+#       then pairs {service_id, version}
+#
+#
+# Decoding lives in q6-decode-inventory.sh, which q6-decode-selftest.sh proves
+# against nine synthetic payloads -- six of them malformed -- with no hardware
+# involved. The inventory cannot be asked for twice, so the parser is proven
+# before it is used, and the code proven is the code called.
+#
+NUM_SERVICES=""
+SVC_TABLE=""
+TABLE_CONSISTENT=0
+TABLE_REASON=""
+RAW_BYTES=0
+if [ "$QUERY_MECHANISM" = "1" ] && [ -r "$DBG/inventory_raw" ]; then
+	cat "$DBG/inventory_raw" > /tmp/.q6inv-raw-$$ 2>/dev/null
+	RAW_BYTES=$(wc -c < /tmp/.q6inv-raw-$$ 2>/dev/null || echo 0)
+fi
+
+if [ "${RAW_BYTES:-0}" -gt 0 ] 2>/dev/null; then
+	DECODED=$(sh "$DIR/q6-decode-inventory.sh" "/tmp/.q6inv-raw-$$" \
+		"${INV_OPCODE:-none}" "${PAYLOAD_SIZE:-0}" 2>/dev/null)
+	NUM_SERVICES=$(printf '%s\n' "$DECODED" | sed -n 's/^num_services=//p' | head -n1)
+	TABLE_CONSISTENT=$(printf '%s\n' "$DECODED" | sed -n 's/^consistent=//p' | head -n1)
+	TABLE_REASON=$(printf '%s\n' "$DECODED" | sed -n 's/^reason=//p' | head -n1)
+	SVC_TABLE=$(printf '%s\n' "$DECODED" | grep '^service_id=')
+fi
+: "${TABLE_CONSISTENT:=0}"
+
+# Which of the required services the firmware itself listed.
+has_svc() {
+	printf '%s\n' "$SVC_TABLE" | grep -q "^service_id=$1 "
+}
+AFE_PRESENT=0; ASM_PRESENT=0; ADM_PRESENT=0
+[ "$TABLE_CONSISTENT" = "1" ] && {
+	has_svc "$SVC_AFE" && AFE_PRESENT=1
+	has_svc "$SVC_ASM" && ASM_PRESENT=1
+	has_svc "$SVC_ADM" && ADM_PRESENT=1
+}
+
+DMESG_APR=$(dmesg 2>/dev/null | grep -iE 'apr|q6core|adsp|avcs|q6inventory' | tail -40)
 
 # ------------------------------------------------------------- classify ----
 #
@@ -235,10 +344,24 @@ elif [ "$MODULE_FILE" = "0" ] || [ "$MODULE_LOADED" = "0" ] || [ "$Q6CORE_BOUND"
 	VERDICT="S"
 elif [ "$QUERY_MECHANISM" = "0" ]; then
 	VERDICT="C0"
-elif [ -z "$NUM_SERVICES" ]; then
+elif [ "$PROBE_REGISTERED" != "1" ]; then
+	# The observer could not be registered. A query may or may not have gone
+	# out, but nothing could have seen the answer -- so this is a setup
+	# failure and NEVER C2. Reporting an unobserved query as "the DSP was
+	# silent" is the single worst outcome this experiment can produce.
+	VERDICT="S"
+elif [ "$HARNESS_STATE" != "FIRED" ]; then
+	VERDICT="C0"
+elif [ "$TRUNCATED" = "1" ]; then
+	# A partial capture cannot establish that a service is absent, only that
+	# it was not in the part that was kept. Not a firmware result either way.
+	VERDICT="S"
+elif [ "$PAYLOAD_SEEN" != "1" ] || [ "$TABLE_CONSISTENT" != "1" ]; then
 	VERDICT="C2"
+elif [ "$AFE_PRESENT" = "1" ] && [ "$ASM_PRESENT" = "1" ] && [ "$ADM_PRESENT" = "1" ]; then
+	VERDICT="A"
 else
-	VERDICT="pending"
+	VERDICT="B"
 fi
 
 #
@@ -282,7 +405,55 @@ refuse_absence_language() {
 	say "   first returns 0, so a silent ADSP never triggers the fallback)"
 	say "bound     : Q6_READY_TIMEOUT_MS = 100 per request"
 	say "trigger   : $QUERY_MECHANISM_NAME"
-	say "num_services parsed : ${NUM_SERVICES:-none}"
+
+	hdr "the harness"
+	say "probe module in /lib/modules : $PROBE_FILE"
+	say "probe module loaded          : $PROBE_LOADED"
+	say "observer registered          : $PROBE_REGISTERED"
+	say "observer address             : ${RESOLVED_ADDR:-none}"
+	say "FIRE requested               : $FIRE"
+	say "arm                          : $ARM_RESULT"
+	say "fire                         : $FIRE_RESULT"
+	say "state                        : $HARNESS_STATE"
+	say "callback hits                : $CALLBACK_HITS"
+	if [ -n "$STATUS_TEXT" ]; then
+		hdr "status, verbatim"
+		printf '%s\n' "$STATUS_TEXT" | sed 's/^/  /'
+	fi
+
+	hdr "what came back"
+	say "fwk response seen      : $FWK_SEEN   (0x0001292d)"
+	say "legacy response seen   : $LEGACY_SEEN   (0x00012906)"
+	say "basic rsp seen         : $BASIC_SEEN   (0x000110E8)"
+	say "  original opcode      : ${BASIC_OPCODE:-none}"
+	say "  status               : ${BASIC_STATUS:-none}"
+	say "  is ADSP_EUNSUPPORTED : ${BASIC_UNSUPP:-0}"
+	if [ "${BASIC_UNSUPP:-0}" = "1" ]; then
+		say "  -> the legacy fallback was LICENSED, not skipped"
+	fi
+	say "inventory payload seen : $PAYLOAD_SEEN"
+	say "inventory opcode       : ${INV_OPCODE:-none}"
+	say "payload_size           : $PAYLOAD_SIZE"
+	say "captured_size          : $CAPTURED_SIZE"
+	say "raw bytes read back    : $RAW_BYTES"
+	say "truncated              : $TRUNCATED"
+	say "num_services           : ${NUM_SERVICES:-none}"
+	say "table consistent       : $TABLE_CONSISTENT"
+	[ -n "$TABLE_REASON" ] && say "  refused because      : $TABLE_REASON"
+
+	if [ -n "$SVC_TABLE" ]; then
+		hdr "the inventory, as the firmware reported it"
+		printf '%s\n' "$SVC_TABLE"
+		say ""
+		say "required services: AFE($SVC_AFE)=$AFE_PRESENT"
+		say "                   ASM($SVC_ASM)=$ASM_PRESENT"
+		say "                   ADM($SVC_ADM)=$ADM_PRESENT"
+	fi
+
+	hdr "the helper, cross-checked against that table"
+	say "(these are lookups into one cached transaction, not four probes;"
+	say " disagreement with the table above is itself a finding)"
+	printf '%s\n' "$STATUS_TEXT" | grep '^svc[0-9]*_' | sed 's/^/  /'
 
 	hdr "kernel log, apr/q6core/adsp"
 	printf '%s\n' "${DMESG_APR:-  (nothing)}" | sed 's/^/  /'
@@ -331,7 +502,24 @@ refuse_absence_language() {
 		say "  q6core.ko present in /lib/modules : $MODULE_FILE"
 		say "  q6core loaded                     : $MODULE_LOADED"
 		say "  q6core bound                      : $Q6CORE_BOUND"
+		say "  probe module loaded               : $PROBE_LOADED"
+		say "  observer registered               : $PROBE_REGISTERED"
+		say "  capture truncated                 : $TRUNCATED"
 		say ""
+		if [ "$PROBE_REGISTERED" != "1" ] && [ "$PROBE_LOADED" = "1" ]; then
+			say "The observer could not be registered on q6core_callback, so"
+			say "nothing could have seen a reply. A query may or may not have"
+			say "gone out. This is NOT C2: reporting an unobserved query as a"
+			say "silent DSP would look exactly like a real firmware finding."
+			say ""
+		fi
+		if [ "$TRUNCATED" = "1" ]; then
+			say "The reply exceeded the capture buffer ($PAYLOAD_SIZE >"
+			say "$CAPTURED_SIZE bytes). A partial table cannot establish that"
+			say "a service is absent, only that it was not in the part kept."
+			say "Raise Q6INV_CAP and take a fresh boot."
+			say ""
+		fi
 		say "Two standing traps produce this, and neither is a firmware fact:"
 		say "  1. 'fastboot boot' does not update /lib/modules. A module built"
 		say "     into the package is not on the device until it is copied."
@@ -378,16 +566,44 @@ refuse_absence_language() {
 		say "singleton). If the wrong address behaves identically to the right"
 		say "one, addressing is not what is being tested."
 		;;
-	pending)
-		say "INVENTORY RECEIVED -- num_services = $NUM_SERVICES"
+	A)
+		say "A   INVENTORY_RECEIVED_REQUIRED_AUDIO_PRESENT"
 		say ""
-		say "Classify A vs B from the service table above:"
-		say "  CORE = $SVC_CORE, AFE = $SVC_AFE, ASM = $SVC_ASM, ADM = $SVC_ADM"
+		say "The ADSP answered on the core service and reported a complete,"
+		say "self-consistent inventory of $NUM_SERVICES services. AFE($SVC_AFE),"
+		say "ASM($SVC_ASM) and ADM($SVC_ADM) are all in it."
 		say ""
-		say "A if the table contains the services the conventional Q6"
-		say "playback path needs. B if the transaction succeeded and they are"
-		say "genuinely not there -- which IS a licensed conclusion, because a"
-		say "complete inventory was received."
+		say "The conventional Qualcomm Q6 ASoC stack is physically possible on"
+		say "this firmware. This does NOT establish that any of it works, only"
+		say "that the services the stack addresses exist to be addressed."
+		say ""
+		say "Next: Branch A -- map the CPU DAI taxonomy and the per-component"
+		say "DT requirements, then attempt the real CPU-DAI milestone. Data"
+		say "movement stays a separate milestone after that."
+		;;
+	B)
+		say "B   INVENTORY_RECEIVED_REQUIRED_AUDIO_ABSENT"
+		say ""
+		say "The ADSP answered on the core service and reported a complete,"
+		say "self-consistent inventory of $NUM_SERVICES services. One or more of"
+		say "the services the conventional Q6 path needs is NOT in it:"
+		say "  AFE($SVC_AFE) present = $AFE_PRESENT"
+		say "  ASM($SVC_ASM) present = $ASM_PRESENT"
+		say "  ADM($SVC_ADM) present = $ADM_PRESENT"
+		say ""
+		say "THIS IS THE ONE VERDICT THAT LICENSES SERVICE-ABSENCE LANGUAGE,"
+		say "because the firmware itself enumerated what it has. It is an"
+		say "architectural finding, not a failed experiment:"
+		say ""
+		say "  This ADSP firmware provides the satellite/SLIMbus control"
+		say "  functionality already observed, but does not provide the"
+		say "  conventional Qualcomm audio-service interface that mainline's"
+		say "  Q6 ASoC stack expects."
+		say ""
+		say "Next: Branch B -- freeze the finding. Do NOT invent shims. The"
+		say "choice between a different DSP interface, reverse-engineering the"
+		say "WP audio path, and a non-Q6 route is a separate decision made on"
+		say "this evidence, not under it."
 		;;
 	esac
 
@@ -395,15 +611,25 @@ refuse_absence_language() {
 	emit_verdict
 } > "$OUT" 2>&1
 
-rm -f "$DMESG_FILE"
+rm -f "$DMESG_FILE" /tmp/.q6inv-status-$$
+
+# The firmware's own bytes are kept beside the evidence file, not only parsed
+# into it: if this parser is later found wrong, the payload survives to be
+# re-read. Named after the same stamp so the two cannot drift apart.
+if [ -s /tmp/.q6inv-raw-$$ ]; then
+	cp /tmp/.q6inv-raw-$$ "$OUTDIR/msm8974-q6-inventory-$STAMP.raw"
+fi
+rm -f /tmp/.q6inv-raw-$$
 
 sed -n '/=== the transport boundary/,$p' "$OUT" | sed -n '1,110p'
 printf '\nevidence: %s\n' "$OUT"
 
 case "$VERDICT" in
+A)  exit 0 ;;
+B)  exit 1 ;;
 C1) exit 2 ;;
 C2) exit 3 ;;
 S)  exit 5 ;;
 C0) exit 6 ;;
-*)  exit 0 ;;
+*)  exit 4 ;;
 esac
