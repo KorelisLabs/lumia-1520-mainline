@@ -235,6 +235,7 @@ fi
 FIRE="${FIRE:-0}"
 ARM_RESULT="not attempted"
 FIRE_RESULT="not attempted"
+FIRED_BY_THIS_RUN=0
 if [ "$QUERY_MECHANISM" = "1" ] && [ "$FIRE" = "1" ]; then
 	if printf '%s' "$TOKEN_ARM" > "$DBG/arm" 2>/dev/null; then
 		ARM_RESULT="ok"
@@ -242,6 +243,7 @@ if [ "$QUERY_MECHANISM" = "1" ] && [ "$FIRE" = "1" ]; then
 		# q6core is bound, so reaching here means both held.
 		if printf '%s' "$TOKEN_FIRE" > "$DBG/fire" 2>/dev/null; then
 			FIRE_RESULT="ok"
+			FIRED_BY_THIS_RUN=1
 		else
 			FIRE_RESULT="refused (errno $?)"
 		fi
@@ -406,6 +408,36 @@ refuse_absence_language() {
 	say "bound     : Q6_READY_TIMEOUT_MS = 100 per request"
 	say "trigger   : $QUERY_MECHANISM_NAME"
 
+	#
+	# PROVENANCE. Derived, not declared: the only way this reads "live" is if
+	# THIS run's write to the fire token succeeded. A run that finds the
+	# harness already FIRED is reporting a measurement someone else took, and
+	# says so -- which matters because the reporter once died on a run whose
+	# measurement was perfect, and the formatted evidence had to be produced
+	# afterwards. That distinction must survive into the artefact rather than
+	# living in someone's memory of the session.
+	#
+	if [ "$HARNESS_STATE" = "FIRED" ] && [ "$FIRED_BY_THIS_RUN" = "0" ]; then
+		_origin="reconstructed"
+	else
+		_origin="live"
+	fi
+	hdr "provenance"
+	say "evidence_origin   : $_origin"
+	say "source_status     : captured-live-debugfs ($DBG/status)"
+	say "source_raw        : $DBG/inventory_raw"
+	say "raw_size          : $RAW_BYTES"
+	say "measurement_rerun : $FIRED_BY_THIS_RUN"
+	if [ "$_origin" = "reconstructed" ]; then
+		say ""
+		say "The measurement was live and genuine -- the ADSP was queried once,"
+		say "on this boot, and the harness captured the reply. This FILE was"
+		say "generated afterwards from that captured state, because the"
+		say "reporter aborted on its first attempt. No query was re-issued:"
+		say "fire_count is still 1 and q6core's is_version_requested has been"
+		say "latched since. Nothing here was re-measured."
+	fi
+
 	hdr "the harness"
 	say "probe module in /lib/modules : $PROBE_FILE"
 	say "probe module loaded          : $PROBE_LOADED"
@@ -457,11 +489,6 @@ refuse_absence_language() {
 
 	hdr "kernel log, apr/q6core/adsp"
 	printf '%s\n' "${DMESG_APR:-  (nothing)}" | sed 's/^/  /'
-
-	if [ -n "$INVENTORY_RAW" ]; then
-		hdr "the inventory, verbatim"
-		printf '%s\n' "$INVENTORY_RAW" | sed 's/^/  /'
-	fi
 
 	hdr "checks"
 	check "module version" "$RUNNING_VERSION" "$EXPECT_VERSION"
@@ -609,7 +636,27 @@ refuse_absence_language() {
 
 	collect_evidence
 	emit_verdict
+
+	# Written last, on purpose. Everything above is inside a block whose
+	# stdout AND stderr go to the evidence file, so a shell abort in here --
+	# set -u on a stale variable, say -- kills the script with its complaint
+	# buried in a file nobody is looking at yet, and the terminal shows
+	# NOTHING AT ALL. That happened on the run that answered Question 0: the
+	# measurement succeeded and the reporter died mute. This marker is how the
+	# caller can tell "finished" from "died halfway".
+	say "REPORT_COMPLETE"
 } > "$OUT" 2>&1
+
+if ! grep -q '^REPORT_COMPLETE$' "$OUT" 2>/dev/null; then
+	printf '\nREPORTER FAILED -- the evidence block aborted before finishing.\n' >&2
+	printf 'The measurement may still be intact; this is a reporting fault.\n' >&2
+	printf 'Tail of %s:\n' "$OUT" >&2
+	tail -n 6 "$OUT" >&2 | sed 's/^/  /' >&2
+	printf '\nThe harness state is authoritative and survives this:\n' >&2
+	printf '  cat %s/status\n' "$DBG" >&2
+	printf '  cat %s/inventory_raw > /tmp/q6.raw\n' "$DBG" >&2
+	exit 7
+fi
 
 rm -f "$DMESG_FILE" /tmp/.q6inv-status-$$
 
@@ -621,7 +668,15 @@ if [ -s /tmp/.q6inv-raw-$$ ]; then
 fi
 rm -f /tmp/.q6inv-raw-$$
 
-sed -n '/=== the transport boundary/,$p' "$OUT" | sed -n '1,110p'
+#
+# The head of the report, then ALWAYS the checks and the verdict. A flat line
+# cap put the verdict off the bottom of the terminal as soon as the report
+# grew -- printing everything EXCEPT the conclusion is barely better than
+# printing nothing, and it happened on the run that answered Question 0.
+#
+sed -n '/=== the transport boundary/,/^=== checks ===$/p' "$OUT" | sed '$d'
+sed -n '/^=== checks ===$/,/^=== run identity ===$/p' "$OUT" | sed '$d'
+tail -n 4 "$OUT"
 printf '\nevidence: %s\n' "$OUT"
 
 case "$VERDICT" in

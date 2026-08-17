@@ -746,6 +746,62 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   continuation prompt swallowing whatever you type next. Omit the trailing
   separator.
 
+### Traps found during the Q6 service-inventory milestone (2026-08-17)
+
+- **`scp` with MULTIPLE source files silently delivers EMPTY files.** Three
+  files sent in one invocation all arrived 0 bytes, with no error at either
+  end. Single-file `scp` of the same paths worked immediately. This cost a
+  boot: the probe module installed as a 0-byte file, and the evidence script
+  was overwritten with a 0-byte copy, which `sh` runs as a no-op producing no
+  output and exit 0. **Always transfer one file per `scp`, and verify size and
+  sha256 on the phone before installing anything.** `scp -O` is not an
+  alternative -- the phone has no `scp` binary, so `-O` fails outright; the
+  working path is the SFTP subsystem, one file at a time.
+- **A raw `install` bypasses the zero-byte guard.** `wcd9320-install-module.sh`
+  refuses an empty source *because this fault voided two earlier runs*. Hand
+  writing an `install` command for a different module skips that protection.
+  Printing the sha alongside is not the same as checking it.
+- **Evidence scripts carry STALE `EXPECT_VERSION` / `EXPECT_SHA` defaults**,
+  frozen at whatever build was current when each was written --
+  `mbhc-switch-rc6`, `rx-dai-rc1`, `regcache-rc9`, and a `c4c772fb...` module
+  hash. Every run needs them passed explicitly:
+  `sudo env EXPECT_VERSION=<ver> EXPECT_SHA=<sha> sh <script>`. A baseline that
+  depends on remembering four environment variables will eventually be run
+  wrong and believed.
+- **The 117-check baseline is coldboot(31) + rx-dai(34) + regcache(25) +
+  irq-acceptance(27).** `asoc-callback` (29) is a fifth run, NOT part of it.
+  Substituting it silently gives 121 and looks like drift.
+- **`rx-dai` must run BEFORE `asoc-callback`**, because it asserts zero sound
+  cards and the card module does not autoload.
+- **A reporter can die mute.** The evidence block redirects stdout AND stderr
+  into the evidence file, so a `set -u` abort inside it kills the script with
+  its complaint buried in a file nobody has opened yet and NOTHING on the
+  terminal. This happened on the run that answered Question 0 -- the
+  measurement was perfect and the report was silent. `REPORT_COMPLETE` is now
+  written as the last line inside the block and checked by the caller, which
+  turns any future abort into a loud `REPORTER FAILED` with the file tail and
+  the debugfs recovery commands. Exit 7.
+- **The APKBUILD cannot be copied between the two pmaports trees.** Everything
+  in it is common except the `qcom-msm8974-microsoft-common.dtsi` checksum --
+  the repo mirror's dtsi is debranded, the live tree's is branded, so they
+  hash differently. Copying it either way leaves the receiving tree asserting
+  the other's sum, and abuild fails at fetch time after a full chroot setup,
+  where it reads as a mysterious download error. Re-derive the dtsi sum from
+  the LIVE file after copying; never overwrite the repo's debranded sum.
+  `build-wcd9320-kernel.sh` now hashes every staged source as a precondition.
+- **`q6core` can never autoload.** `apr.c` emits `MODALIAS=apr:<name>` while
+  `q6core.ko` declares only `of:` aliases, so udev cannot match. `modprobe
+  q6core` is required on every boot. `q6inventory_probe` depends on it, so
+  loading the probe pulls q6core in.
+- **`fastboot boot` never updates `/lib/modules`.** Any module a config change
+  newly builds stays in the package until copied by hand.
+  `build-wcd9320-kernel.sh --extra-module <path>` now stages them, and fails
+  if a named module is absent from the package.
+- **Long pasted commands wrap and get chopped** in this terminal, producing
+  half-executed lines like `.../q6_inventory/stat`. Keep device commands short.
+- **A trailing `\` before a closing quote escapes it.** `scp ... "C:\dir\"`
+  fails with `open local "C:/dir""`. Give a full destination filename instead.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done

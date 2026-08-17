@@ -316,3 +316,81 @@ conclusion about the firmware: it is a channel-name change rather than an
 addressing change, so it tests a different assumption and is cheaper to build.
 `fastrpcsmd-apps-dsp` is also up, so this ADSP carries a FastRPC surface —
 noted, not pursued.
+
+## 11. THE ANSWER — Question 0 is closed, Branch A is taken
+
+Measured on boot #151, 2026-08-17. One query, one boot, one reply.
+
+```
+GET_FWK_VERSION  0x0001292c  ->  APR_BASIC_RSP_RESULT 0x000110E8
+                                   original opcode 0x0001292c
+                                   status 0x00000003 = ADSP_EUNSUPPORTED
+                                   -> the legacy fallback was LICENSED
+AVCS_GET_VERSIONS 0x00012905 ->  AVCS_GET_VERSIONS_RSP 0x00012906
+                                   96 bytes, untruncated, num_services = 11
+```
+
+`callback_hits=2` accounts for exactly those two arrivals and nothing else.
+The 96 bytes are exactly `8 + 11 * 8`, so the table length is internally
+consistent with the count the firmware reported.
+
+### The inventory, as the firmware reported it
+
+Service IDs resolved from `include/dt-bindings/soc/qcom,apr.h`.
+
+| id | service | version |
+|---|---|---|
+| 0x3 | `APR_SVC_ADSP_CORE` | 0x00040000 |
+| 0x4 | **`APR_SVC_AFE`** | 0x00200000 |
+| 0x5 | `APR_SVC_VSM` | 0x00070004 |
+| 0x6 | `APR_SVC_VPM` | 0x00070005 |
+| 0x7 | **`APR_SVC_ASM`** | 0x00070003 |
+| 0x8 | **`APR_SVC_ADM`** | 0x00070001 |
+| 0x9 | `APR_SVC_ADSP_MVM` | 0x00010000 |
+| 0xA | `APR_SVC_ADSP_CVS` | 0x00010000 |
+| 0xB | `APR_SVC_ADSP_CVP` | 0x00010000 |
+| 0xC | `APR_SVC_USM` | 0x70000000 |
+| 0xD | `APR_SVC_LSM` | 0x10000000 |
+
+Contiguous from `ADSP_CORE` through `LSM` with no gaps — every APR service the
+binding header defines below `VIDC`. Not merely the three the Q6 ASoC playback
+path needs, but the voice stack and listen as well.
+
+### Two independent readings, no disagreement
+
+The observer captured the raw payload by kprobe before `q6core` consumed it.
+The trigger separately called the exported `q6core_get_svc_api_info()` for
+services 3, 4, 7 and 8. They agree exactly:
+
+```
+svc 3  0x00040000    table 262144  = 0x00040000
+svc 4  0x00200000    table 2097152 = 0x00200000
+svc 7  0x00070003    table 458755  = 0x00070003
+svc 8  0x00070001    table 458753  = 0x00070001
+```
+
+All four returned 0 with `poison_intact=0`, so none is the `!g_core` false
+success the poison defence exists to catch. The raw payload decodes identically
+on the phone and on an x86 host, from the same decoder, to the same 11 rows.
+
+### What this establishes, and what it does not
+
+> The Lumia 1520 Windows Phone ADSP firmware exposes the conventional Qualcomm
+> APR audio-service inventory, including AFE, ASM and ADM.
+
+It does **not** establish that any of those services successfully executes an
+audio command. Not AFE port configuration, not ASM sessions, not ADM routing,
+not CPU DAI operation, not buffer allocation, not DMA, not SLIMbus channel
+allocation, not PCM data movement, not routing, and not audible playback.
+
+**Branch B is disproven, not deferred.** The "this firmware does not speak Q6"
+outcome the mapping planned for did not occur, and the project does not need to
+choose between reverse-engineering the WP audio path and a non-Q6 route.
+
+### Next
+
+Branch A: map the CPU DAI taxonomy and the per-component DT requirements, then
+attempt the real CPU-DAI milestone. Data movement is a separate milestone after
+that, and cleanup semantics -- whether ADSP-side state dies with PCM close,
+module unload, remoteproc restart, or only a cold boot -- remains unmapped and
+is the part with no precedent in this port (§6).
