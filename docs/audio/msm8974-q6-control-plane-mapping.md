@@ -79,12 +79,41 @@ bool q6core_is_adsp_ready(void);
 int  q6core_get_svc_api_info(int svc_id, struct q6core_svc_api_info *ainfo);
 ```
 
-with `ADSP_STATE_READY_TIMEOUT_MS 3000` — so "no reply" is a bounded,
-observable outcome rather than a hang.
-
-**Question 0's experiment is therefore one APR service and one command.** That
-is far smaller than the milestone it gates, which is exactly the shape this
-project has been working in.
+> **CORRECTED after the first probe boot (2026-08-17).** Three claims that
+> stood here were wrong, and they are kept below with their corrections
+> because the mechanism they describe is what the milestone was designed
+> around. See §7 for the measurements.
+>
+> 1. ~~"Question 0's experiment is therefore one APR service and one
+>    command."~~ **It is not one command — it is zero.** `q6core_probe()`
+>    kzallocs, sets drvdata, inits a mutex and a waitqueue, and returns 0.
+>    Binding `q6core` puts **no packet on the wire, ever**. The query is lazy,
+>    behind `q6core_get_svc_api_info()`, whose only in-tree callers are
+>    `q6afe`, `q6asm` and `q6adm` — all of which this milestone forbids
+>    instantiating. Without a trigger, a bound `q6core` sits silent forever.
+>
+> 2. ~~The reply can be observed.~~ **`q6core` never reports the inventory to
+>    anyone.** The response is `kmemdup`'d into a private `struct q6core`
+>    behind a file-scope `static g_core`, with no sysfs, no debugfs and no
+>    printk of the service table. Its only log statement is a `dev_err` in the
+>    callback's `default:` arm. Any plan to read `num_services` out of the
+>    kernel log could not have worked on any firmware.
+>
+> 3. ~~"`ADSP_STATE_READY_TIMEOUT_MS 3000` — so 'no reply' is a bounded,
+>    observable outcome rather than a hang."~~ Bounded, yes; **observable, no.**
+>    `__q6core_is_adsp_ready()` clears `get_state_supported` on entry and
+>    ends with *"assume that the adsp is up if we not support this command"* —
+>    so on a timeout it returns **true**. `q6core_is_adsp_ready() == true`
+>    therefore does not distinguish a real `AVCS_CMDRSP_ADSP_EVENT_GET_STATE`
+>    from total silence, and must never be used as evidence that the ADSP
+>    answered.
+>
+> The corrected shape: Question 0 needs **a trigger and an observer**, neither
+> of which stock `q6core` provides. The trigger can use only the exported
+> `q6core_get_svc_api_info()`; the observer has to be independent of it,
+> because that function's `-ENOTSUPP` conflates "service not in the inventory"
+> (verdict B) with "no inventory arrived" (verdict C2) — the one conflation
+> the verdict design exists to prevent.
 
 ## 3. The Kconfig is all-or-nothing — but DT still gates what probes
 
@@ -158,19 +187,30 @@ DSP did not answer".
 Defined now, before implementation, so the gate cannot be softened later:
 
 ```
-host sends AVCS_GET_VERSIONS (0x00012905) to domain 4, service 3
+something calls q6core_get_svc_api_info()            <- REQUIRED; nothing does
+        -> AVCS_CMD_GET_FWK_VERSION (0x0001292c) to domain 4, service 3
         -> APR packet leaves
         -> ADSP core service receives it
-        -> AVCS_GET_VERSIONS_RSP (0x00012906) returns
+        -> AVCS_CMDRSP_GET_FWK_VERSION (0x0001292d) returns
         -> num_services > 0, svc_api_info[] populated
+
+   or, only if the first returns -ENOTSUPP:
+        -> AVCS_GET_VERSIONS (0x00012905)
+        -> AVCS_GET_VERSIONS_RSP (0x00012906)
 ```
 
-Evidence should capture the sent opcode, the response opcode, `num_services`,
-and each `{service_id, version}` pair — not merely "the driver probed".
-`q6core_is_adsp_ready()` returning true is a summary, not the measurement; the
-service list is the measurement.
+**The first packet is `AVCS_CMD_GET_FWK_VERSION`, not `AVCS_GET_VERSIONS`.**
+And the fallback is narrower than it looks: `q6core_get_fwk_versions()` returns
+`wait_event_timeout()`'s `rc`, which is **0 on timeout, not `-ENOTSUPP`**. So
+against a silent ADSP the fallback never fires and `0x00012905` is never sent
+at all. A C2 verdict therefore means "the *first* request went unanswered" —
+it is not evidence that both commands were tried.
 
-## 6. Still to map — this document is not finished
+Evidence should capture the sent opcode, the response opcode, `num_services`,
+and each `{service_id, version}` pair — not merely "the driver probed", and not
+`q6core_is_adsp_ready()`, which returns true on timeout (§2, correction 3).
+
+## 6. Deferred until Question 0 is answered
 
 Deliberately recorded as open rather than guessed:
 
@@ -193,3 +233,86 @@ Deliberately recorded as open rather than guessed:
 
 Those three depend on Branch A being taken. Mapping them before Question 0 is
 answered would be work spent on a stack that may not exist on this firmware.
+
+## 7. What the first probe boot measured (2026-08-17, boot #150)
+
+The DT node, the config change and the evidence script were built as r149 and
+run. The transport chain is **fully established**:
+
+```
+ADSP remoteproc0            running
+lpass SMD edge              up
+apr_audio_svc channel       present
+APR device                  aprsvc:service:4:3   (domain 4, service 3)
+qcom-q6core                 bound
+```
+
+`q6afe`, `q6asm`, `q6adm` and `q6routing` were confirmed **not** instantiated,
+and exactly one core instance exists. Verdict: **C0, QUERY_MECHANISM_ABSENT** —
+zero packets, because nothing issues one. That is the driver's design, not the
+firmware's answer, and it licenses no claim about any service.
+
+### The first run reported C1, and C1 was wrong
+
+The initial script concluded `APR_AUDIO_CHANNEL_ABSENT` on a boot whose own log
+contained `Adding APR/GPR dev: aprsvc:service:4:3`. Three faults, all pushing
+the same way — toward a false negative about the firmware:
+
+1. **The bus is `aprbus`, not `apr`.** `drivers/soc/qcom/apr.c` registers it
+   under that name, so a glob of `/sys/bus/apr/devices` silently returned
+   nothing and a bound device read as `none`.
+2. **`q6core` was not loaded, and could not have been.** See §8.
+3. **The inventory was grepped out of `dmesg`,** which §2 correction 2 shows
+   can never match.
+
+The classifier then treated "q6core not bound" as C1 — conflating a missing
+driver with a missing channel. The verdict set now separates them: **S**
+(setup incomplete) and **C0** (no trigger) are distinct from C1 and C2, and
+service-absence language is emitted by a `refuse_absence_language()` function
+that only the non-B branches call, so the prohibition is structural rather
+than editorial.
+
+## 8. Two standing traps this milestone exposed
+
+Both will recur for every future `=m` symbol and both are silent.
+
+- **`fastboot boot` never updates `/lib/modules`.** It RAM-loads a kernel; the
+  eMMC rootfs is untouched. Every module built by a config change is left in
+  the package. `q6core.ko` had to be extracted from the r149 apk and installed
+  by hand, into a `sound/soc/qcom/qdsp6/` directory that did not yet exist
+  because QDSP6 was off when that rootfs was built.
+- **`q6core` can never autoload.** `apr.c:399` emits `MODALIAS=apr:<name>`,
+  while `q6core.ko` declares only `of:N*T*Cqcom,q6core` aliases. udev cannot
+  match them, so `modprobe q6core` is required on **every** boot. This is the
+  same class of fault as the card module's missing autoload, from a different
+  cause.
+
+## 9. The negative control must be a separate build — proven, not assumed
+
+`q6core` keeps its state in a file-scope `static struct q6core *g_core`.
+`q6core_probe()` overwrites it unconditionally and `q6core_exit()` sets it to
+`NULL` unconditionally, regardless of which instance is leaving. Two
+simultaneous instances would leak the first and let either one's removal blind
+the other.
+
+**`q6core` is architected as a singleton.** The wrong-service-id control is
+therefore a separate boot with the single node's `reg` changed — never a second
+DT child alongside the real one. The evidence script asserts at most one core
+instance so this cannot be built the forbidden way by accident.
+
+## 10. A cheaper discriminator than the wrong-service control
+
+The probe boot showed the ADSP exposes **three** APR channels, not one:
+
+```
+remoteproc0:smd-edge.apr.-1.-1
+remoteproc0:smd-edge.apr_apps2.-1.-1
+remoteproc0:smd-edge.apr_audio_svc.-1.-1
+```
+
+We bound `apr_audio_svc` because that is mainline's msm8974 convention. If the
+core query goes unanswered there, plain `apr` should be tried **before** any
+conclusion about the firmware: it is a channel-name change rather than an
+addressing change, so it tests a different assumption and is cheaper to build.
+`fastrpcsmd-apps-dsp` is also up, so this ADSP carries a FastRPC surface —
+noted, not pursued.

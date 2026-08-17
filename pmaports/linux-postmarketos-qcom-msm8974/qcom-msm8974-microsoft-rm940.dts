@@ -104,6 +104,8 @@
  *   (ACPI: edge/both, pull-up => active-low), volume-down = PON RESIN. */
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+/* APR_DOMAIN_ADSP and APR_SVC_ADSP_CORE, for the q6core inventory probe. */
+#include <dt-bindings/soc/qcom,apr.h>
 
 / {
 	gpio-keys {
@@ -268,6 +270,55 @@
  * from the stock Windows install (see docs/trustzone-quirks.md). */
 &remoteproc_adsp {
 	status = "okay";
+
+	/*
+	 * APR, for ONE question only: what audio services does this firmware
+	 * actually have?
+	 *
+	 * Mainline's APR does not discover services -- of_register_apr_devices()
+	 * creates one device per DT child with a "reg", and the driver binds
+	 * whether or not the firmware implements anything at that address. A
+	 * missing service does not fail at probe; it fails later as a timeout.
+	 * So the inventory cannot be read out of DT or sysfs. It has to be
+	 * asked, and q6core's AVCS_GET_VERSIONS (0x00012905) is the question:
+	 * the reply carries num_services and a {service_id, version} array
+	 * reported by the ADSP itself.
+	 *
+	 * DELIBERATELY ONLY q6core. No AFE, no ASM, no ADM, no routing, no CPU
+	 * DAI. CONFIG_SND_SOC_QDSP6 has no per-service symbols -- the umbrella
+	 * selects the whole group -- so those drivers are BUILT. They are not
+	 * INSTANTIATED, because nothing here creates an APR device for them.
+	 * Kconfig decides what is compiled; this node decides what probes.
+	 *
+	 * The transport is not new: this smd-edge is the same "lpass" edge
+	 * (qcom,smd-edge = <1>) that QRTR already uses for the SLIMbus QMI
+	 * service the NGD work proved. What is new is only whether the ADSP
+	 * also opens the "apr_audio_svc" channel on it -- and if it does not,
+	 * apr never probes at all, which is a distinguishable outcome from the
+	 * core service failing to answer.
+	 */
+	smd-edge {
+		apr {
+			compatible = "qcom,apr-v2";
+			qcom,smd-channels = "apr_audio_svc";
+			qcom,domain = <APR_DOMAIN_ADSP>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * q6core is a hard singleton -- q6core_probe() assigns a
+			 * static g_core unconditionally -- so there must never be
+			 * two of these. The negative control (same driver, same
+			 * command, deliberately wrong service id) is therefore a
+			 * SEPARATE build with this reg changed, never a second
+			 * child here.
+			 */
+			q6core: service@3 {
+				compatible = "qcom,q6core";
+				reg = <APR_SVC_ADSP_CORE>;
+			};
+		};
+	};
 };
 
 &soc {
