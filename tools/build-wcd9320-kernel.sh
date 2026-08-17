@@ -34,6 +34,11 @@
 #   --version STR     the MODULE_VERSION the built module must report
 #   --stage DIR       where the image and module are written
 #   --module-dir DIR  module destination if different from --stage
+#   --extra-module P  stage another module from the package, by path relative
+#                     to .../lib/modules/<ver>/kernel/ (repeatable). Needed
+#                     because "fastboot boot" never updates /lib/modules, so
+#                     any module a config change newly builds is left in the
+#                     package unless it is staged and installed by hand.
 #   --guard STR       an extra string that must appear in the built module;
 #                     repeatable, on top of the always-required set
 #   --verify-only     run the checks against an existing package and exit;
@@ -74,6 +79,7 @@ ROOT_UUID="${ROOT_UUID:-de214b3a-0811-4b22-a5f7-095ac1f8d676}"
 PKGREL=""
 VERSION=""
 STAGE=""
+EXTRA_MODULES=""
 MODULE_DIR=""
 VERIFY_ONLY=0
 FORCE_BUILD=0
@@ -92,6 +98,8 @@ while [ $# -gt 0 ]; do
 	--version)    VERSION="${2:-}"; shift 2 ;;
 	--stage)      STAGE="${2:-}"; shift 2 ;;
 	--module-dir) MODULE_DIR="${2:-}"; shift 2 ;;
+	--extra-module) EXTRA_MODULES="$EXTRA_MODULES
+${2:-}"; shift 2 ;;
 	--guard)      EXTRA_GUARDS="$EXTRA_GUARDS
 ${2:-}"; shift 2 ;;
 	--verify-only) VERIFY_ONLY=1; shift ;;
@@ -177,6 +185,36 @@ for i, (a, b) in enumerate(zip(src, names)):
 print(f"{len(src)} sources aligned with {len(names)} sums")
 PY
 
+# Alignment is not enough: the sums must match the FILES IN THIS TREE. The two
+# pmaports trees carry different qcom-msm8974-microsoft-common.dtsi files -- the
+# repo mirror's is debranded -- so copying an APKBUILD between them leaves it
+# asserting the other tree's dtsi checksum. That failed a build inside abuild
+# after a full chroot setup, where it reads as a mysterious fetch error. Caught
+# here it costs a second and names the file.
+python3 - "$APKBUILD" <<'PY' || die "a staged source does not match its sha512sum"
+import hashlib, os, re, sys
+d = os.path.dirname(os.path.abspath(sys.argv[1]))
+t = open(sys.argv[1]).read()
+sums = re.search(r'^sha512sums="\n(.*?)^"$', t, re.M | re.S).group(1).strip().split("\n")
+bad = []
+checked = 0
+for line in sums:
+    want, name = line.split(None, 1)
+    name = name.strip()
+    p = os.path.join(d, name)
+    if not os.path.exists(p):          # the upstream tarball lives in the cache
+        continue
+    got = hashlib.sha512(open(p, "rb").read()).hexdigest()
+    checked += 1
+    if got != want:
+        bad.append(name)
+for n in bad:
+    print(f"CHECKSUM MISMATCH: {n}", file=sys.stderr)
+if bad:
+    sys.exit(1)
+print(f"{checked} staged source(s) match their sha512sums")
+PY
+
 # --- module extraction helper -------------------------------------------
 extract_module() {	# extract_module <apk> <destdir> -> echoes the codec module's path
 	_w="$1_x"
@@ -193,6 +231,19 @@ extract_module() {	# extract_module <apk> <destdir> -> echoes the codec module's
 		[ -e "$_z" ] || continue
 		zstd -dqf "$_z" -o "${_z%.zst}" 2>/dev/null || return 1
 	done
+	#
+	# Same treatment for anything named by --extra-module. These live
+	# outside drivers/slimbus (a q6 diagnostic sits in sound/soc/qcom/qdsp6)
+	# so they are addressed relative to the module root. Writes land on disk
+	# and survive this function running in a command substitution.
+	#
+	_root="$_w/usr/lib/modules/$KVER/kernel"
+	printf '%s\n' "$EXTRA_MODULES" | while IFS= read -r _rel; do
+		[ -n "$_rel" ] || continue
+		[ -e "$_root/$_rel.zst" ] || continue
+		zstd -dqf "$_root/$_rel.zst" -o "$_root/$_rel" 2>/dev/null || :
+	done
+
 	_k="$_d/wcd9320.ko"
 	[ -f "$_k" ] || return 1
 	printf '%s\n' "$_k"
@@ -299,7 +350,29 @@ if [ "$VERIFY_ONLY" = "0" ]; then
 		STAGED=$((STAGED + 1))
 	done
 	[ "$STAGED" -gt 0 ] || die "no wcd9320 modules staged"
-	echo "staged $STAGED module(s) into $MODULE_DIR"
+
+	#
+	# Extra modules, named explicitly rather than globbed: a module that was
+	# asked for and is missing from the package is a build that silently did
+	# not do what was intended, so it fails here rather than on the phone.
+	#
+	# Derived from the codec's own path, never rebuilt by hand: extract_module
+	# unpacks into "$1_x", so reconstructing this from $WORK silently pointed
+	# at a directory that never existed and every extra module read as absent.
+	MODROOT="${KO%/drivers/slimbus/wcd9320.ko}"
+	printf '%s\n' "$EXTRA_MODULES" | while IFS= read -r rel; do
+		[ -n "$rel" ] || continue
+		[ -f "$MODROOT/$rel" ] ||
+			die "--extra-module $rel is not in the package"
+		b=$(basename "$rel")
+		cp "$MODROOT/$rel" "$MODULE_DIR/$b" || die "could not stage $b"
+		[ -s "$MODULE_DIR/$b" ] || die "staged $b is empty"
+		printf '  %-28s %8s bytes  %s\n' "$b" \
+			"$(stat -c%s "$MODULE_DIR/$b")" \
+			"$(sha256sum "$MODULE_DIR/$b" | cut -d' ' -f1)"
+	done || die "an --extra-module could not be staged"
+
+	echo "staged $STAGED wcd9320 module(s) into $MODULE_DIR"
 
 	# --- install, export, image ---------------------------------------
 	step "install and export (interactive sudo)"

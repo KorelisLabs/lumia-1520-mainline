@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=149
+pkgrel=150
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -39,6 +39,7 @@ source="
 	0001-slimbus-ngd-late-registration-recovery.patch
 	0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
 	0002-slimbus-wcd9320-codec-core.patch
+	0004-qdsp6-service-inventory-diagnostic-probe.patch
 "
 builddir="$srcdir/linux-${_tag#v}"
 
@@ -82,10 +83,11 @@ package() {
 
 sha512sums="
 6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-$_tag.tar.gz
-6d633a1446bf8c01859535ac1a16eca130a0a6ea75859f3c94feec4aad1c45721a1ff22169f229d1dae5ab4c0997e29dbef2a6f8e6098c1d74b1f7ca23e97598  config-postmarketos-qcom-msm8974.armv7
+83f39e1548b9211b9104830b7e43d13ad00ba45342983849b72ee55573c7653d991004d77ec0fe7f7d6e28c0e9f9414cc1473859f08f95e9cdbf5802bacf4d9e  config-postmarketos-qcom-msm8974.armv7
 a3b467644799e0df829f0f074df849207834e9f05c40858807c9c0f6a6142e7fb6de5ddc397001864564f83c1bc5e8eb9bb6bac2f6fdf890f9f9b1c210786d72  qcom-msm8974-microsoft-common.dtsi
 b156575163dfad4acef08711911b360da6f9b744a35d6f8e34e1f84b5e5d5be20ee3c15296bccc84beadb56fa6becc3c96963a8620d10c66ae286529b8f11fd4  qcom-msm8974-microsoft-rm940.dts
 1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
 ad96107feffcbe19fdcc5223f15dca7410daef7ac630a63837cfdcf5564a45f56e80b09b72a6e6abfe5f4026e2513f16c5d3d83d73c8b05f5016efb00a1101bb  0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
 bbae4ebb9fda4e9e6d9d5ac216bdbd34413f018c398688f1e9a5f46eaeb670475829ba773fc43e18f02e08c051eed11033fed35e0e00a6a0dbb258866d77c374  0002-slimbus-wcd9320-codec-core.patch
+db5f2718bb05f659fb9d356ba14dc7be6040b301c459fcb255431c57cb10faa8720b8fb818ed4b2debbd42d5929452059e0a32ca7ba19ac11a77feaec647e0c8  0004-qdsp6-service-inventory-diagnostic-probe.patch
 "

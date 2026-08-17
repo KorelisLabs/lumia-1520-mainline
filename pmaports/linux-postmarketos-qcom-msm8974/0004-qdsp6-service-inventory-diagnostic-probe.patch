@@ -1,0 +1,675 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] ASoC: qdsp6: add a service-inventory diagnostic probe
+
+Mainline's APR does not discover services: of_register_apr_devices() creates
+one device per DT child with a "reg" and the driver binds whether or not the
+firmware implements anything at that address. So "what audio services does
+this ADSP have" cannot be read out of DT or sysfs -- it has to be asked.
+
+q6core carries the query but cannot be used to ask it. q6core_probe() sends
+no packets; the AVCS version request is lazy, behind q6core_get_svc_api_info(),
+whose only in-tree callers are q6afe, q6asm and q6adm. And q6core never
+reports the reply: it is kmemdup'd into a private struct behind a file-scope
+static g_core, with no sysfs, no debugfs and no printk of the service table.
+
+This adds a default-off developer fixture supplying the two missing halves: a
+trigger that calls the exported q6core_get_svc_api_info(), and an observer --
+a kprobe on q6core's private callback -- that captures the raw reply payload
+before q6core consumes it. Nothing in q6core is modified.
+
+There is exactly one usable query per boot: is_version_requested latches
+unconditionally after the first attempt, and a 100 ms timeout in
+q6core_get_fwk_versions() returns 0 rather than -ENOTSUPP, so the legacy
+AVCS_GET_VERSIONS fallback is never transmitted after a silent first request.
+The harness therefore enforces observer-registered -> ARM -> FIRE as a
+one-way state machine with a single fire, so a query can never go out
+unobserved and be misreported as a silent DSP.
+
+Not upstream material: this is a bring-up instrument.
+
+---
+
+diff -uNr orig/sound/soc/qcom/Kconfig new/sound/soc/qcom/Kconfig
+--- a/sound/soc/qcom/Kconfig	2026-08-17 16:56:35.046389785 -0400
++++ b/sound/soc/qcom/Kconfig	2026-08-17 16:57:17.108081149 -0400
+@@ -156,6 +156,27 @@
+ 	 audio drivers. This includes q6asm, q6adm,
+ 	 q6afe interfaces to DSP using apr.
+ 
++config SND_SOC_QDSP6_INVENTORY_PROBE
++	tristate "QDSP6 service-inventory diagnostic probe (developers only)"
++	depends on SND_SOC_QDSP6_CORE && KPROBES && DEBUG_FS
++	depends on ARM
++	default n
++	help
++	  Developer diagnostic fixture, not audio architecture.
++
++	  Asks the ADSP firmware which audio services it actually
++	  implements, by triggering q6core's lazy AVCS version query and
++	  observing the raw reply with a kprobe on q6core's private
++	  callback. q6core neither sends anything on probe nor reports the
++	  reply to userspace, so neither half is reachable without this.
++
++	  ARM-only: the observer reads the probed function's second
++	  argument out of the argument register directly, because
++	  regs_get_kernel_argument() is not defined for ARM.
++
++	  Say N unless you are bringing up a Q6 audio path and need to
++	  know what the firmware contains. If unsure, say N.
++
+ config SND_SOC_MSM8996
+ 	tristate "SoC Machine driver for MSM8996 and APQ8096 boards"
+ 	depends on QCOM_APR
+diff -uNr orig/sound/soc/qcom/qdsp6/Makefile new/sound/soc/qcom/qdsp6/Makefile
+--- a/sound/soc/qcom/qdsp6/Makefile	2026-08-17 16:56:35.051922798 -0400
++++ b/sound/soc/qcom/qdsp6/Makefile	2026-08-17 16:57:17.111412700 -0400
+@@ -18,3 +18,6 @@
+ obj-$(CONFIG_SND_SOC_QDSP6_PRM) += q6prm.o
+ obj-$(CONFIG_SND_SOC_QDSP6_PRM_LPASS_CLOCKS) += q6prm-clocks.o
+ obj-$(CONFIG_SND_SOC_QDSP6_USB) += q6usb.o
++
++# Diagnostic fixture, default off. See SND_SOC_QDSP6_INVENTORY_PROBE.
++obj-$(CONFIG_SND_SOC_QDSP6_INVENTORY_PROBE) += q6inventory_probe.o
+diff -uNr orig/sound/soc/qcom/qdsp6/q6inventory_probe.c new/sound/soc/qcom/qdsp6/q6inventory_probe.c
+--- a/sound/soc/qcom/qdsp6/q6inventory_probe.c	1969-12-31 19:00:00.000000000 -0500
++++ b/sound/soc/qcom/qdsp6/q6inventory_probe.c	2026-08-17 16:56:35.059203468 -0400
+@@ -0,0 +1,599 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * QDSP6 service-inventory diagnostic probe.
++ *
++ * ONE QUESTION: what audio services does this ADSP firmware actually have?
++ *
++ * This is a developer diagnostic fixture, not audio architecture. It exists
++ * because stock q6core cannot answer that question:
++ *
++ *   - q6core_probe() sends no packets. It kzallocs, sets drvdata, inits a
++ *     mutex and a waitqueue, returns 0. Binding q6core puts nothing on the
++ *     wire, ever. The version query is lazy, behind q6core_get_svc_api_info(),
++ *     whose only in-tree callers are q6afe, q6asm and q6adm -- none of which
++ *     may be instantiated at this stage.
++ *
++ *   - q6core never reports the reply to anyone. It is kmemdup'd into a
++ *     private struct behind a file-scope static g_core, with no sysfs, no
++ *     debugfs and no printk of the service table.
++ *
++ * So the firmware's answer needs a TRIGGER (this module calls the exported
++ * API) and an OBSERVER (a kprobe on q6core's private callback, which sees the
++ * raw payload before q6core consumes it). Nothing in q6core is modified.
++ *
++ * THERE IS EXACTLY ONE USABLE QUERY PER BOOT
++ *
++ * q6core_get_svc_api_info() latches is_version_requested unconditionally after
++ * the first attempt -- success, refusal, or silence alike -- and there is no
++ * retry path. Worse, q6core_get_fwk_versions() returns wait_event_timeout()'s
++ * rc, which is 0 on timeout rather than -ENOTSUPP, so after a silent first
++ * request the legacy AVCS_GET_VERSIONS opcode is never transmitted at all.
++ *
++ * That single fact shapes everything here. A badly observed first trigger
++ * consumes the boot's only query state irrecoverably, so:
++ *
++ *   observer registered  ->  ARM permitted  ->  FIRE permitted
++ *
++ * is enforced in code, one-way, one fire. If the observer could not be
++ * registered, ARM fails and FIRE is impossible -- because the worst outcome
++ * this experiment can produce is a query that went out unobserved and got
++ * reported as "the DSP was silent". That looks exactly like a real firmware
++ * finding and is not one.
++ *
++ * The handler captures bytes; it does not interpret them. Parsing happens in
++ * userspace, so the firmware's actual payload survives a parser that later
++ * turns out to be wrong.
++ */
++
++#include <linux/debugfs.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/kprobes.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/soc/qcom/apr.h>
++
++#include "q6core.h"
++
++/*
++ * The second argument to q6core_callback() -- struct apr_resp_pkt * -- under
++ * AAPCS. regs_get_kernel_argument() is not defined for ARM, so the register
++ * is read directly. Guarded rather than #ifdef'd silently: if this is ever
++ * built for another architecture the register mapping is wrong, not merely
++ * missing.
++ */
++#if defined(CONFIG_ARM)
++#define Q6INV_ARG1(regs)	((regs)->ARM_r1)
++#else
++#error "q6inventory_probe: argument-register access is ARM-specific"
++#endif
++
++#define AVCS_CMD_GET_FWK_VERSION	0x0001292c
++#define AVCS_CMDRSP_GET_FWK_VERSION	0x0001292d
++#define AVCS_GET_VERSIONS		0x00012905
++#define AVCS_GET_VERSIONS_RSP		0x00012906
++#define ADSP_EUNSUPPORTED		0x00000003
++
++#define Q6INV_PROBED_SYMBOL	"q6core_callback"
++#define Q6INV_Q6CORE_DRIVER	"qcom-q6core"
++
++/*
++ * Generous for an APR packet: even a firmware listing every service it could
++ * plausibly have is a few hundred bytes. Sized so that truncation should be
++ * impossible in practice -- and reported loudly if it happens anyway, because
++ * a partial capture must never be called "the service inventory".
++ */
++#define Q6INV_CAP		4096
++
++/* Deliberately awkward, so nothing fires by accident or by tab-completion. */
++#define Q6INV_TOKEN_ARM		"arm-q6-inventory"
++#define Q6INV_TOKEN_FIRE	"fire-q6-inventory"
++
++/* The services the conventional QDSP6 playback path needs, plus core. */
++static const int q6inv_svc_ids[] = { 3, 4, 7, 8 };
++#define Q6INV_NSVC	ARRAY_SIZE(q6inv_svc_ids)
++
++enum q6inv_state {
++	Q6INV_UNARMED = 0,
++	Q6INV_ARMED,
++	Q6INV_FIRED,
++};
++
++static const char * const q6inv_state_name[] = {
++	[Q6INV_UNARMED]	= "UNARMED",
++	[Q6INV_ARMED]	= "ARMED",
++	[Q6INV_FIRED]	= "FIRED",
++};
++
++/*
++ * Observer state. Written from the kprobe pre-handler, which runs with
++ * preemption disabled out of a breakpoint exception, so it is protected by an
++ * irqsave spinlock and never by the mutex.
++ */
++struct q6inv_capture {
++	spinlock_t		lock;
++
++	unsigned int		callback_hits;
++
++	bool			fwk_response_seen;
++	bool			legacy_response_seen;
++	bool			basic_rsp_seen;
++	u32			basic_rsp_original_opcode;
++	u32			basic_rsp_status;
++
++	unsigned int		unknown_opcode_hits;
++	u32			last_unknown_opcode;
++
++	bool			inventory_payload_seen;
++	u32			inventory_opcode;
++	int			payload_size;
++	int			captured_size;
++	bool			truncated;
++	u8			buf[Q6INV_CAP];
++};
++
++/*
++ * Trigger state. Touched only from debugfs write/read paths, which may sleep
++ * -- q6core_get_svc_api_info() takes a mutex and waits on a completion -- so
++ * it is protected by the mutex and never by the spinlock.
++ */
++struct q6inv_trigger {
++	struct mutex		lock;
++	enum q6inv_state	state;
++	unsigned int		fire_count;
++
++	int			svc_ret[Q6INV_NSVC];
++	struct q6core_svc_api_info svc_info[Q6INV_NSVC];
++	bool			svc_poison_intact[Q6INV_NSVC];
++};
++
++static struct q6inv_capture q6inv_cap;
++static struct q6inv_trigger q6inv_trg;
++
++static bool q6inv_probe_registered;
++static unsigned long q6inv_resolved_address;
++static struct dentry *q6inv_dir;
++
++/* ------------------------------------------------------------ observer -- */
++
++static void q6inv_capture_payload(struct q6inv_capture *c,
++				  u32 opcode, const void *payload, int size)
++{
++	c->inventory_payload_seen = true;
++	c->inventory_opcode = opcode;
++	c->payload_size = size;
++
++	if (!payload || size <= 0) {
++		c->captured_size = 0;
++		return;
++	}
++
++	if (size > Q6INV_CAP) {
++		/*
++		 * Recorded, not hidden. The evidence script refuses an A/B
++		 * verdict when this is set: a partial table cannot establish
++		 * that a service is absent, only that it was not in the part
++		 * we managed to keep.
++		 */
++		c->truncated = true;
++		c->captured_size = Q6INV_CAP;
++	} else {
++		c->captured_size = size;
++	}
++
++	memcpy(c->buf, payload, c->captured_size);
++}
++
++/*
++ * Deliberately boring. No allocation, no printk, no parsing of the variable
++ * table -- one memcpy and some scalars. Everything interpretive happens later,
++ * in userspace, from the bytes kept here.
++ */
++static int q6inv_pre_handler(struct kprobe *p, struct pt_regs *regs)
++{
++	struct q6inv_capture *c = &q6inv_cap;
++	struct apr_resp_pkt *data;
++	unsigned long flags;
++	u32 opcode;
++
++	data = (struct apr_resp_pkt *)Q6INV_ARG1(regs);
++	if (!data)
++		return 0;
++
++	opcode = data->hdr.opcode;
++
++	spin_lock_irqsave(&c->lock, flags);
++
++	c->callback_hits++;
++
++	switch (opcode) {
++	case AVCS_CMDRSP_GET_FWK_VERSION:
++		c->fwk_response_seen = true;
++		q6inv_capture_payload(c, opcode, data->payload,
++				      data->payload_size);
++		break;
++
++	case AVCS_GET_VERSIONS_RSP:
++		c->legacy_response_seen = true;
++		q6inv_capture_payload(c, opcode, data->payload,
++				      data->payload_size);
++		break;
++
++	case APR_BASIC_RSP_RESULT:
++		/*
++		 * The embedded opcode is the request being answered and status
++		 * is the ADSP's verdict on it. status == ADSP_EUNSUPPORTED
++		 * against 0x0001292c is the one thing that mechanically proves
++		 * the legacy fallback was LICENSED rather than skipped -- and
++		 * it is what stops an unsupported-command response being
++		 * misread as an inventory.
++		 */
++		c->basic_rsp_seen = true;
++		if (data->payload &&
++		    data->payload_size >= (int)sizeof(struct aprv2_ibasic_rsp_result_t)) {
++			const struct aprv2_ibasic_rsp_result_t *r = data->payload;
++
++			c->basic_rsp_original_opcode = r->opcode;
++			c->basic_rsp_status = r->status;
++		}
++		break;
++
++	default:
++		c->unknown_opcode_hits++;
++		c->last_unknown_opcode = opcode;
++		break;
++	}
++
++	spin_unlock_irqrestore(&c->lock, flags);
++	return 0;
++}
++
++static struct kprobe q6inv_kp = {
++	.symbol_name	= Q6INV_PROBED_SYMBOL,
++	.pre_handler	= q6inv_pre_handler,
++};
++
++/* ----------------------------------------------------------- prerequisite -- */
++
++static int q6inv_is_q6core(struct device *dev, void *data)
++{
++	return dev->driver && !strcmp(dev->driver->name, Q6INV_Q6CORE_DRIVER);
++}
++
++/*
++ * q6core_get_svc_api_info() opens with
++ *
++ *	if (!g_core || !ainfo)
++ *		return 0;
++ *
++ * so calling it without an instantiated q6core returns "success" having
++ * written nothing. This check makes that branch unreachable; the poison in
++ * q6inv_fire() makes it detectable if it somehow happens anyway.
++ */
++static bool q6inv_q6core_bound(void)
++{
++	return bus_for_each_dev(&aprbus, NULL, NULL, q6inv_is_q6core) != 0;
++}
++
++/* ------------------------------------------------------------- trigger -- */
++
++static void q6inv_fire(struct q6inv_trigger *t)
++{
++	size_t i;
++
++	for (i = 0; i < Q6INV_NSVC; i++) {
++		struct q6core_svc_api_info ai;
++
++		/*
++		 * Poison before every call. Note which fields: the helper
++		 * writes api_version and api_branch_version but NEVER
++		 * service_id, so service_id keeps its poison even on a hit and
++		 * must be excluded from the test.
++		 */
++		memset(&ai, 0xff, sizeof(ai));
++
++		t->svc_ret[i] = q6core_get_svc_api_info(q6inv_svc_ids[i], &ai);
++		t->svc_info[i] = ai;
++		t->svc_poison_intact[i] = (ai.api_version == 0xffffffffu &&
++					   ai.api_branch_version == 0xffffffffu);
++	}
++
++	t->fire_count++;
++
++	/*
++	 * Only the FIRST call performed a transaction; the rest were lookups
++	 * into whatever it cached. They are a cross-check of the helper
++	 * against the observer's captured table, not four independent probes.
++	 */
++}
++
++/* -------------------------------------------------------------- debugfs -- */
++
++static int q6inv_read_token(const char __user *ubuf, size_t len,
++			    char *out, size_t outsz)
++{
++	size_t n = min(len, outsz - 1);
++
++	if (copy_from_user(out, ubuf, n))
++		return -EFAULT;
++
++	out[n] = '\0';
++	strim(out);
++	return 0;
++}
++
++static ssize_t q6inv_arm_write(struct file *f, const char __user *ubuf,
++			       size_t len, loff_t *off)
++{
++	struct q6inv_trigger *t = &q6inv_trg;
++	char tok[32];
++	int ret;
++
++	ret = q6inv_read_token(ubuf, len, tok, sizeof(tok));
++	if (ret)
++		return ret;
++	if (strcmp(tok, Q6INV_TOKEN_ARM))
++		return -EINVAL;
++
++	/*
++	 * The observer gates ARM, not FIRE. Gating only FIRE would permit an
++	 * armed-but-unobserved state to exist at all, and that state is the
++	 * one that manufactures a false C2.
++	 */
++	if (!q6inv_probe_registered)
++		return -ENXIO;
++	if (!q6inv_q6core_bound())
++		return -ENODEV;
++
++	mutex_lock(&t->lock);
++	if (t->state != Q6INV_UNARMED) {
++		mutex_unlock(&t->lock);
++		return -EALREADY;
++	}
++	t->state = Q6INV_ARMED;
++	mutex_unlock(&t->lock);
++
++	return len;
++}
++
++static ssize_t q6inv_fire_write(struct file *f, const char __user *ubuf,
++				size_t len, loff_t *off)
++{
++	struct q6inv_trigger *t = &q6inv_trg;
++	char tok[32];
++	int ret;
++
++	ret = q6inv_read_token(ubuf, len, tok, sizeof(tok));
++	if (ret)
++		return ret;
++	if (strcmp(tok, Q6INV_TOKEN_FIRE))
++		return -EINVAL;
++
++	mutex_lock(&t->lock);
++
++	if (t->state == Q6INV_UNARMED) {
++		mutex_unlock(&t->lock);
++		return -EPERM;
++	}
++	/*
++	 * No re-arm, no second fire, no path back. After a silent first
++	 * request q6core has latched is_version_requested and there is nothing
++	 * left to retry this boot; allowing a second attempt would only let it
++	 * be mistaken for the first.
++	 */
++	if (t->state == Q6INV_FIRED) {
++		mutex_unlock(&t->lock);
++		return -EALREADY;
++	}
++
++	t->state = Q6INV_FIRED;
++	q6inv_fire(t);
++
++	mutex_unlock(&t->lock);
++	return len;
++}
++
++/* no_llseek was removed in 6.12; a NULL .llseek is the modern spelling. */
++static const struct file_operations q6inv_arm_fops = {
++	.owner	= THIS_MODULE,
++	.open	= simple_open,
++	.write	= q6inv_arm_write,
++};
++
++static const struct file_operations q6inv_fire_fops = {
++	.owner	= THIS_MODULE,
++	.open	= simple_open,
++	.write	= q6inv_fire_write,
++};
++
++static ssize_t q6inv_status_read(struct file *f, char __user *ubuf,
++				 size_t len, loff_t *off)
++{
++	struct q6inv_capture *c = &q6inv_cap;
++	struct q6inv_trigger *t = &q6inv_trg;
++	struct q6inv_capture snap;
++	unsigned long flags;
++	size_t i, n = 0;
++	char *buf;
++	ssize_t ret;
++
++	buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	/* Snapshot the scalars without the payload; the buffer is large. */
++	spin_lock_irqsave(&c->lock, flags);
++	snap = *c;
++	spin_unlock_irqrestore(&c->lock, flags);
++
++	mutex_lock(&t->lock);
++
++	n += scnprintf(buf + n, PAGE_SIZE - n,
++		       "state=%s\n"
++		       "probe_registered=%d\n"
++		       "probed_symbol=%s\n"
++		       "resolved_address=0x%08lx\n"
++		       "q6core_bound=%d\n"
++		       "fire_count=%u\n"
++		       "callback_hits=%u\n"
++		       "first_request_opcode=0x%08x\n",
++		       q6inv_state_name[t->state],
++		       q6inv_probe_registered ? 1 : 0,
++		       Q6INV_PROBED_SYMBOL,
++		       q6inv_resolved_address,
++		       q6inv_q6core_bound() ? 1 : 0,
++		       t->fire_count,
++		       snap.callback_hits,
++		       AVCS_CMD_GET_FWK_VERSION);
++
++	n += scnprintf(buf + n, PAGE_SIZE - n,
++		       "fwk_response_seen=%d\n"
++		       "basic_rsp_seen=%d\n"
++		       "basic_rsp_original_opcode=0x%08x\n"
++		       "basic_rsp_status=0x%08x\n"
++		       "basic_rsp_is_unsupported=%d\n"
++		       "legacy_response_seen=%d\n"
++		       "legacy_response_opcode=0x%08x\n"
++		       "unknown_opcode_hits=%u\n"
++		       "last_unknown_opcode=0x%08x\n",
++		       snap.fwk_response_seen ? 1 : 0,
++		       snap.basic_rsp_seen ? 1 : 0,
++		       snap.basic_rsp_original_opcode,
++		       snap.basic_rsp_status,
++		       (snap.basic_rsp_seen &&
++			snap.basic_rsp_status == ADSP_EUNSUPPORTED) ? 1 : 0,
++		       snap.legacy_response_seen ? 1 : 0,
++		       AVCS_GET_VERSIONS_RSP,
++		       snap.unknown_opcode_hits,
++		       snap.last_unknown_opcode);
++
++	n += scnprintf(buf + n, PAGE_SIZE - n,
++		       "inventory_payload_seen=%d\n"
++		       "inventory_opcode=0x%08x\n"
++		       "payload_size=%d\n"
++		       "captured_size=%d\n"
++		       "capture_capacity=%d\n"
++		       "truncated=%d\n",
++		       snap.inventory_payload_seen ? 1 : 0,
++		       snap.inventory_opcode,
++		       snap.payload_size,
++		       snap.captured_size,
++		       Q6INV_CAP,
++		       snap.truncated ? 1 : 0);
++
++	for (i = 0; i < Q6INV_NSVC; i++)
++		n += scnprintf(buf + n, PAGE_SIZE - n,
++			       "svc%d_ret=%d svc%d_api_version=0x%08x "
++			       "svc%d_api_branch=0x%08x svc%d_poison_intact=%d\n",
++			       q6inv_svc_ids[i], t->svc_ret[i],
++			       q6inv_svc_ids[i], t->svc_info[i].api_version,
++			       q6inv_svc_ids[i], t->svc_info[i].api_branch_version,
++			       q6inv_svc_ids[i], t->svc_poison_intact[i] ? 1 : 0);
++
++	mutex_unlock(&t->lock);
++
++	ret = simple_read_from_buffer(ubuf, len, off, buf, n);
++	kfree(buf);
++	return ret;
++}
++
++static const struct file_operations q6inv_status_fops = {
++	.owner	= THIS_MODULE,
++	.open	= simple_open,
++	.read	= q6inv_status_read,
++	.llseek	= default_llseek,
++};
++
++/*
++ * The firmware's own bytes, verbatim. Nothing here interprets them: if the
++ * userspace parser is later found wrong, this survives to be re-read.
++ */
++static ssize_t q6inv_raw_read(struct file *f, char __user *ubuf,
++			      size_t len, loff_t *off)
++{
++	struct q6inv_capture *c = &q6inv_cap;
++	unsigned long flags;
++	int captured;
++	void *tmp;
++	ssize_t ret;
++
++	tmp = kzalloc(Q6INV_CAP, GFP_KERNEL);
++	if (!tmp)
++		return -ENOMEM;
++
++	spin_lock_irqsave(&c->lock, flags);
++	captured = c->captured_size;
++	if (captured > 0)
++		memcpy(tmp, c->buf, captured);
++	spin_unlock_irqrestore(&c->lock, flags);
++
++	ret = simple_read_from_buffer(ubuf, len, off, tmp, max(captured, 0));
++	kfree(tmp);
++	return ret;
++}
++
++static const struct file_operations q6inv_raw_fops = {
++	.owner	= THIS_MODULE,
++	.open	= simple_open,
++	.read	= q6inv_raw_read,
++	.llseek	= default_llseek,
++};
++
++/* ---------------------------------------------------------------- init -- */
++
++static int __init q6inv_init(void)
++{
++	int ret;
++
++	spin_lock_init(&q6inv_cap.lock);
++	mutex_init(&q6inv_trg.lock);
++
++	/*
++	 * Register the observer FIRST. If this fails the module still loads so
++	 * that status can report why, but probe_registered stays false and ARM
++	 * refuses -- a run that cannot observe must not be able to ask.
++	 */
++	ret = register_kprobe(&q6inv_kp);
++	if (ret) {
++		pr_err("q6inventory: register_kprobe(%s) failed: %d -- ARM will refuse\n",
++		       Q6INV_PROBED_SYMBOL, ret);
++	} else {
++		q6inv_probe_registered = true;
++		q6inv_resolved_address = (unsigned long)q6inv_kp.addr;
++		pr_info("q6inventory: observer on %s at 0x%08lx\n",
++			Q6INV_PROBED_SYMBOL, q6inv_resolved_address);
++	}
++
++	q6inv_dir = debugfs_create_dir("q6_inventory", NULL);
++	debugfs_create_file("arm", 0200, q6inv_dir, NULL, &q6inv_arm_fops);
++	debugfs_create_file("fire", 0200, q6inv_dir, NULL, &q6inv_fire_fops);
++	debugfs_create_file("status", 0400, q6inv_dir, NULL, &q6inv_status_fops);
++	debugfs_create_file("inventory_raw", 0400, q6inv_dir, NULL,
++			    &q6inv_raw_fops);
++
++	return 0;
++}
++
++static void __exit q6inv_exit(void)
++{
++	debugfs_remove_recursive(q6inv_dir);
++
++	/*
++	 * Safe by construction: this module references q6core_get_svc_api_info(),
++	 * so it holds a module dependency on q6core. q6core cannot be unloaded
++	 * while we are loaded, and the probe can never point into freed text.
++	 */
++	if (q6inv_probe_registered)
++		unregister_kprobe(&q6inv_kp);
++}
++
++module_init(q6inv_init);
++module_exit(q6inv_exit);
++
++MODULE_DESCRIPTION("QDSP6 service-inventory diagnostic probe");
++MODULE_LICENSE("GPL v2");

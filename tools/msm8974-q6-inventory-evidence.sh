@@ -206,9 +206,11 @@ MODULES=$(lsmod 2>/dev/null | grep -c '^q6core \|^snd_soc_qdsp6 ')
 # If none is, the verdict is C0 and no firmware claim is made.
 QUERY_MECHANISM=0
 QUERY_MECHANISM_NAME="none"
-if lsmod 2>/dev/null | grep -q '^q6_inventory_probe '; then
+# The object is q6inventory_probe.o, so lsmod shows "q6inventory_probe" --
+# no underscore after q6, and no dash for lsmod to translate.
+if lsmod 2>/dev/null | grep -q '^q6inventory_probe '; then
 	QUERY_MECHANISM=1
-	QUERY_MECHANISM_NAME="q6-inventory-probe.ko"
+	QUERY_MECHANISM_NAME="q6inventory_probe.ko"
 elif [ -r /sys/kernel/tracing/trace ] &&
 	grep -q 'q6core_callback' /sys/kernel/tracing/kprobe_events 2>/dev/null; then
 	QUERY_MECHANISM=1
