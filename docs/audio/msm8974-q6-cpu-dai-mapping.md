@@ -300,3 +300,140 @@ we just fixed in our own driver** (`wcd9320-probe-lifetime-safe`). If
 `q6routing` is ever rolled back by a deferred probe, it has the same class of
 exposure. Not ours to fix, not in scope, and noted so it is not mistaken for a
 new defect if it ever surfaces.
+
+## 13. The last four questions, closed
+
+### 13.1 `SLIMBUS_0_RX` stays provisional — no more source archaeology
+
+`{ BE = SLIMBUS_0_RX, AFE port = 0x4000, channel = 144 }` is the **hypothesis
+under test**, not a conclusion. A successful AFE prepare/start reply promotes
+it; a rejection falsifies it *without* invalidating the FE/BE architecture
+around it, because every other element of the path is established from source.
+That is the cleanest discriminator available and no amount of further reading
+improves on it.
+
+### 13.2 `q6afe-clocks`: omitted for the first build
+
+The q6afe clock provider enumerates MI2S, PCM, TDM, MCLK and LPASS vote/core
+clocks. There are no SLIMbus-specific entries, and SLIMbus clocking belongs to
+the bus rather than the AFE port. It is therefore **not instantiated** for the
+first control-plane build.
+
+The reasoning is attribution, not minimalism: fewer DT objects means a failed
+first transaction has fewer candidate causes.
+
+### 13.3 A separate machine driver — the fixture is not replaced
+
+`wcd9320-lumia-card` (the dummy-platform minimal card) is a **frozen proof
+oracle**, and the RX callback milestone depends on it. Branch A gets a second,
+independent module:
+
+```
+diagnostic fixture              wcd9320-lumia-card     (frozen, unchanged)
+    dummy CPU -> WCD9320        the known-good reference path
+
+Branch A                        wcd9320-lumia-q6       (new)
+    MultiMedia1 FE
+        | DPCM
+    SLIMBUS_0_RX BE
+        |
+    WCD9320 RX1
+```
+
+**They must be mutually exclusive at runtime.** Two cards competing for the
+same WCD9320 component is its own failure mode. Neither card autoloads, so in
+practice exclusivity follows from which one is modprobed — but the Q6 card
+should still refuse to register if a card already owns the codec component,
+rather than relying on operator discipline.
+
+### 13.4 The FE buffer: owned by `q6asm-dais`, and it dictates the link
+
+**Closed, and it imposes a hard requirement.** `q6asm-dais` *is* the FE's
+platform component and allocates the buffer itself:
+
+```c
+static const struct snd_soc_component_driver q6asm_fe_dai_component = {
+        ...
+        .pcm_construct = q6asm_dai_pcm_new,
+};
+
+static int q6asm_dai_pcm_new(struct snd_soc_component *component,
+                             struct snd_soc_pcm_runtime *rtd)
+{
+        size_t size = q6asm_dai_hardware_playback.buffer_bytes_max;
+        return snd_pcm_set_fixed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
+                                            component->dev, size);
+}
+```
+
+`q6asm_dai_open()` then reads `substream->dma_buffer.addr` into `prtd->phys`,
+and `q6asm_dai_prepare()` maps that to the DSP.
+
+**Therefore the FE link's platform MUST be `q6asm-dais`.** If the Q6 card
+supplies its own platform — as the minimal card does — `pcm_construct` never
+runs, `dma_buffer.addr` stays 0, and `ASM_CMD_SHARED_MEM_MAP_REGIONS` fails
+for a reason that has nothing to do with the firmware. That is precisely the
+misattribution this question existed to prevent.
+
+Nothing MSM8974-specific is required, and `SNDRV_DMA_TYPE_DEV` on the
+`q6asm-dais` device needs no special allocator.
+
+**`iommus` is optional and is omitted.** `q6asm-dai.c` calls
+`of_parse_phandle_with_fixed_args(node, "iommus", ...)` and sets
+`pdata->sid = -1` when absent, in which case `prtd->phys` is the raw physical
+address — correct for this port, which has no ADSP SMMU mapping configured.
+
+**Acceptance prerequisite, asserted before any ASM result is interpreted:**
+
+```
+before q6asm_dai_prepare():
+    substream->dma_buffer.addr != 0
+    dma_buffer.bytes  == q6asm_dai_hardware_playback.buffer_bytes_max
+    periods within the FE constraints
+    pdata->sid == -1        (no SMMU translation applied)
+```
+
+## 14. The gate, tightened: stop before RUN
+
+The milestone stops **before** `ASM_SESSION_CMD_RUN_V2`:
+
+```
+PCM open
+    |  hw_params
+    |  buffer mapped to DSP        ASM_CMD_SHARED_MEM_MAP_REGIONS  0x00010D92
+    |  ASM open acknowledged       ASM_STREAM_CMD_OPEN_WRITE_V3    0x00010DB3
+    |  ADM open + matrix map       0x00010326 / rsp 0x00010329, 0x00010325
+    |  AFE prepare + start         0x000100EF, 0x000100E5
+    |  WCD9320 frozen RX delta     0x040: 00->05   0x180: 00->01
+    |  clean inverse teardown
+   STOP
+        no ASM_SESSION_CMD_RUN_V2   0x00010DAA
+        no ASM_DATA_CMD_WRITE_V2    0x00010DAB
+        no period progression, no sample movement
+```
+
+**Mechanism.** `aplay` cannot express this — its first `write()` drives
+`trigger(START)`. The milestone therefore needs the small ioctl helper that
+was deferred at the minimal-card milestone: `open` → `HW_PARAMS` → `PREPARE` →
+`DROP` → `close`, never writing. That helper is now justified, where before it
+was not.
+
+**Fallback, stated in advance.** If ASoC sequencing turns out to require
+`START` to exercise the BE at all, `RUN` is recorded as a control command and
+the hard data-plane boundary becomes the **absence of
+`ASM_DATA_CMD_WRITE_V2`** — which is the honest invariant either way.
+
+## 15. The design map is complete
+
+Everything the first Q6 control-plane build needs is now resolved from source:
+the FE/BE topology, the four identifiers for the endpoint, which components
+must bind, which calls actually reach the DSP, where the channel map comes
+from, the mixer that must be set, the full transaction sequence with every
+inverse, who owns the FE buffer, and where the data-plane boundary falls.
+
+The one deliberately unresolved item is `SLIMBUS_0_RX` itself, which is a
+hypothesis for hardware to answer rather than a gap in the map.
+
+Next is implementation: `wcd9320-lumia-q6`, the minimal AFE/ASM/ADM/routing DT
+nodes, the prepare-only ioctl helper, and the evidence harness that observes
+opcodes rather than `aplay` exit status.
