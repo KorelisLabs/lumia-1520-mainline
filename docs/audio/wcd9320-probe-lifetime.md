@@ -171,3 +171,71 @@ rather than fixing *who withdraws it*.
 
 Proposed tag: **`wcd9320-probe-lifetime-safe`**. Not "double probe fixed": the
 double probe is legitimate and stays.
+
+## 7. PROVEN ON HARDWARE — boot #154, r153 (`lifetime-rc1`)
+
+The interface function deferred, as it does on every boot, and this time the
+global was withdrawn before the object died.
+
+```
+probe #1 after : ifd_instance=1e2dddf8 replaced=0
+probe #2 before: ifd_instance=00000000 drvdata=00000000   <- was a freed pointer
+probe #2 after : ifd_instance=a5ff7ca1 replaced=0          <- was 1
+```
+
+Both proof lines flipped exactly as the mapping predicted. The devres action
+fired inside `device_unbind_cleanup()`, clearing `wcd9320_ifd_instance` before
+`devres_release_all()` freed the struct it pointed at, so the deferred retry
+found a NULL global and published into empty space.
+
+**16/16, exit 0.** Beyond the two proof lines the gate asserted that the retry
+republished a *live* and *different* instance — a fix that cleared the pointer
+and never republished would satisfy the first two checks while breaking the
+driver — and then drove the production RX port path through it, reaching
+hardware with 8 register writes. No memory-error reports.
+
+**The deferral still happens.** `Failed to get logical address` is present and
+two IFD probes completed. Nothing about legitimate deferred probing was
+suppressed, which was the point: the driver's object lifetime was wrong, not
+the bus's behaviour.
+
+### The regression contract, same boot
+
+| gate | result |
+|---|---|
+| `coldboot-autoload` | 31 / 0 |
+| `rx-dai` | 34 / 0 |
+| `regcache` | 25 / 0 |
+| `irq-acceptance` | 27 / 0 |
+| **total** | **117 / 117** |
+
+The IRQ chain was re-proven end to end on a real headset insertion, and the
+regcache gate still reports 460 cacheable registers agreeing with the chip.
+
+### The harness hardening, validated on the same boot
+
+Every gate resolved its expectation from the build's own manifest with **zero
+environment variables**, and each evidence file now records why:
+
+```
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+```
+
+Before this session those four gates carried frozen defaults from their own
+milestones — `mbhc-switch-rc6`, `rx-dai-rc1`, `regcache-rc9`. On first contact
+with `lifetime-rc1` each one refused to collect anything rather than measuring
+a module it could not identify. That refusal was the hardening working
+correctly; the failure mode it exists to prevent is the stale default that
+still *matches* and quietly certifies the wrong build.
+
+### What remains open
+
+The control function still exits probe with `laddr_valid=0` — a third
+consecutive boot confirming it survives on the ADSP manager's timing rather
+than anything structural. It publishes nothing globally, so it needs no
+equivalent action, but its rollback would drop supplies and re-assert reset
+mid-bring-up through the `power_release` devres action. **Unobserved, and
+deliberately not changed.** If it is ever seen to defer, verify that devres
+power teardown followed by a retry performs a complete clean bring-up.

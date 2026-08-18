@@ -859,6 +859,30 @@ landed just before probe #1, which is what made it look related. This port
 boots `nosmp maxcpus=1` and both reports are 3 jiffies. Recorded, unexplained,
 not attributed to the audio work.
 
+### `wcd9320-probe-lifetime-safe` — PROVEN, boot #154 (r153)
+
+The published interface pointer no longer outlives its object.
+`devm_add_action_or_reset()` with an identity guard, registered immediately
+after publication so devres LIFO withdraws it before the regmap and the
+allocation it refers to are torn down. It carries no knowledge of
+`-EPROBE_DEFER`: it is correct for probe unwind, for a deferral after our
+probe returned success, for ordinary remove, and for any error path added
+later.
+
+Proof: `probe #2 before: ifd_instance=00000000` (was a freed pointer) and
+`replaced=0` (was 1), with the deferral still occurring and the retry
+republishing a live, different instance that then drove the RX port path to
+hardware. 16/16. Regression 117/117 on the same boot.
+
+The gate refuses to pass vacuously: a boot without an observed deferral exits
+3 INVALID, because with no unwind there is nothing to withdraw and every check
+would pass while proving nothing.
+
+Still open: the control function publishes nothing globally so it needs no
+action, but it survives probe on the ADSP manager's timing, not structure. If
+it is ever seen to defer, verify that devres power teardown plus retry
+performs a complete clean bring-up.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done
