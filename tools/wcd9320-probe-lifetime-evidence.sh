@@ -161,7 +161,11 @@ fi
 	# Health, unchanged from every other gate.
 	check "core_ready" "$(kv "$PGD/rco_wake" core_ready)" "1"
 	check "core init ran once" "$(kv "$PGD/rco_wake" init_runs)" "1"
-	check "identity major" "$(kv "$PGD/identity" major)" "0x0102"
+	# The identity blob is SPACE-separated ("major 0x0102"), not
+	# key=value, so kv() -- which splits on "=" -- reads it as empty.
+	# Every other gate uses this sed for exactly that reason.
+	check "identity major" \
+		"$(sed -n 's/.*major \([^ ]*\).*/\1/p' "$PGD/identity" 2>/dev/null)" "0x0102"
 	check_cond "no kernel WARNING/BUG" \
 		"$([ "$(dmesg 2>/dev/null | grep -c 'WARNING:\|BUG:')" -eq 0 ] && echo 1 || echo 0)" \
 		"the log carries a WARNING or BUG" "none"
