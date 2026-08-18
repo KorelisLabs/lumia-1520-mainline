@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-15 20:08:38.679742600 -0400
-@@ -0,0 +1,4333 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-17 19:58:25.875676700 -0400
+@@ -0,0 +1,4431 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -126,6 +126,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#include <linux/of_irq.h>
 +#include <linux/regmap.h>
 +#include <linux/regulator/consumer.h>
++#include <linux/sched.h>	/* current, task_pid_nr() -- IFD probe instrumentation */
 +#include <linux/slimbus.h>
 +#include <linux/workqueue.h>
 +
@@ -1529,6 +1530,37 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +/* Counts entries to the interface function's probe; see the classification
 + * comment at its call site. */
 +static unsigned int ifd_probe_seq;
++
++/*
++ * IFD DOUBLE-PROBE INSTRUMENTATION -- MEASUREMENT ONLY, NO BEHAVIOUR CHANGE.
++ *
++ * The interface function's probe runs twice per boot, every boot, with the
++ * same slim_device, both calls returning 0, and no remove in between. It has
++ * survived every milestone without breaking anything, which is exactly why it
++ * is worth explaining now: Q6 and ASoC lifecycle work is about to add more
++ * binding behaviour, and an unexplained double-bind is far harder to
++ * disentangle once several drivers are attaching to the same hardware.
++ *
++ * What has to be distinguished:
++ *
++ *   (a) the driver core genuinely calls probe twice   -- e.g. a SLIMbus
++ *       device_status(UP) re-reporting an already-bound device, or a
++ *       re-registration of the device by the bus
++ *   (b) something in OUR OWN registration path indirectly triggers the
++ *       second probe
++ *
++ * The call trace at entry separates those two, and nothing else does. It is
++ * captured for the first WCD9320_IFD_TRACE_MAX entries only, so a pathological
++ * loop cannot turn a diagnostic into a log flood.
++ *
++ * Deliberately NOT corrected here. If probe #2 re-publishes state that probe
++ * #1 already published, that is a finding to freeze and understand -- it may
++ * be harmless, idempotent, or expected by a SLIMbus lifecycle path nobody has
++ * read yet. Measuring and fixing in the same build would leave us unable to
++ * say which of the two changed the behaviour.
++ */
++#define WCD9320_IFD_TRACE_MAX	2
++static unsigned int ifd_trace_emitted;
 +
 +/* ---------------------------------------------------------------- power -- */
 +
@@ -4089,8 +4121,18 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct device *dev = &sdev->dev;
 +	struct wcd9320 *wcd;
++	struct wcd9320 *prev_ifd = NULL;
++	struct wcd9320 *prev_drvdata;
 +	bool adopt;
 +	int i, ret;
++
++	/*
++	 * Read BEFORE dev_set_drvdata() below overwrites it. On a first probe
++	 * this is NULL; anything else means a previous probe completed on this
++	 * same device. Measurement only -- see the IFD double-probe comment at
++	 * ifd_probe_seq.
++	 */
++	prev_drvdata = dev_get_drvdata(dev);
 +
 +	wcd = devm_kzalloc(dev, sizeof(*wcd), GFP_KERNEL);
 +	if (!wcd)
@@ -4133,10 +4175,52 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 * pointers would be three devices.
 +		 */
 +		ifd_probe_seq++;
++
++		/*
++		 * Snapshot what a PREVIOUS probe left behind, before this one
++		 * overwrites any of it. These are the whole question: if they
++		 * are already populated on entry to probe #2, this device was
++		 * bound once already and is being bound again.
++		 */
++		mutex_lock(&wcd9320_ifd_lock);
++		prev_ifd = wcd9320_ifd_instance;
++		mutex_unlock(&wcd9320_ifd_lock);
++
 +		dev_info(dev,
-+			 "IFD probe #%u: sdev=%p dev=%s laddr=0x%02x laddr_valid=%u status=%d\n",
-+			 ifd_probe_seq, sdev, dev_name(dev), sdev->laddr,
++			 "IFD probe #%u: sdev=%p dev=%p name=%s laddr=0x%02x laddr_valid=%u status=%d\n",
++			 ifd_probe_seq, sdev, dev, dev_name(dev), sdev->laddr,
 +			 sdev->is_laddr_valid, sdev->status);
++		dev_info(dev,
++			 "IFD probe #%u: driver=%p name=%s task=%s pid=%d\n",
++			 ifd_probe_seq, dev->driver,
++			 dev->driver ? dev->driver->name : "(none)",
++			 current->comm, task_pid_nr(current));
++		/*
++		 * Registration state BEFORE this probe touched anything.
++		 * prev_ifd is the published interface instance; prev_drvdata
++		 * is what dev_set_drvdata() held on entry. Either being
++		 * non-NULL means a prior probe completed on this same device,
++		 * and this one is about to replace it.
++		 */
++		dev_info(dev,
++			 "IFD probe #%u: before: ifd_instance=%p drvdata=%p this_wcd=%p\n",
++			 ifd_probe_seq, prev_ifd, prev_drvdata, wcd);
++
++		if (ifd_trace_emitted < WCD9320_IFD_TRACE_MAX) {
++			ifd_trace_emitted++;
++			/*
++			 * The only thing that separates "the driver core
++			 * called probe twice" from "our own registration path
++			 * caused the second call". Bounded so a pathological
++			 * loop cannot turn a diagnostic into a log flood, and
++			 * removed once the question is answered.
++			 */
++			dev_info(dev,
++				 "IFD probe #%u: call trace follows (%u/%u)\n",
++				 ifd_probe_seq, ifd_trace_emitted,
++				 WCD9320_IFD_TRACE_MAX);
++			dump_stack();
++		}
 +
 +		/*
 +		 * Its OWN config, not the control function's. The two are
@@ -4158,6 +4242,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev,
 +			 "interface regmap: own config, max_register 0x%03x, uncached\n",
 +			 WCD9320_IFD_MAX_REGISTER);
++		/*
++		 * Registration state AFTER, against the BEFORE line above.
++		 * "replaced=1" is the finding in one word: this probe took
++		 * over an instance a previous probe had already published, on
++		 * the same device, with no remove in between. Recorded, NOT
++		 * corrected -- whether that is harmless, idempotent, or a real
++		 * defect is the next question, and answering it in the same
++		 * build that changed the behaviour would answer nothing.
++		 */
++		dev_info(dev,
++			 "IFD probe #%u: after:  ifd_instance=%p drvdata=%p replaced=%d\n",
++			 ifd_probe_seq, wcd9320_ifd_instance,
++			 dev_get_drvdata(dev),
++			 (prev_ifd && prev_ifd != wcd) ? 1 : 0);
 +		dev_info(dev, "IFD probe #%u: returning 0 (bound)\n",
 +			 ifd_probe_seq);
 +		return 0;
@@ -4402,7 +4500,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("asoc-card-rc1");
++MODULE_VERSION("ifd-probe-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
