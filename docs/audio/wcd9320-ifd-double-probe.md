@@ -133,30 +133,100 @@ would leave us unable to say which change altered the behaviour.
 
 Option 1 looks right, but the choice belongs to a milestone that can test it.
 
-## An asymmetry worth noting
+## The control function has no structural protection either — measured, r152
 
-The control function (PGD, `dev_index` 1) does **not** defer: its bring-up
-appears once per boot and `control function UP (#1)` follows a single probe.
+**The hypothesis stated here before boot #153 was wrong**, and it is kept
+because the correction is the finding.
 
-A plausible explanation, **not yet measured**: the PGD probe does ~100 ms of
-real work — seven regulators, reset assert/release, hardware settle delays —
-before returning, by which time enumeration has completed and
-`slim_get_logical_addr()` succeeds on the first attempt. The IFD probe takes
-no power and no reset and returns almost immediately, ahead of enumeration.
+> ~~The PGD probe does ~100 ms of real work — seven regulators, reset
+> assert/release, hardware settle delays — before returning, by which time
+> enumeration has completed and `slim_get_logical_addr()` succeeds on the
+> first attempt.~~
 
-If that is right, the PGD's single probe is a timing accident too, not a
-structural difference — and the same rollback could happen to it on a slower
-or faster boot. Confirming it needs the same instrumentation on the control
-path, which this milestone did not add.
-
-## Unrelated observation, recorded not explained
-
-An RCU expedited-stall warning appears immediately before probe #1 on this
-boot:
+Measured on boot #153 (r152, `ctl-lifetime-rc1`), logging `is_laddr_valid` at
+probe exit for both functions:
 
 ```
-rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P434 } 3 jiffies
+IFD probe #1: exit after  0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd
+CTL probe #1: exit after 80 ms: laddr=0x00 laddr_valid=0 status=0 path=fresh
 ```
 
-It is new in this log and has no established connection to the codec. Noted so
-it is not silently forgotten; not investigated.
+**`laddr_valid` is 0 at exit for both.** The control function's 80 ms of
+regulator and reset work does not earn it a logical address by return time.
+The datum this document previously called decisive was the wrong datum.
+
+### What actually decides it
+
+`slim_get_logical_addr()` does not merely read the cached flag:
+
+```c
+int slim_get_logical_addr(struct slim_device *sbdev)
+{
+        if (!sbdev->is_laddr_valid)
+                return slim_device_alloc_laddr(sbdev, false);
+        return 0;
+}
+```
+
+With the flag clear it calls `slim_device_alloc_laddr()` →
+`ctrl->get_laddr()` → `qcom_slim_ngd_get_laddr()`, which sends a **synchronous
+`SLIM_USR_MC_ADDR_QUERY` to the ADSP-side manager** and returns `-ENXIO` only
+when the manager does not recognise the enumeration address:
+
+```c
+if (!memcmp(rbuf, failed_ea, 6))
+        return -ENXIO;
+```
+
+So the discriminator is **whether the remote manager's device table knows that
+particular function at the moment it is asked** — not our probe duration, and
+not `is_laddr_valid`.
+
+On boot #153:
+
+| when | who | result |
+|---|---|---|
+| 47.618 | IFD, first query | manager did not know it → `-ENXIO` → deferred |
+| ~47.70 | CTL, first query | manager knew it → laddr `0xcb` |
+| 48.30 | IFD, retry | manager now knew it → laddr `0xca` |
+
+`CTL probe #2` never appears and no `Failed to get logical address` is logged
+for `217:a0:1:0`, so the control function neither deferred nor failed.
+
+### Why this makes the defect worse, not better
+
+The control function survives **because the remote manager happened to have
+its address ready**. Nothing about its probe duration, its structure, or its
+work protects it. It is exposed to exactly the same rollback the interface
+function takes every boot.
+
+And its rollback is the expensive one. The interface function takes no power
+and no reset, so its unwind costs only the dangling global. The control
+function has `devm_add_action_or_reset(dev, wcd9320_power_release, wcd)`
+registered, so a rollback would **drop the supplies and re-assert reset
+part-way through bring-up**, and the deferred retry would redo all of it. That
+power cycle has never been observed and appears in no baseline.
+
+**This is therefore a shared lifetime design defect**, currently exposed only
+by the interface function because its query lands earlier and loses. It should
+be fixed as one ownership pattern across the driver, not as a single-global
+patch — see `wcd9320-probe-lifetime.md`.
+
+## The RCU expedited stall is not ours — measured, r152
+
+It repeated on r152 with `dump_stack()` removed, so it is **not** an artefact
+of the instrumentation:
+
+```
+[30.999252] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P413 } 3 jiffies s: 133
+[59.049254] rcu: INFO: rcu_preempt detected expedited stalls on CPUs/tasks: { P488 } 3 jiffies s: 605
+```
+
+But it is also **not adjacent to the codec**. The codec probes at 47.6 s; the
+two stalls fall at 31.0 s (during zram/swap setup) and 59.0 s (just after the
+ext4 mount). On the r151 trace boot one happened to land immediately before
+probe #1, which is what made it look related. Coincidence.
+
+Context: this port boots with `nosmp maxcpus=1`, so an expedited RCU grace
+period has a single CPU to wait on, and both reports are 3 jiffies — very
+short. Recorded, unexplained, and not attributed to the audio work.

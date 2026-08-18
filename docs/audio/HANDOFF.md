@@ -839,11 +839,25 @@ NOT FIXED: measuring and fixing in one build would make the result
 unattributable. Candidates and the full evidence are in
 `wcd9320-ifd-double-probe.md`.
 
-**Open, related:** the control function does not defer, probably because its
-probe does ~100 ms of regulator/reset work before returning, by which time
-enumeration has completed. If so its single probe is a timing accident too,
-and the same rollback could hit it. Unmeasured -- the control path has no
-equivalent instrumentation.
+**RESOLVED, and worse than assumed (r152, boot #153):** the control function
+has NO structural protection. It exits probe with `laddr_valid=0` exactly like
+the interface function -- its 80 ms of regulator and reset work earns it
+nothing. `slim_get_logical_addr()` does not read the cached flag; it sends a
+synchronous `SLIM_USR_MC_ADDR_QUERY` to the ADSP-side manager and fails only
+when that manager does not yet know the enumeration address. The control
+function survives because the manager happened to have its address ready, not
+because of anything it does. It is exposed to the identical rollback, and its
+unwind would drop supplies and re-assert reset mid-bring-up via the
+`wcd9320_power_release` devres action. A shared lifetime design defect, mapped
+in `wcd9320-probe-lifetime.md`.
+
+**RCU expedited stall: not ours.** It repeated on r152 with `dump_stack()`
+removed, so it is not instrumentation-induced -- but it is not adjacent to the
+codec either. The codec probes at 47.6 s; the stalls fall at 31.0 s (zram/swap
+setup) and 59.0 s (just after the ext4 mount). On the r151 trace boot one
+landed just before probe #1, which is what made it look related. This port
+boots `nosmp maxcpus=1` and both reports are 3 jiffies. Recorded, unexplained,
+not attributed to the audio work.
 
 ## Sequence from here
 
