@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-17 20:22:23.245173300 -0400
-@@ -0,0 +1,4491 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-18 07:34:37.622792684 -0400
+@@ -0,0 +1,4573 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1557,11 +1557,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * The before/after state logging STAYS. It is what shows the rollback, and it
 + * is how the lifetime fix will be proven when it lands.
 + *
-+ * KNOWN DEFECT, NOT YET FIXED: wcd9320_ifd_instance is left pointing at probe
-+ * #1's wcd after devres_release_all() has freed it, because the driver's
-+ * remove() is not called on the probe-failure path. Dangling for ~530 ms per
-+ * boot. Unreached today only because the sole dereference is the RX port path,
-+ * which runs far later. The fix belongs to its own milestone.
++ * THE LIFETIME DEFECT THIS EXPOSED IS NOW FIXED. wcd9320_ifd_instance used to
++ * be left pointing at probe #1's wcd after devres_release_all() had freed it,
++ * because remove() is not called on the probe-failure path -- ~530 ms of
++ * dangling pointer per boot. A devres action registered immediately after
++ * publication now withdraws it on any unwind; see wcd9320_clear_ifd_instance().
++ *
++ * The observable proof is in these very log lines: probe #2's "before:" used
++ * to read a stale non-NULL ifd_instance with replaced=1, and must now read
++ * 00000000 with replaced=0.
 + */
 +
 +/*
@@ -1597,6 +1601,49 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 "%s probe #%u: exit after %lld ms: laddr=0x%02x laddr_valid=%u status=%d path=%s -- slim_get_logical_addr() decides next\n",
 +		 fn, seq, ktime_to_ms(ktime_sub(ktime_get(), t0)),
 +		 sdev->laddr, sdev->is_laddr_valid, sdev->status, path);
++}
++
++/*
++ * THE LIFETIME INVARIANT
++ *
++ *   If an instance pointer is published beyond the scope that allocated it,
++ *   the same devres lifetime that owns the instance must also own withdrawal
++ *   of that pointer.
++ *
++ * wcd9320_ifd_instance was the one place in this driver that broke it. Every
++ * other cross-scope reference is already devres-owned: the IRQ and its
++ * self-rescheduling sampler through wcd9320_irq_teardown(), the power votes
++ * through wcd9320_power_release(), the ASoC component through
++ * devm_snd_soc_register_component(). The global was simply missed.
++ *
++ * The cost of missing it: slim_device_probe() discards our 0, asks the ADSP's
++ * manager for a logical address, and returns -EPROBE_DEFER when the manager
++ * does not know the device yet. really_probe() then unwinds through
++ * device_unbind_cleanup() -- devres_release_all() plus dev_set_drvdata(NULL) --
++ * WITHOUT calling the driver's remove(). So the only code that cleared this
++ * global never ran, and it kept pointing at a devm_kzalloc'd struct that had
++ * just been freed. Measured at ~530 ms per boot, every boot.
++ *
++ * This action carries no knowledge of -EPROBE_DEFER, and deliberately so. It
++ * is correct for probe unwind, for a deferral after our probe returned
++ * success, for ordinary remove, and for any error path added later.
++ */
++static void wcd9320_clear_ifd_instance(void *data)
++{
++	struct wcd9320 *wcd = data;
++
++	mutex_lock(&wcd9320_ifd_lock);
++	/*
++	 * The identity guard is load-bearing, not decoration. Today's
++	 * deferred-probe ordering makes overlap impossible -- the retry cannot
++	 * start before the unwind finishes -- but without this check an old
++	 * instance's cleanup could clear a NEWER successfully published one.
++	 * Branch A is about to change the timing this reasoning rests on, so
++	 * the action is made correct independently of ordering.
++	 */
++	if (wcd9320_ifd_instance == wcd)
++		wcd9320_ifd_instance = NULL;
++	mutex_unlock(&wcd9320_ifd_lock);
 +}
 +
 +/* ---------------------------------------------------------------- power -- */
@@ -4260,6 +4307,31 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd9320_ifd_instance = wcd;
 +		mutex_unlock(&wcd9320_ifd_lock);
 +
++		/*
++		 * Withdrawal is owned by the same devres lifetime as the
++		 * allocation, registered IMMEDIATELY after publication.
++		 *
++		 * Ordering matters and devres releases LIFO. Registration
++		 * order in this branch is:
++		 *
++		 *   devm_kzalloc(wcd)           released LAST
++		 *   devm_regmap_init_slimbus()
++		 *   this action                 released FIRST
++		 *
++		 * so on any unwind the pointer is withdrawn while the regmap it
++		 * implies is usable, and the struct it refers to, are both still
++		 * alive. Registering it any earlier would invert that.
++		 *
++		 * _or_reset rather than plain devm_add_action: if registration
++		 * itself fails the action runs immediately, so the global can
++		 * never be left published by a probe that is about to fail.
++		 */
++		ret = devm_add_action_or_reset(dev, wcd9320_clear_ifd_instance,
++					       wcd);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to register interface instance cleanup\n");
++
 +		dev_info(dev,
 +			 "interface function: no power or reset taken, waiting for enumeration\n");
 +		dev_info(dev,
@@ -4294,9 +4366,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	/*
-+	 * Control function from here. Instrumented to settle whether it
-+	 * survives probe structurally or merely outlasts enumeration; see the
-+	 * comment at ctl_probe_seq.
++	 * Control function from here.
++	 *
++	 * IT PUBLISHES NOTHING GLOBALLY, and that is the only reason it needs
++	 * no equivalent of wcd9320_clear_ifd_instance(). It is NOT protected
++	 * from the same rollback: measured on boot #153, it exits probe with
++	 * laddr_valid=0 exactly like the interface function, and survives only
++	 * because the ADSP's manager happened to know its address when asked.
++	 *
++	 * So if anything here is ever made reachable from outside this probe --
++	 * a global, a list entry, a pointer handed to another module -- it must
++	 * get a devres withdrawal action at the same time, or it inherits the
++	 * dangling-pointer defect the interface function just had. See THE
++	 * LIFETIME INVARIANT above.
 +	 */
 +	ctl_probe_seq++;
 +	dev_info(dev,
@@ -4560,7 +4642,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("ctl-lifetime-rc1");
++MODULE_VERSION("lifetime-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
