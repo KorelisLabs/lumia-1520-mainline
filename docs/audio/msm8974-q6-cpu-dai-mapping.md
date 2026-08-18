@@ -154,26 +154,145 @@ not evidence. Every "succeeds" above must be an observed remote reply, not an
 absence of error — `q6afe_probe()` binding while sending nothing is exactly
 the C0 shape we already have a verdict name for.
 
-## 6. Open questions to resolve before writing DT
+## 6. Open questions — three now closed
 
-1. **Is `SLIMBUS_0_RX` the right port for this device?** §2. The fallback is
-   to try other `SLIMBUS_n_RX` ids; the failure mode is an AFE command
-   failure, not silence.
-2. **Does our codec DAI need `.set_channel_map`?** `apq8096_init()` calls
-   `snd_soc_dai_set_channel_map(codec_dai, ...)` and ignores the return. Ours
-   does not implement it, so the call is a no-op and the driver keeps its
-   hardcoded port 16 / one channel. Whether the codec must be *told* channel
-   144 rather than assuming it is unresolved.
-3. **Is `q6adm`/`q6routing` required for a single FE->BE path**, or can the BE
-   be driven with routing absent? The gate says "if required" because this is
-   not yet established.
-4. **Does the FE need `q6afe-clocks`?** SLIMbus clocking is the bus's, not the
-   port's, so probably not — unlike MI2S, which needs `sd-lines` and clocks.
-5. **Which machine driver hosts the FE/BE links?** Our `wcd9320-lumia-card`
-   currently supplies its own dummy platform. It would become the real machine
-   driver, or be replaced by one.
+1. **Is `SLIMBUS_0_RX` right for this device?** STILL OPEN, and deliberately
+   provisional. See §2 and §9.
+2. ~~Does our codec DAI need `.set_channel_map`?~~ **CLOSED: not for this
+   milestone.** See §9.
+3. ~~Is `q6adm`/`q6routing` required?~~ **CLOSED: yes, both.**
+   `q6routing_stream_open()` calls `q6adm_open()` and `q6adm_matrix_map()`,
+   so ADM is on the critical path, not optional. See §8.
+4. **Does the FE need `q6afe-clocks`?** Still open, but almost certainly no:
+   SLIMbus clocking belongs to the bus, unlike MI2S which needs `sd-lines`
+   and clocks.
+5. **Which machine driver hosts the FE/BE links?** Still open. See §11.
 
-## 7. An upstream observation, recorded not acted on
+## 7. The DPCM topology, exactly
+
+`qcom_snd_parse_of()` in `sound/soc/qcom/common.c` decides the roles from the
+DT link shape:
+
+```
+FE link   (no platform node)          BE link   (platform node present)
+  link->dynamic       = 1               link->no_pcm            = 1
+  link->codecs        = dummy           link->ignore_pmdown_time = 1
+  CPU  = MultiMedia1                    CPU  = SLIMBUS_0_RX
+  codec = snd_soc_dummy_dlc             codec = wcd9320-slim-rx1
+  both: ignore_suspend = 1, nonatomic = 1
+```
+
+`apq8096` then finds its BE links by exactly one test — `if (link->no_pcm == 1)`
+— and attaches `be_hw_params_fixup`, `init` and `ops` there. That is the hook
+point for the channel map in §9.
+
+## 8. How MultiMedia1 reaches SLIMBUS_0_RX, and why ADM is on the path
+
+**The route is a DAPM mixer that must be explicitly enabled.** It is not
+automatic:
+
+```
+SND_SOC_DAPM_MIXER("SLIMBUS_0_RX Audio Mixer", ..., slimbus_rx_mixer_controls)
+    where slimbus_rx_mixer_controls = Q6ROUTING_RX_MIXERS(SLIMBUS_0_RX)
+```
+
+Setting a mixer element records `session->port_id = be_id` in `q6routing`.
+Then, when the FE is opened, `q6asm-dai.c` calls
+`q6routing_stream_open(dai_link->id, LEGACY_PCM_MODE, ...)`, which does:
+
+```
+q6adm_open(dev, session->port_id, ...)      ADM_CMD_DEVICE_OPEN_V5   0x00010326
+                                       rsp  ADM_CMDRSP_DEVICE_OPEN_V5 0x00010329
+q6adm_matrix_map(dev, session->path_type, ...)
+                                            ADM_CMD_MATRIX_MAP_ROUTINGS_V5
+                                                                     0x00010325
+```
+
+**Operational consequence:** without the mixer set, `session->port_id` is
+never assigned and the FE never connects to the BE. Any test must set that
+control (`amixer`) before opening the PCM, or it will prove nothing. This is
+the DPCM equivalent of the "card does not autoload" trap.
+
+## 9. The channel map: machine driver, not codec ABI — DECIDED
+
+`q6slim_hw_params()` records only `sample_rate` and `bit_width`. It never sets
+`num_channels` or `ch_mapping[]`; those come solely from
+`q6slim_set_channel_map()`. So without an explicit call the AFE port would be
+configured with **`num_channels = 0` and an unset channel map**, and
+`q6afe_dai_prepare()` would consume that.
+
+The first Branch A experiment therefore sets it from the **Lumia machine
+driver**, in the BE link's `ops->hw_params`:
+
+```
+snd_soc_dai_set_channel_map(cpu_dai /* SLIMBUS_0_RX */,
+                            0, NULL,      /* tx */
+                            1, (u32[]){144} /* rx: one channel */);
+```
+
+**The codec keeps its current fixed RX1 selection and gains nothing.** No
+`.set_channel_map`, no `.get_channel_map`.
+
+`apq8096` does it the other way — asks the codec for its map and relays it,
+treating `-ENOTSUPP` as success — but that only works when something else has
+already established the DSP-side map. Copying it here would hide the
+assumption instead of testing it.
+
+Stating the assumption plainly is the point:
+
+> This experiment **proposes** WCD9320 RX1 (slave port 16) corresponds to
+> SLIMbus channel 144 on AFE port `SLIMBUS_0_RX` (0x4000), and tests that
+> proposal against a real AFE response. An AFE rejection is a useful result.
+
+Codec-side channel-map ABI stays deferred until RX1 <-> 144 is
+hardware-confirmed **and** the data-plane milestone needs real
+`slim_stream_*` allocation. Encoding an unproven channel number into the
+codec's permanent interface now would be the wrong order.
+
+## 10. The remote transaction sequence, and its inverse
+
+Every create/start below has its teardown identified before implementation.
+
+| # | stage | command | opcode | inverse |
+|---|---|---|---|---|
+| 1 | FE open | `q6asm_audio_client_alloc` | local | `q6asm_audio_client_free` |
+| 2 | route | `q6adm_open` | `ADM_CMD_DEVICE_OPEN_V5` 0x00010326, rsp 0x00010329 | `q6adm_close` / `ADM_CMD_DEVICE_CLOSE_V5` 0x00010327 |
+| 3 | route | `q6adm_matrix_map` | `ADM_CMD_MATRIX_MAP_ROUTINGS_V5` 0x00010325 | re-map on close |
+| 4 | FE prepare | `q6asm_map_memory_regions` | `ASM_CMD_SHARED_MEM_MAP_REGIONS` 0x00010D92 | `ASM_CMD_SHARED_MEM_UNMAP_REGIONS` 0x00010D94 |
+| 5 | FE prepare | `q6asm_open_write` | `ASM_STREAM_CMD_OPEN_WRITE_V3` 0x00010DB3 | `ASM_STREAM_CMD_CLOSE` 0x00010BCD |
+| 6 | BE prepare | `q6afe_slim_port_prepare` + `q6afe_port_start` | `AFE_PORT_CMD_SET_PARAM_V2` 0x000100EF, `AFE_PORT_CMD_DEVICE_START` 0x000100E5 | `q6afe_port_stop` / `AFE_PORT_CMD_DEVICE_STOP` 0x000100E6 |
+| 7 | codec | `wcd9320` `hw_params` | SLIMbus register writes | `hw_free` — already proven |
+| 8 | trigger | `q6asm_run_nowait` | `ASM_SESSION_CMD_RUN_V2` 0x00010DAA | `ASM_SESSION_CMD_PAUSE` 0x00010BD3 |
+
+**Sample movement is `ASM_DATA_CMD_WRITE_V2` (0x00010DAB) and appears nowhere
+above.** That is the line this milestone does not cross.
+
+**One subtlety worth stating**, because it looks like data-plane work and is
+not: step 4 maps a DMA buffer to the DSP *before* the session is opened. It is
+a control transaction with a reply, not sample traffic — but it does mean the
+FE allocates a real buffer, so "no DMA at all" is not an accurate description
+of the milestone. "No sample movement, no buffer progression" is.
+
+## 11. Scope and naming for the next milestone
+
+Proposed: **`msm8974-q6-playback-control-plane-proven`**, not "CPU DAI
+proven", which understates a topology of two DAIs, a mixer route and three
+APR services.
+
+Its claim would be: *a real QDSP6 playback FE/BE path can be instantiated;
+ASM, ADM and AFE control operations receive successful DSP responses;
+`SLIMBUS_0_RX` accepts the proposed one-channel configuration; and the
+existing WCD9320 RX callback still produces its frozen `0x040: 00->05`,
+`0x180: 00->01` delta.*
+
+It would explicitly **not** claim `slim_stream_allocate/prepare/enable`,
+buffer progression, sample movement, or audible audio.
+
+Still to settle before DT: whether the existing `wcd9320-lumia-card` becomes
+the real machine driver or is replaced, and whether the FE's DMA buffer
+allocation needs anything platform-specific on MSM8974.
+
+## 12. An upstream observation, recorded not acted on
 
 `q6routing.c:349` keeps `static struct msm_routing_data *routing_data`,
 assigned in probe and freed in remove — **the same file-scope-singleton shape
