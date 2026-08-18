@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-17 19:58:25.875676700 -0400
-@@ -0,0 +1,4431 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-17 20:22:23.245173300 -0400
+@@ -0,0 +1,4491 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1541,26 +1541,63 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * binding behaviour, and an unexplained double-bind is far harder to
 + * disentangle once several drivers are attaching to the same hardware.
 + *
-+ * What has to be distinguished:
++ * ANSWERED on boot #152 (r151): the driver core calls probe twice, and the
++ * first bind is ROLLED BACK. slim_device_probe() discards our 0, calls
++ * slim_get_logical_addr(), and returns -EPROBE_DEFER when the device has not
++ * enumerated yet; really_probe() then unwinds through device_unbind_cleanup()
++ * -- devres_release_all() plus dev_set_drvdata(NULL) -- and the deferred-probe
++ * worker retries. Full evidence in docs/audio/wcd9320-ifd-double-probe.md.
 + *
-+ *   (a) the driver core genuinely calls probe twice   -- e.g. a SLIMbus
-+ *       device_status(UP) re-reporting an already-bound device, or a
-+ *       re-registration of the device by the bus
-+ *   (b) something in OUR OWN registration path indirectly triggers the
-+ *       second probe
++ * The call traces that established that have been REMOVED. They did their job
++ * (probe #1 from driver_register -> __driver_attach at module load, probe #2
++ * from deferred_probe_work_func), dump_stack() in a probe path is not free,
++ * and an unexplained RCU expedited-stall warning appeared alongside them on
++ * the trace boot -- not worth carrying while it might be self-inflicted.
 + *
-+ * The call trace at entry separates those two, and nothing else does. It is
-+ * captured for the first WCD9320_IFD_TRACE_MAX entries only, so a pathological
-+ * loop cannot turn a diagnostic into a log flood.
++ * The before/after state logging STAYS. It is what shows the rollback, and it
++ * is how the lifetime fix will be proven when it lands.
 + *
-+ * Deliberately NOT corrected here. If probe #2 re-publishes state that probe
-+ * #1 already published, that is a finding to freeze and understand -- it may
-+ * be harmless, idempotent, or expected by a SLIMbus lifecycle path nobody has
-+ * read yet. Measuring and fixing in the same build would leave us unable to
-+ * say which of the two changed the behaviour.
++ * KNOWN DEFECT, NOT YET FIXED: wcd9320_ifd_instance is left pointing at probe
++ * #1's wcd after devres_release_all() has freed it, because the driver's
++ * remove() is not called on the probe-failure path. Dangling for ~530 ms per
++ * boot. Unreached today only because the sole dereference is the RX port path,
++ * which runs far later. The fix belongs to its own milestone.
 + */
-+#define WCD9320_IFD_TRACE_MAX	2
-+static unsigned int ifd_trace_emitted;
++
++/*
++ * CONTROL-FUNCTION LIFETIME INSTRUMENTATION -- MEASUREMENT ONLY.
++ *
++ * The control function does not defer, and the open question is whether that
++ * is structural or merely a race it keeps winning. Its probe does about
++ * 100 ms of real work -- seven regulators, reset assert/release, hardware
++ * settle delays -- before returning, and slim_device_probe() only asks for the
++ * logical address AFTER probe returns. So enumeration may simply have
++ * completed by then.
++ *
++ * If that is the whole story, the control function is one slow boot away from
++ * the same rollback the interface function takes every time -- and its
++ * rollback would be worse: devres unwind runs wcd9320_power_release(), so
++ * supplies and reset would drop mid-bring-up and probe #2 would redo them.
++ * That power cycle has never been observed and is not in any baseline.
++ *
++ * THE DECISIVE DATUM is is_laddr_valid AT PROBE EXIT. If it is already 1 when
++ * the control probe returns, enumeration finished during our setup work and
++ * the survival is timing. If it is 0 and the bind still stands, something
++ * structural distinguishes the two functions and the hypothesis is wrong.
++ *
++ * Elapsed time is logged beside it so the margin is visible, not inferred.
++ */
++static unsigned int ctl_probe_seq;
++
++static void wcd9320_probe_exit_log(struct device *dev, struct slim_device *sdev,
++				   const char *fn, unsigned int seq,
++				   ktime_t t0, const char *path)
++{
++	dev_info(dev,
++		 "%s probe #%u: exit after %lld ms: laddr=0x%02x laddr_valid=%u status=%d path=%s -- slim_get_logical_addr() decides next\n",
++		 fn, seq, ktime_to_ms(ktime_sub(ktime_get(), t0)),
++		 sdev->laddr, sdev->is_laddr_valid, sdev->status, path);
++}
 +
 +/* ---------------------------------------------------------------- power -- */
 +
@@ -4123,6 +4160,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct wcd9320 *wcd;
 +	struct wcd9320 *prev_ifd = NULL;
 +	struct wcd9320 *prev_drvdata;
++	ktime_t probe_t0 = ktime_get();
 +	bool adopt;
 +	int i, ret;
 +
@@ -4206,21 +4244,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			 "IFD probe #%u: before: ifd_instance=%p drvdata=%p this_wcd=%p\n",
 +			 ifd_probe_seq, prev_ifd, prev_drvdata, wcd);
 +
-+		if (ifd_trace_emitted < WCD9320_IFD_TRACE_MAX) {
-+			ifd_trace_emitted++;
-+			/*
-+			 * The only thing that separates "the driver core
-+			 * called probe twice" from "our own registration path
-+			 * caused the second call". Bounded so a pathological
-+			 * loop cannot turn a diagnostic into a log flood, and
-+			 * removed once the question is answered.
-+			 */
-+			dev_info(dev,
-+				 "IFD probe #%u: call trace follows (%u/%u)\n",
-+				 ifd_probe_seq, ifd_trace_emitted,
-+				 WCD9320_IFD_TRACE_MAX);
-+			dump_stack();
-+		}
 +
 +		/*
 +		 * Its OWN config, not the control function's. The two are
@@ -4256,10 +4279,35 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			 ifd_probe_seq, wcd9320_ifd_instance,
 +			 dev_get_drvdata(dev),
 +			 (prev_ifd && prev_ifd != wcd) ? 1 : 0);
++		/*
++		 * Exit state, for comparison with the control function. The
++		 * interface probe takes no power and no reset and returns
++		 * almost immediately, so laddr_valid is expected to still be 0
++		 * here -- which is exactly why slim_get_logical_addr() fails
++		 * and this bind gets rolled back.
++		 */
++		wcd9320_probe_exit_log(dev, sdev, "IFD", ifd_probe_seq,
++				       probe_t0, "ifd");
 +		dev_info(dev, "IFD probe #%u: returning 0 (bound)\n",
 +			 ifd_probe_seq);
 +		return 0;
 +	}
++
++	/*
++	 * Control function from here. Instrumented to settle whether it
++	 * survives probe structurally or merely outlasts enumeration; see the
++	 * comment at ctl_probe_seq.
++	 */
++	ctl_probe_seq++;
++	dev_info(dev,
++		 "CTL probe #%u: sdev=%p dev=%p name=%s laddr=0x%02x laddr_valid=%u status=%d\n",
++		 ctl_probe_seq, sdev, dev, dev_name(dev), sdev->laddr,
++		 sdev->is_laddr_valid, sdev->status);
++	dev_info(dev,
++		 "CTL probe #%u: driver=%p name=%s task=%s pid=%d drvdata_before=%p\n",
++		 ctl_probe_seq, dev->driver,
++		 dev->driver ? dev->driver->name : "(none)",
++		 current->comm, task_pid_nr(current), prev_drvdata);
 +
 +	/*
 +	 * Decide before touching anything. If the core already enumerated this
@@ -4368,6 +4416,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->adopted = true;
 +			dev_info(dev,
 +				 "late adoption: codec responded, no power or reset touched\n");
++			wcd9320_probe_exit_log(dev, sdev, "CTL", ctl_probe_seq,
++					       probe_t0, "late-adoption");
 +			return 0;
 +		}
 +
@@ -4405,6 +4455,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev, "fresh bring-up: waiting for enumeration\n");
 +	}
 +
++	/*
++	 * THE MEASUREMENT. If laddr_valid reads 1 here, enumeration completed
++	 * during the ~100 ms of supplies, reset and settle delays above, and
++	 * the control function's survival is timing -- one slow boot from the
++	 * same rollback the interface function takes every time. If it reads 0
++	 * and this bind still stands, the hypothesis is wrong and something
++	 * structural separates the two functions.
++	 */
++	wcd9320_probe_exit_log(dev, sdev, "CTL", ctl_probe_seq, probe_t0,
++			       adopt ? "adopt" : "fresh");
 +	return 0;
 +}
 +
@@ -4500,7 +4560,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("ifd-probe-rc1");
++MODULE_VERSION("ctl-lifetime-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
