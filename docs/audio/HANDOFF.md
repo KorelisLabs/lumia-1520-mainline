@@ -820,6 +820,31 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
 - **A trailing `\` before a closing quote escapes it.** `scp ... "C:\dir\"`
   fails with `open local "C:/dir""`. Give a full destination filename instead.
 
+### The IFD double-probe, explained (2026-08-18, r151)
+
+**It is a deferred-probe retry, not a double bind.** `slim_device_probe()`
+calls our probe, then calls `slim_get_logical_addr()` and returns
+`-EPROBE_DEFER` when the device has not enumerated yet -- discarding our 0.
+`really_probe()` rolls the bind back through `device_unbind_cleanup()`
+(`devres_release_all()` + `dev_set_drvdata(NULL)`) and the deferred-probe
+worker retries. The retry count varies with how long enumeration takes: three
+on r146, two on r145 and r151.
+
+**It exposed a real latent defect.** `wcd9320_ifd_instance` is left pointing at
+the `devm_kzalloc`'d struct that `devres_release_all()` just freed, because the
+driver's `remove()` is never called on the probe-failure path. Dangling for
+~530 ms per boot. Never reached, because the only dereference is the RX port
+path from `hw_params` or the research hook, both far later -- luck, not design.
+NOT FIXED: measuring and fixing in one build would make the result
+unattributable. Candidates and the full evidence are in
+`wcd9320-ifd-double-probe.md`.
+
+**Open, related:** the control function does not defer, probably because its
+probe does ~100 ms of regulator/reset work before returning, by which time
+enumeration has completed. If so its single probe is a timing accident too,
+and the same rollback could hit it. Unmeasured -- the control path has no
+equivalent instrumentation.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done
