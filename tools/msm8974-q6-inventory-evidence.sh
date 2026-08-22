@@ -19,10 +19,13 @@
 #      bound APR device read as "none".
 #
 #   2. It assumed q6core would be loaded. CONFIG_SND_SOC_QDSP6=m makes q6core a
-#      module, and apr.c:399 emits MODALIAS=apr:<name> while q6core.ko declares
-#      only of: aliases -- so udev can never autoload it. It must be modprobed.
-#      Worse, "fastboot boot" does not update /lib/modules at all, so a module
-#      built into the package is not on the device until it is copied there.
+#      module, and "fastboot boot" does not update /lib/modules at all, so a
+#      module built into the package is not on the device until it is copied
+#      there. (An earlier version of this comment also blamed the apr: modalias
+#      for preventing autoload. That was WRONG -- apr_uevent() tries
+#      of_device_uevent_modalias() FIRST and only falls back to apr:<name> for
+#      a device with no of_node. Once present in /lib/modules these modules
+#      autoload fine; boot #155 confirmed all eight doing so.)
 #
 #   3. It expected to read the inventory out of dmesg. q6core NEVER PRINTS IT.
 #      The reply is kmemdup'd into a private struct behind a static g_core and
@@ -144,8 +147,9 @@ open_output "$OUTDIR/msm8974-q6-inventory-$STAMP.txt"
 
 # ------------------------------------------------------ load what must load --
 #
-# q6core cannot autoload (apr: modalias vs of: aliases) and is not shipped in
-# the device's /lib/modules by "fastboot boot". Both conditions are recorded,
+# q6core is not shipped in the device's /lib/modules by "fastboot boot", so it
+# may simply be absent. It DOES autoload once present -- an earlier claim that
+# the apr: modalias prevents it was wrong. Both conditions are still recorded
 # separately, because "module file missing" and "module present but refused to
 # bind" are different problems and neither is a firmware result.
 MODULE_FILE=0
@@ -210,8 +214,8 @@ TOKEN_ARM="arm-q6-inventory"
 TOKEN_FIRE="fire-q6-inventory"
 
 # The object is q6inventory_probe.o, so lsmod shows "q6inventory_probe" --
-# no underscore after q6, and no dash for lsmod to translate. Like q6core it
-# cannot autoload, so load it explicitly.
+# no underscore after q6, and no dash for lsmod to translate. It has no DT node
+# of its own, so nothing autoloads it; load it explicitly.
 PROBE_FILE=0
 PROBE_LOADED=0
 if modinfo q6inventory_probe >/dev/null 2>&1; then
@@ -551,9 +555,9 @@ refuse_absence_language() {
 		say "Two standing traps produce this, and neither is a firmware fact:"
 		say "  1. 'fastboot boot' does not update /lib/modules. A module built"
 		say "     into the package is not on the device until it is copied."
-		say "  2. q6core cannot autoload. apr.c emits MODALIAS=apr:<name> and"
-		say "     q6core.ko declares only of: aliases, so udev never matches."
-		say "     It must be modprobed explicitly on every boot."
+		say "  2. The module may be present but unbound. Note it DOES"
+		say "     autoload once installed: apr_uevent() tries the OF"
+		say "     modalias first, so a DT-declared service matches."
 		refuse_absence_language "driver binding"
 		;;
 	C0)

@@ -807,10 +807,15 @@ Recovery images, untouched: `boot-1520.img` (pre-audio),
   where it reads as a mysterious download error. Re-derive the dtsi sum from
   the LIVE file after copying; never overwrite the repo's debranded sum.
   `build-wcd9320-kernel.sh` now hashes every staged source as a precondition.
-- **`q6core` can never autoload.** `apr.c` emits `MODALIAS=apr:<name>` while
-  `q6core.ko` declares only `of:` aliases, so udev cannot match. `modprobe
-  q6core` is required on every boot. `q6inventory_probe` depends on it, so
-  loading the probe pulls q6core in.
+- ~~**`q6core` can never autoload.**~~ **WRONG, corrected 2026-08-22 on boot
+  #155.** All eight q6 modules autoloaded unaided once they were present in
+  `/lib/modules`, and all four APR services bound. `apr_uevent()` calls
+  `of_device_uevent_modalias()` FIRST and only falls back to
+  `MODALIAS=apr:<name>` when the device has no `of_node` -- which never
+  happens for a DT-declared service. I read `apr.c:399` without reading the
+  line above it. The observed symptom was fully explained by the module simply
+  not being in `/lib/modules` (the `fastboot boot` trap below); there was
+  never a second cause.
 - **`fastboot boot` never updates `/lib/modules`.** Any module a config change
   newly builds stays in the package until copied by hand.
   `build-wcd9320-kernel.sh --extra-module <path>` now stages them, and fails

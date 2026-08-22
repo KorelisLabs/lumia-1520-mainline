@@ -281,11 +281,13 @@ Both will recur for every future `=m` symbol and both are silent.
   the package. `q6core.ko` had to be extracted from the r149 apk and installed
   by hand, into a `sound/soc/qcom/qdsp6/` directory that did not yet exist
   because QDSP6 was off when that rootfs was built.
-- **`q6core` can never autoload.** `apr.c:399` emits `MODALIAS=apr:<name>`,
-  while `q6core.ko` declares only `of:N*T*Cqcom,q6core` aliases. udev cannot
-  match them, so `modprobe q6core` is required on **every** boot. This is the
-  same class of fault as the card module's missing autoload, from a different
-  cause.
+- ~~**`q6core` can never autoload.**~~ **WRONG -- corrected on boot #155.**
+  `apr_uevent()` calls `of_device_uevent_modalias()` first and only falls back
+  to `MODALIAS=apr:<name>` for a device with no `of_node`, which a DT-declared
+  service never is. All eight q6 modules autoloaded unaided once present in
+  `/lib/modules`, and all four APR services bound. The original symptom was
+  entirely the missing-module trap above; I inferred a second cause from
+  `apr.c:399` without reading the line before it.
 
 ## 9. The negative control must be a separate build — proven, not assumed
 

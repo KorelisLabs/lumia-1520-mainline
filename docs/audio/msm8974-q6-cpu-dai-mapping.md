@@ -437,3 +437,60 @@ hypothesis for hardware to answer rather than a gap in the map.
 Next is implementation: `wcd9320-lumia-q6`, the minimal AFE/ASM/ADM/routing DT
 nodes, the prepare-only ioctl helper, and the evidence harness that observes
 opcodes rather than `aplay` exit status.
+
+## 16. BUILD 1 PROVEN — the QDSP6 graph instantiates (boot #155, r154)
+
+DT nodes only, no machine driver, deliberately. 27/27, exit 0.
+
+```
+APR devices : aprsvc:service:4:3  4:4  4:7  4:8
+APR drivers : qcom-q6core  qcom-q6afe  qcom-q6asm  qcom-q6adm   (all bound)
+modules     : q6core q6afe q6afe_dai q6asm q6asm_dai q6adm q6routing
+              snd_q6dsp_common                                  (all loaded)
+components  : service@4:dais   service@7:dais   service@8:routing
+              217:a0:1:0 (codec)  snd-soc-dummy x2
+DAIs        : SLIMBUS_0_RX present, wcd9320-slim-rx1 present, 139 total
+cards       : 0
+```
+
+**No claim about the firmware.** None of these probes sends a packet, so a
+bound driver is not evidence — the C0 lesson, unchanged. `SLIMBUS_0_RX`
+existing as a DAI says nothing about whether the ADSP accepts traffic on AFE
+port `0x4000`; that is build 2.
+
+### Three findings that change build 2
+
+**1. The front-end DAI is NOT called `MultiMedia1`.** Measured, not inferred:
+
+```
+DAI named MultiMedia1  : 0
+DAI named after device : 1
+q6asm component        : fe200000.remoteproc:smd-edge:apr:service@7:dais
+```
+
+`q6asm_fe_dai_component` sets `.legacy_dai_naming = 1`, and with a single DAI
+declared ASoC uses `fmt_single_name()`, which names the DAI after the
+**device**. The same trap the codec component hit earlier in this project.
+
+**Consequence: build 2 must wire its links with `sound-dai` phandles**, via
+`qcom_snd_parse_of()` as `apq8096` does. A C machine driver naming its FE
+`"MultiMedia1"` would fail to match, and the symptom would be a card that
+refuses to register for no visible reason — indistinguishable, at a glance,
+from the control plane not working.
+
+**2. `q6afe-dai` registers ALL 139 DAIs regardless of DT.** Every MI2S, TDM,
+CODEC_DMA and DISPLAY_PORT port appears. The `dai@2` child supplies *per-port
+configuration*, it does not select which DAIs exist. So `SLIMBUS_0_RX` being
+in the list is **not** evidence that our DT child took effect — that is only
+tested when AFE is asked to start the port.
+
+**3. The modules autoload.** All eight came up unaided once present in
+`/lib/modules`, which corrected an earlier false claim of mine — see the
+autoload note in `msm8974-q6-control-plane-mapping.md` §8.
+
+### What build 1 deliberately leaves untested
+
+The whole of §5's gate from `ASM session request` onward. The graph exists;
+whether the DSP answers is a different question, asked by a different build,
+so that "the graph does not instantiate" and "the control plane does not work"
+cannot be confused.
