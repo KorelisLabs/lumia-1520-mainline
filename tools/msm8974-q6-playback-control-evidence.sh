@@ -250,6 +250,20 @@ N_AFE_START=$(cnt afe_start); N_AFE_STOP=$(cnt afe_stop)
 N_AFE_SEND=$(cnt afe_send)
 
 # The codec's own frozen delta, from its dmesg lines during this run.
+# How the card got loaded, from the kernel timestamp rather than memory.
+# A udev autoload binds during early boot; a hand-run modprobe binds at
+# whatever second the operator typed it. The manual run that first proved
+# this path bound at 1192 s, so the two are not close.
+CARD_AT=$(dmesg 2>/dev/null | grep -m1 'QDSP6 card registered' |
+	sed -n 's/^\[ *\([0-9]*\)\..*/\1/p')
+[ -n "${CARD_AT:-}" ] || CARD_AT=-1
+AUTOLOAD_LIMIT="${AUTOLOAD_LIMIT:-180}"
+if [ "$CARD_AT" -ge 0 ] && [ "$CARD_AT" -le "$AUTOLOAD_LIMIT" ]; then
+	CARD_AUTOLOADED=1
+else
+	CARD_AUTOLOADED=0
+fi
+
 RX_HWPARAMS=$(dmesg 2>/dev/null | grep -c 'RX path invocation: ASoC hw_params')
 RX_PROG=$(dmesg 2>/dev/null | grep -c 'rx-port 16: PROGRAMMED')
 RX_TORN=$(dmesg 2>/dev/null | grep -c 'rx-port 16: TORN DOWN')
@@ -262,6 +276,8 @@ Q6_ERRORS=$(dmesg 2>/dev/null |
 {
 	hdr "the card"
 	say "sound cards          : $CARDS"
+	say "card bound at       : ${CARD_AT}s into this boot"
+	say "loaded by           : $([ "$CARD_AUTOLOADED" = 1 ] && echo "udev autoload" || echo "MANUAL or unknown")"
 	cat /proc/asound/cards 2>/dev/null | sed 's/^/  /'
 	say "pcm devices          :"
 	cat /proc/asound/pcm 2>/dev/null | sed 's/^/  /'
@@ -328,6 +344,7 @@ Q6_ERRORS=$(dmesg 2>/dev/null |
 		"some probes did not register:$PROBE_BAD -- their zero counts mean nothing" \
 		"all"
 	check "a card exists" "$CARDS" "1"
+	check "the card autoloaded (no manual insertion)" "$CARD_AUTOLOADED" "1"
 	check "the DAPM route is enabled" "${MIXER_VAL:-0}" "1"
 	check "hw_params succeeded" "$(h hw_params_rc)" "0"
 	check "PREPARE succeeded" "$(h prepare_rc)" "0"
