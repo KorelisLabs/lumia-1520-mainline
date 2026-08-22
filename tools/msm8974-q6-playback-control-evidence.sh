@@ -49,12 +49,23 @@ DMESG_FILE="/tmp/.wcd9320-dmesg-q6pc-$$"
 TRACE="${TRACE:-/sys/kernel/tracing}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 PCMDEV="${PCMDEV:-/dev/snd/pcmC0D0p}"
+CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 
 # The prepare-only helper: the frozen instrument, proven on boot #154.
 HELPER=""
 for c in "${PCM_HELPER:-}" "$DIR/pcm-prepare-only" /tmp/pcm-prepare-only \
          "$HOME/pcm-prepare-only"; do
 	[ -n "$c" ] && [ -x "$c" ] && { HELPER="$c"; break; }
+done
+
+# The device has no amixer, no tinymix, no alsactl, and no DNS with which to
+# fetch them, so the control plane is reached through our own audited helper.
+# It can only set controls -- no PCM ioctl, no write() -- and that was
+# enforced on the source before it was allowed to become a binary.
+SETCTL=""
+for c in "${ALSA_SETCTL:-}" "$DIR/alsa-setctl" /tmp/alsa-setctl \
+         "$HOME/alsa-setctl"; do
+	[ -n "$c" ] && [ -x "$c" ] && { SETCTL="$c"; break; }
 done
 
 require_module_version
@@ -105,11 +116,13 @@ fi
 # The DAPM route is not optional. Without it q6routing never gets a port_id,
 # q6routing_stream_open() connects nothing, and the FE never reaches the BE,
 # so every downstream check would fail for a reason unrelated to the DSP.
-command -v amixer >/dev/null 2>&1 || {
-	say "INVALID RUN: amixer is not installed, so the route cannot be set."
-	say "  apk add alsa-utils, or point \$PATH at a control-setting helper."
+if [ -z "$SETCTL" ] && ! command -v amixer >/dev/null 2>&1; then
+	say "INVALID RUN: there is no way to set a mixer control."
+	say "  Neither alsa-setctl nor amixer was found, and this device has"
+	say "  no DNS with which to install alsa-utils. Build tools/alsa-setctl.c"
+	say "  and copy it over (ONE file per scp)."
 	exit 2
-}
+fi
 
 CARDS=$(grep -c '^ *[0-9]' /proc/asound/cards 2>/dev/null) || CARDS=0
 [ -n "$CARDS" ] || CARDS=0
@@ -189,7 +202,20 @@ cnt() {
 #
 MIXER_RC=""
 MIXER_VAL=""
-if command -v amixer >/dev/null 2>&1; then
+MIXER_TOOL=""
+MIXER_FOUND=""
+MIXER_OUT=""
+if [ -n "$SETCTL" ]; then
+	MIXER_TOOL="$SETCTL"
+	# --set reads the value back afterwards, because a write that
+	# returned 0 is not proof that the control took the value.
+	MIXER_OUT=$("$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 2>&1)
+	MIXER_RC=$?
+	MIXER_FOUND=$(printf "%s" "$MIXER_OUT" | sed -n "s/^found=//p" | head -n1)
+	MIXER_VAL=$(printf "%s" "$MIXER_OUT" | sed -n "s/^readback=//p" |
+		head -n1 | cut -d, -f1)
+elif command -v amixer >/dev/null 2>&1; then
+	MIXER_TOOL=amixer
 	amixer -q cset name="$MIXER" 1 >/dev/null 2>&1
 	MIXER_RC=$?
 	MIXER_VAL=$(amixer cget name="$MIXER" 2>/dev/null |
@@ -236,8 +262,13 @@ Q6_ERRORS=$(dmesg 2>/dev/null |
 
 	hdr "the route"
 	say "mixer control        : $MIXER"
-	say "amixer cset rc       : $MIXER_RC"
-	say "mixer value after    : ${MIXER_VAL:-unknown}"
+	say "tool                 : ${MIXER_TOOL:-none}"
+	say "set rc               : $MIXER_RC"
+	say "control name found   : ${MIXER_FOUND:-unknown}"
+	say "value read back      : ${MIXER_VAL:-unknown}"
+	if [ -n "$MIXER_OUT" ]; then
+		printf "%s" "$MIXER_OUT" | sed "s/^/  /"
+	fi
 
 	hdr "the prepare-only run"
 	printf '%s\n' "${HELPER_OUT:-  (not run)}" | sed 's/^/  /'
