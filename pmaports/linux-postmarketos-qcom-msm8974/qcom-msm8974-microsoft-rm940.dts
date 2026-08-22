@@ -106,6 +106,10 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 /* APR_DOMAIN_ADSP and APR_SVC_ADSP_CORE, for the q6core inventory probe. */
 #include <dt-bindings/soc/qcom,apr.h>
+/* SLIMBUS_0_RX, for the AFE back-end DAI id. */
+#include <dt-bindings/sound/qcom,q6afe.h>
+/* MSM_FRONTEND_DAI_MULTIMEDIA1 and Q6ASM_DAI_RX, for the ASM front end. */
+#include <dt-bindings/sound/qcom,q6asm.h>
 
 / {
 	gpio-keys {
@@ -284,11 +288,16 @@
 	 * the reply carries num_services and a {service_id, version} array
 	 * reported by the ADSP itself.
 	 *
-	 * DELIBERATELY ONLY q6core. No AFE, no ASM, no ADM, no routing, no CPU
-	 * DAI. CONFIG_SND_SOC_QDSP6 has no per-service symbols -- the umbrella
-	 * selects the whole group -- so those drivers are BUILT. They are not
-	 * INSTANTIATED, because nothing here creates an APR device for them.
-	 * Kconfig decides what is compiled; this node decides what probes.
+	 * That question is ANSWERED: the ADSP reported a complete 11-service
+	 * inventory including AFE, ASM and ADM
+	 * (msm8974-q6-service-inventory-proven). This node no longer carries
+	 * q6core alone -- see the Branch A comment below the q6core child.
+	 *
+	 * CONFIG_SND_SOC_QDSP6 has no per-service symbols -- the umbrella
+	 * selects the whole group -- so every q6 driver is BUILT regardless.
+	 * Kconfig decides what is compiled; this node decides what probes, and
+	 * that is still how scope is controlled here: the services below are
+	 * the minimum for one playback path, and nothing more is instantiated.
 	 *
 	 * The transport is not new: this smd-edge is the same "lpass" edge
 	 * (qcom,smd-edge = <1>) that QRTR already uses for the SLIMbus QMI
@@ -316,6 +325,120 @@
 			q6core: service@3 {
 				compatible = "qcom,q6core";
 				reg = <APR_SVC_ADSP_CORE>;
+			};
+
+			/*
+			 * BRANCH A, BUILD 1 OF 2: the QDSP6 graph only.
+			 *
+			 * These services are added WITHOUT a machine driver, on
+			 * purpose. Nothing here creates a sound card, so this
+			 * build answers exactly one question -- does the QDSP6
+			 * graph instantiate on this firmware? -- and cannot be
+			 * confused with "the playback control plane works",
+			 * which is build 2.
+			 *
+			 * Conflating those two is easy and expensive: a card
+			 * that fails to register looks very much like a DSP
+			 * that refuses a command, and the fix for each is in a
+			 * different place.
+			 *
+			 * NONE of these probes sends anything to the DSP. q6afe
+			 * and q6asm kzalloc, call q6core_get_svc_api_info() --
+			 * the AVCS query already proven -- and populate their
+			 * children; q6routing registers a component. So binding
+			 * them is NOT evidence about the firmware, and the gate
+			 * for this build asserts instantiation only.
+			 *
+			 * One useful side effect: q6afe_probe() triggers the
+			 * AVCS version query on its own, so the service
+			 * inventory gets re-confirmed by the real stack rather
+			 * than by our diagnostic probe module.
+			 *
+			 * Deliberately absent:
+			 *   - clock-controller (qcom,q6afe-clocks). Its provider
+			 *     enumerates MI2S, PCM, TDM, MCLK and LPASS clocks
+			 *     with no SLIMbus entries; SLIMbus clocking belongs
+			 *     to the bus. Fewer objects means a failure here has
+			 *     fewer candidate causes.
+			 *   - iommus on the q6asm dais. Absent, q6asm-dai sets
+			 *     sid = -1 and uses the raw physical address, which
+			 *     is correct for a port with no ADSP SMMU mapping.
+			 *   - qcom,protection-domain. Not required, and this
+			 *     ADSP has no audio_pd.
+			 *   - every AFE port except SLIMBUS_0_RX, and every ASM
+			 *     front end except MultiMedia1.
+			 */
+			q6afe: service@4 {
+				compatible = "qcom,q6afe";
+				reg = <APR_SVC_AFE>;
+
+				/*
+				 * SLIMBUS_0_RX (DAI id 2, AFE port 0x4000) is
+				 * a PROPOSAL, not a proven fact: it is what
+				 * apq8096 uses for a WCD codec, and nothing
+				 * measured on this device has confirmed the
+				 * ADSP expects RX1 traffic there. The
+				 * correspondence under test is codec slave
+				 * port 16 <-> SLIMbus channel 144 <-> AFE port
+				 * 0x4000, and it is build 2 that tests it --
+				 * a rejection would surface as an AFE command
+				 * failure at prepare, not here.
+				 */
+				q6afedai: dais {
+					compatible = "qcom,q6afe-dais";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					#sound-dai-cells = <1>;
+
+					dai@2 {
+						reg = <SLIMBUS_0_RX>;
+					};
+				};
+			};
+
+			q6asm: service@7 {
+				compatible = "qcom,q6asm";
+				reg = <APR_SVC_ASM>;
+
+				/*
+				 * The front end. q6asm-dais is also the FE's
+				 * PLATFORM component -- its .pcm_construct
+				 * allocates the DMA buffer that
+				 * ASM_CMD_SHARED_MEM_MAP_REGIONS later maps to
+				 * the DSP. Build 2's FE link must therefore
+				 * name this node as its platform; supplying a
+				 * different one would leave dma_buffer.addr at
+				 * 0 and fail the memory map for a reason that
+				 * has nothing to do with the firmware.
+				 */
+				q6asmdai: dais {
+					compatible = "qcom,q6asm-dais";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					#sound-dai-cells = <1>;
+
+					dai@0 {
+						reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+						direction = <Q6ASM_DAI_RX>;
+					};
+				};
+			};
+
+			q6adm: service@8 {
+				compatible = "qcom,q6adm";
+				reg = <APR_SVC_ADM>;
+
+				/*
+				 * Not optional. q6routing_stream_open(), called
+				 * from q6asm-dai when the FE opens, calls
+				 * q6adm_open() (ADM_CMD_DEVICE_OPEN_V5) and
+				 * q6adm_matrix_map() -- so ADM is on the
+				 * critical path for any FE->BE connection.
+				 */
+				q6routing: routing {
+					compatible = "qcom,q6adm-routing";
+					#sound-dai-cells = <0>;
+				};
 			};
 		};
 	};
