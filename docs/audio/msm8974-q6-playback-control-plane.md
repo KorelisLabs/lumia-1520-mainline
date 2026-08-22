@@ -1,7 +1,8 @@
 # The QDSP6 playback control plane works
 
 **Status:** proven on hardware, 2026-08-22.
-**Evidence:** `msm8974-q6-playback-control-20260822T221532Z.txt` (22 checks, 0 failed).
+**Evidence:** `msm8974-q6-playback-control-20260822T222939Z.txt` (cold boot, 23 checks, 0 failed).
+**First proof:** `msm8974-q6-playback-control-20260822T221532Z.txt` (22/22 under the then-current gate, card modprobed by hand) — kept as the record of how this was found.
 **Gate:** `tools/msm8974-q6-playback-control-evidence.sh`.
 **Kernel:** 6.16.12 r155, codec `lifetime-rc1`, card `q6-card-rc1`.
 
@@ -63,6 +64,21 @@ That promotes it from proposal to hardware evidence.
 The mixer control name was likewise only ever read out of `Q6ROUTING_RX_MIXERS`.
 Enumerating the card's 1032 controls confirmed it verbatim before the gate ran.
 
+## Provenance: cold boot, autoloaded
+
+The first passing run used a hand-run `modprobe`, after the install failed.
+Every other milestone in this series was taken from a cold boot with no
+manual insertion, and provenance that rests on the operator remembering is
+not provenance. So the gate now derives it from the kernel: a udev autoload
+binds the card during early boot, a hand-run modprobe binds it whenever it
+was typed. The manual run bound at **1192 s**; the frozen run bound at
+**51 s**, reported as `loaded by: udev autoload`.
+
+That also exercised the autoload path itself, which the manual modprobe had
+bypassed — `depmod` only succeeded after the zero-byte modules were repaired,
+so until this boot the `of:N*T*Cnokia,lumia1520-q6-sndcard` alias had never
+actually been used.
+
 ## What this does NOT claim
 
 - No SLIMbus **data** channel was allocated; `slim_stream_*` is untouched.
@@ -82,6 +98,14 @@ and were nothing of the kind**. The card module had been delivered as two
 zero-byte files by a multi-file `scp` — the same trap already recorded in
 [wcd9320-zero-byte-module.md](wcd9320-zero-byte-module.md) — so no card existed
 and every downstream rung failed vacuously.
+
+It then happened a **third** time, to the gate script itself, and that
+occurrence is the instructive one: `sh` on a zero-byte file exits **0**. The
+run reported `exit=0` and printed nothing, so the exit status announced
+success for a gate that never executed a line. `REPORT_COMPLETE` exists to
+catch a truncated run, but it is checked inside the script, which is no help
+when the script is empty. Verify the artifact before believing the result —
+the same rule already applied to kernel builds, just not yet to the gate.
 
 Three of my own diagnoses along the way were wrong and are recorded because the
 sequence matters more than the conclusion:

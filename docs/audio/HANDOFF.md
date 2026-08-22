@@ -894,7 +894,8 @@ Full detail in [msm8974-q6-playback-control-plane.md](msm8974-q6-playback-contro
 DT with the predicted FE/BE split, and an ordinary open + hw_params + prepare
 drives ASM map/open, ADM open/matrix, and AFE config/start -- every one
 observed as an actual call by kprobe, and all acknowledged, since prepare()
-returns the DSP status and returned 0. 22/22.
+returns the DSP status and returned 0. **23/23 from a cold boot**, card bound at
+51 s by udev autoload with no manual insertion.
 
 SLIMBUS_0_RX with channel map 144 was a *provisional* apq8096-derived guess in
 the Branch A map, flagged as the likeliest thing to be wrong. It accepted the

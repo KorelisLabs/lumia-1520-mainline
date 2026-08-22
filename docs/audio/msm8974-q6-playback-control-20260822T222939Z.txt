@@ -1,0 +1,292 @@
+
+=== the card ===
+sound cards          : 1
+card bound at       : 51s into this boot
+loaded by           : udev autoload
+   0 [Lumia1520Q6    ]: Lumia1520-Q6 - Lumia1520-Q6
+                        Lumia1520-Q6
+pcm devices          :
+  00-00: MultiMedia1 Playback (*) :  : playback 1
+
+=== the route ===
+mixer control        : SLIMBUS_0_RX Audio Mixer MultiMedia1
+tool                 : /home/user/wcd9320-tools/alsa-setctl
+set rc               : 0
+control name found   : 1
+value read back      : 1
+  ctl_dev=/dev/snd/controlC0
+  ctl_count=1032
+  name=SLIMBUS_0_RX Audio Mixer MultiMedia1
+  found=1
+  numid=17
+  type=BOOLEAN
+  count=1
+  write_rc=0
+  readback=1
+=== the prepare-only run ===
+  tool=pcm-prepare-only
+  device=/dev/snd/pcmC0D0p
+  requested_rate=48000
+  requested_channels=1
+  requested_format=S16_LE
+  open_rc=0
+  pcm_id=MultiMedia1 Playback (*)
+  pcm_name=
+  pcm_subname=subdevice #0
+  pcm_card=0
+  pcm_device=0
+  hw_params_rc=0
+  actual_rate=48000
+  actual_channels=1
+  actual_period_size=64
+  actual_periods=8
+  actual_buffer_size=512
+  actual_period_bytes=128
+  actual_buffer_bytes=1024
+  sw_params_rc=0
+  start_threshold=2147483647
+  prepare_rc=0
+  state=PREPARED
+  state_num=2
+  reached_prepared=1
+  drop_rc=0
+  state_after_drop=SETUP
+  close_rc=0
+  write_calls=0
+  frames_submitted=0
+  start_requested=0
+  drain_requested=0
+  mmap_committed=0
+  final_rc=0
+helper exit          : 0
+
+=== observed remote calls (kprobe counts) ===
+probes registered    : asm_map asm_open asm_run asm_cmd adm_open adm_matrix adm_close afe_start afe_stop afe_send
+
+  q6asm_map_memory_regions : 1
+  q6asm_open_write         : 1
+  q6adm_open               : 1
+  q6adm_matrix_map         : 1
+  q6afe_port_start         : 1
+  afe_apr_send_pkt         : 3
+  ---- teardown ----
+  q6asm_cmd (close)        : 1
+  q6adm_close              : 1
+  q6afe_port_stop          : 1
+  ---- MUST BE ZERO ----
+  q6asm_run_nowait         : 0
+
+=== the codec's frozen delta ===
+ASoC hw_params invocations : 1
+port 16 PROGRAMMED         : 1
+port 16 TORN DOWN          : 1
+0x040 00 -> 05             : 1
+0x180 00 -> 01             : 1
+
+=== the ladder ===
+  G0  PASS  card registered
+  G1  PASS  FE PCM exists: MultiMedia1 Playback (*)
+  G2  PASS  FE buffer + hw_params: buffer_bytes=1024
+  G3  PASS  DAPM route enabled
+  G4  PASS  HW_PARAMS reached
+  G5  PASS  WCD9320 frozen RX delta
+  G6  PASS  ASM memory map issued
+  G7  PASS  ASM stream open issued
+  G8  PASS  ADM device open issued
+  G9  PASS  ADM matrix map issued
+  G10  PASS  AFE packets sent
+  G11  PASS  AFE port start issued
+  G12  PASS  PREPARE succeeded (all replies OK)
+  G13  PASS  teardown issued
+
+=== checks ===
+  PASS  module version                   lifetime-rc1
+  PASS  every kprobe registered          all
+  PASS  a card exists                    1
+  PASS  the card autoloaded (no manual insertion) 1
+  PASS  the DAPM route is enabled        1
+  PASS  hw_params succeeded              0
+  PASS  PREPARE succeeded                0
+  PASS  reached PREPARED                 1
+  PASS  ASM memory map issued            1
+  PASS  ASM stream open issued           1
+  PASS  ADM device open issued           1
+  PASS  ADM matrix map issued            1
+  PASS  AFE traffic occurred             3
+  PASS  AFE port start issued            1
+  PASS  codec hw_params ran              1
+  PASS  0x040 00 -> 05 reproduced        1
+  PASS  0x180 00 -> 01 reproduced        1
+  PASS  the port was torn down           1
+  PASS  ASM RUN never issued             0
+  PASS  helper wrote nothing             0
+  PASS  helper requested no START        0
+  PASS  no q6 error in the log           none
+  PASS  no kernel WARNING/BUG            none
+
+=== finding ===
+THE QDSP6 PLAYBACK CONTROL PLANE WORKS.
+
+A real FE/BE path was instantiated from DT, the DAPM route was
+enabled, and an ordinary PCM open + hw_params + prepare drove
+the full chain: ASM memory map and stream open, ADM device open
+and matrix map, AFE port configuration and start -- each
+observed as an actual call, and all of them acknowledged, since
+prepare() returns the DSP's status and returned 0.
+
+SLIMBUS_0_RX accepted the one-channel configuration on AFE port
+0x4000 with channel 144. That promotes the endpoint from an
+apq8096-derived proposal to hardware evidence.
+
+The WCD9320 reproduced its frozen delta through this path:
+0x040 00->05 and 0x180 00->01, with the clean inverse.
+
+WHAT THIS DOES NOT CLAIM. No SLIMbus data channel was allocated
+(slim_stream_* is untouched), no ASM RUN was issued, no sample
+moved, and nothing was audible. q6asm_run_nowait was observed
+ZERO times, and the helper contains no write() at all.
+
+=== run identity ===
+mode              : q6-playback-control
+date              : 2026-08-22T22:29:41Z (UTC)
+module version    : lifetime-rc1   (expected lifetime-rc1)
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #156-postmarketos-qcom-msm8974 SMP PREEMPT Sat Aug 22 22:42:57 U
+uptime            : 448.28 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 62 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[   48.215563] wcd9320 217:a0:0:0: IFD probe #1: sdev=1fcaf01b dev=1fcaf01b name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.215707] wcd9320 217:a0:0:0: IFD probe #1: driver=c7a71d43 name=wcd9320 task=(udev-worker) pid=435
+[   48.215798] wcd9320 217:a0:0:0: IFD probe #1: before: ifd_instance=00000000 drvdata=00000000 this_wcd=5961a38b
+[   48.215981] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.216067] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.216148] wcd9320 217:a0:0:0: IFD probe #1: after:  ifd_instance=5961a38b drvdata=5961a38b replaced=0
+[   48.216240] wcd9320 217:a0:0:0: IFD probe #1: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.216352] wcd9320 217:a0:0:0: IFD probe #1: returning 0 (bound)
+[   48.219321] wcd9320 217:a0:0:0: Failed to get logical address
+[   48.219559] wcd9320 217:a0:1:0: CTL probe #1: sdev=d8f0b40b dev=d8f0b40b name=217:a0:1:0 laddr=0x00 laddr_valid=0 status=0
+[   48.219663] wcd9320 217:a0:1:0: CTL probe #1: driver=c7a71d43 name=wcd9320 task=(udev-worker) pid=435 drvdata_before=00000000
+[   48.241413] wcd9320 217:a0:1:0: ASoC component registered: wcd9320-codec, 1 DAI(s): wcd9320-slim-rx1
+[   48.329380] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   48.329481] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   48.329556] wcd9320 217:a0:1:0: CTL probe #1: exit after 110 ms: laddr=0x00 laddr_valid=0 status=0 path=fresh -- slim_get_logical_addr() decides next
+[   48.331193] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   48.340729] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   48.346384] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[   48.389589] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 87
+[   48.389721] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   48.389815] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   48.644127] wcd9320 217:a0:0:0: IFD probe #2: sdev=1fcaf01b dev=1fcaf01b name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.649461] wcd9320 217:a0:0:0: IFD probe #2: driver=c7a71d43 name=wcd9320 task=kworker/u16:2 pid=37
+[   48.649578] wcd9320 217:a0:0:0: IFD probe #2: before: ifd_instance=00000000 drvdata=00000000 this_wcd=f3a1f0ed
+[   48.649750] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.649837] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.649919] wcd9320 217:a0:0:0: IFD probe #2: after:  ifd_instance=f3a1f0ed drvdata=f3a1f0ed replaced=0
+[   48.650012] wcd9320 217:a0:0:0: IFD probe #2: exit after 5 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.650127] wcd9320 217:a0:0:0: IFD probe #2: returning 0 (bound)
+[   48.659476] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.668717] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   49.016770] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[   49.019309] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[   49.039274] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[   49.045147] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[   49.051795] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[   49.051939] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[   49.726895] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[   50.232046] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[   50.286507] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[   50.351694] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[   50.430120] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[   50.511081] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[   50.614076] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[   50.734750] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[   50.759675] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[   50.781617] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[   50.789314] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[   50.793559] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[   50.801155] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[   50.809705] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[   50.811420] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[   50.819473] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[   50.819499] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[   50.850199] wcd9320-lumia-q6 sound: front end: MultiMedia1 Playback (id 0)
+[   50.850219] wcd9320-lumia-q6 sound: back end: SLIM Playback (id 2)
+[   51.413329] wcd9320-lumia-q6 sound: QDSP6 card registered: 2 link(s)
+[   51.430458] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[   51.430480] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[   51.430495] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   56.093822] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   82.092797] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+
+=== verdict ===
+mode   : q6-playback-control
+checks : 23 passed, 0 failed
+VERDICT: PASS (q6-playback-control)
+REPORT_COMPLETE
