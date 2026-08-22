@@ -76,12 +76,22 @@ if [ "$FORCE" = "0" ] && [ -f "$OUT" ] && [ "$OUT" -nt "$SRC" ]; then
 	echo "already built and newer than the source -- reusing (--force overrides)"
 else
 	step "toolchain (interactive sudo)"
+	#
+	# The armv7 buildroot usually does NOT exist yet: the kernel is built
+	# cross-native with clang, which never needs one. "pmbootstrap chroot -b
+	# armv7" creates it on demand, running under qemu binfmt -- slower than
+	# the native chroot, but it gives a real armv7 gcc with musl headers and
+	# the kernel uapi headers, which is exactly what a userspace binary for
+	# this device should be built against.
+	#
 	echo "pmbootstrap needs sudo once; the rest runs clean."
+	echo "the armv7 buildroot is created on demand and runs under qemu,"
+	echo "so the first apk add here is slow."
 	command -v pmbootstrap >/dev/null 2>&1 ||
 		die "pmbootstrap is not on PATH (tried \$HOME/.local/bin)"
 	sudo -v || die "sudo authentication failed -- nothing was built"
 
-	pmbootstrap -y chroot --arch "$ARCH" -- apk add gcc musl-dev linux-headers ||
+	pmbootstrap -y chroot -b "$ARCH" -- apk add gcc musl-dev linux-headers ||
 		die "could not install the build tools in the $ARCH chroot"
 	echo "gcc, musl-dev and linux-headers present in the $ARCH chroot"
 
@@ -94,7 +104,7 @@ else
 	# removes the one remaining way this tool can fail for a reason that has
 	# nothing to do with the measurement.
 	#
-	pmbootstrap -y chroot --arch "$ARCH" -- \
+	pmbootstrap -y chroot -b "$ARCH" -- \
 		gcc -O2 -Wall -Wextra -Werror -static \
 		    -o /tmp/pcmhelper/pcm-prepare-only \
 		    /tmp/pcmhelper/pcm-prepare-only.c ||
