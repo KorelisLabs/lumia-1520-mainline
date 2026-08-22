@@ -1,0 +1,285 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] ASoC: qcom: Nokia Lumia 1520 QDSP6 sound card
+
+The real QDSP6 playback topology, replacing the dummy CPU side of the
+minimal diagnostic card:
+
+  MultiMedia1 FE (q6asm-dais, ASM 7)
+      | DPCM, via the "SLIMBUS_0_RX Audio Mixer" DAPM control
+  SLIMBUS_0_RX BE (q6afe-dais, AFE 4, port 0x4000)
+      |
+  wcd9320-slim-rx1 (codec slave port 16)
+
+Links come from DT and are resolved by qcom_snd_parse_of(), not written in
+C. Measured on hardware: the front-end DAI is NOT called "MultiMedia1" --
+q6asm's FE component sets .legacy_dai_naming = 1, so with one declared DAI
+ASoC names it after the device. A dai_link naming its CPU "MultiMedia1"
+would silently fail to match.
+
+The back end's hw_params sets the AFE receive channel map to {144}, which is
+this experiment's hypothesis: that codec slave port 16 corresponds to SLIMbus
+channel 144 on AFE port 0x4000. q6slim_hw_params() records only rate and bit
+width, so without this the port would be configured with num_channels = 0.
+The codec gains no channel-map ABI -- encoding an unproven number into its
+permanent interface would be the wrong order.
+
+Separate module from the minimal card on purpose: that card is a frozen proof
+oracle. The two are mutually exclusive at runtime, which ASoC enforces itself.
+
+Establishes a control path only: no SLIMbus data channel, no samples.
+
+Not upstream material as it stands: the channel number is provisional.
+
+---
+
+diff -uNr orig/sound/soc/qcom/Kconfig new/sound/soc/qcom/Kconfig
+--- a/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.786861243 -0400
++++ b/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.800972547 -0400
+@@ -274,3 +274,23 @@
+ 	  Say Y or M if you want to use audio device on this SoCs.
+ 
+ endif #SND_SOC_QCOM
++
++config SND_SOC_LUMIA1520_Q6
++	tristate "Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)"
++	depends on SND_SOC_QDSP6 && SLIM_WCD9320
++	select SND_SOC_QCOM_COMMON
++	default n
++	help
++	  The real QDSP6 playback topology for the Lumia 1520 (RM-940): the
++	  MultiMedia1 ASM front end, routed through ADM to the SLIMBUS_0_RX
++	  AFE back end, terminating on the WCD9320's RX1 DAI.
++
++	  Deliberately separate from SLIM_WCD9320_LUMIA_CARD, which is a frozen
++	  diagnostic fixture with a dummy CPU side. The two are mutually
++	  exclusive at runtime; ASoC refuses to bind the codec component to a
++	  second card and says so.
++
++	  This establishes a control path only. It allocates no SLIMbus data
++	  channel and moves no samples.
++
++	  If unsure, say N.
+diff -uNr orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
+--- a/sound/soc/qcom/Makefile	2026-08-22 18:34:40.789297781 -0400
++++ b/sound/soc/qcom/Makefile	2026-08-22 18:34:40.836078787 -0400
+@@ -47,3 +47,7 @@
+ 
+ #DSP lib
+ obj-$(CONFIG_SND_SOC_QDSP6) += qdsp6/
++
++# Nokia Lumia 1520 QDSP6 machine driver, default off.
++snd-soc-lumia1520-q6-y := lumia1520-q6.o
++obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
+diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
+--- a/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
++++ b/sound/soc/qcom/lumia1520-q6.c	2026-08-22 18:34:40.796972547 -0400
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
++ *
++ * The real playback topology, replacing the dummy CPU side of
++ * wcd9320-lumia-card:
++ *
++ *   MultiMedia1 FE   q6asm-dais, APR service ASM (7)   PCM-facing session
++ *        |  DPCM, via the "SLIMBUS_0_RX Audio Mixer" DAPM control
++ *   SLIMBUS_0_RX BE  q6afe-dais, APR service AFE (4)   AFE port 0x4000
++ *        |
++ *   wcd9320-slim-rx1   codec slave port 16
++ *
++ * WHY THIS IS A SEPARATE MODULE FROM wcd9320-lumia-card
++ *
++ * That card is a frozen proof oracle: the RX-callback milestone depends on
++ * it, and the prepare-only helper was calibrated against it. It stays exactly
++ * as it is. This module is the thing under test; keeping them apart means a
++ * failure here cannot be confused with a regression there.
++ *
++ * They are mutually exclusive at runtime, and ASoC enforces that itself --
++ * soc_probe_component() refuses to bind a component to a second card with
++ *
++ *   "Trying to bind component ... but is already bound to card ..."
++ *
++ * and returns -ENODEV. No hand-rolled guard is needed here, and one would only
++ * duplicate a clearer message.
++ *
++ * WHY THE LINKS COME FROM DT AND NOT FROM C
++ *
++ * Measured on boot #155: the front-end DAI is NOT called "MultiMedia1". The
++ * q6asm FE component sets .legacy_dai_naming = 1, so with a single declared
++ * DAI ASoC uses fmt_single_name() and names it after the DEVICE:
++ *
++ *   fe200000.remoteproc:smd-edge:apr:service@7:dais
++ *
++ * A dai_link naming its CPU "MultiMedia1" would silently fail to match. So
++ * links are wired with sound-dai phandles and parsed by qcom_snd_parse_of(),
++ * which resolves names through the component that owns each of_node and also
++ * sets the DPCM flags correctly (dynamic on the FE, no_pcm on the BE).
++ *
++ * THE CHANNEL MAP IS THE HYPOTHESIS UNDER TEST
++ *
++ * q6slim_hw_params() records only rate and bit width; num_channels and
++ * ch_mapping[] come solely from q6slim_set_channel_map(). Without the call
++ * below, q6afe_dai_prepare() would configure the port with num_channels = 0.
++ *
++ * The value 144 is a PROPOSAL: it is apq8096's convention for a WCD codec's
++ * RX1, and this experiment tests whether the ADSP agrees that codec slave
++ * port 16 corresponds to SLIMbus channel 144 on AFE port 0x4000. A rejection
++ * at AFE prepare is a useful result, not a failure of the topology.
++ *
++ * Deliberately NOT done here: no .get_channel_map on the codec, no codec-side
++ * channel ABI. Encoding an unproven channel number into the codec's permanent
++ * interface would be the wrong order.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#include "common.h"
++
++#define DRV_NAME	"wcd9320-lumia-q6"
++
++/*
++ * WCD9320 RX1. The codec side is slave port 16 -- registers 0x180 and 0x040,
++ * proven on every boot since the RX-DAI milestone. 144 is the SLIMbus channel
++ * number that apq8096 pairs with a WCD codec's first RX port.
++ */
++#define WCD9320_SLIM_RX1_CH	144
++
++/*
++ * Pin the back end rather than inheriting whatever the front end negotiated.
++ * The codec's frozen delta (0x040: 00->05, 0x180: 00->01) was proven at
++ * 48 kHz / 1 channel / S16_LE, and this milestone compares against that
++ * delta; letting the BE drift would compare against something else.
++ */
++static int lumia_q6_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
++				       struct snd_pcm_hw_params *params)
++{
++	struct snd_interval *rate =
++		hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
++	struct snd_interval *channels =
++		hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
++
++	rate->min = rate->max = 48000;
++	channels->min = channels->max = 1;
++	snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
++			    SNDRV_PCM_FORMAT_S16_LE);
++
++	return 0;
++}
++
++static int lumia_q6_be_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	unsigned int rx_ch[1] = { WCD9320_SLIM_RX1_CH };
++	int ret;
++
++	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
++		return 0;
++
++	/*
++	 * The AFE side only. The codec keeps its fixed RX1 selection and is
++	 * not told a channel number -- see the header comment.
++	 */
++	ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
++					  ARRAY_SIZE(rx_ch), rx_ch);
++	if (ret && ret != -ENOTSUPP) {
++		dev_err(rtd->card->dev,
++			"failed to set the AFE receive channel map: %d\n", ret);
++		return ret;
++	}
++
++	dev_info(rtd->card->dev,
++		 "BE hw_params: cpu=%s codec=%s rate=%u ch=%u ch_map={%u}\n",
++		 cpu_dai->name, snd_soc_rtd_to_codec(rtd, 0)->name,
++		 params_rate(params), params_channels(params), rx_ch[0]);
++
++	return 0;
++}
++
++static const struct snd_soc_ops lumia_q6_be_ops = {
++	.hw_params = lumia_q6_be_hw_params,
++};
++
++/*
++ * qcom_snd_parse_of() marks a link no_pcm exactly when its DT child has BOTH
++ * a codec and a platform node, so this is the same test apq8096 uses to find
++ * its back ends.
++ */
++static void lumia_q6_add_be_ops(struct snd_soc_card *card)
++{
++	struct snd_soc_dai_link *link;
++	int i;
++
++	for_each_card_prelinks(card, i, link) {
++		if (link->no_pcm) {
++			link->be_hw_params_fixup = lumia_q6_be_hw_params_fixup;
++			link->ops = &lumia_q6_be_ops;
++			dev_info(card->dev, "back end: %s (id %d)\n",
++				 link->name, link->id);
++		} else {
++			dev_info(card->dev, "front end: %s (id %d)\n",
++				 link->name, link->id);
++		}
++	}
++}
++
++static int lumia_q6_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct snd_soc_card *card;
++	int ret;
++
++	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
++	if (!card)
++		return -ENOMEM;
++
++	card->owner = THIS_MODULE;
++	card->dev = dev;
++	dev_set_drvdata(dev, card);
++
++	/*
++	 * Resolves every sound-dai phandle through the component that owns the
++	 * target of_node, and sets the DPCM flags. A codec phandle that cannot
++	 * be resolved yet returns -EPROBE_DEFER from here -- which is why a
++	 * missing #sound-dai-cells shows up as a card that never registers,
++	 * not as a runtime failure later on.
++	 */
++	ret = qcom_snd_parse_of(card);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to parse the DT links\n");
++
++	lumia_q6_add_be_ops(card);
++
++	ret = devm_snd_soc_register_card(dev, card);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register the card\n");
++
++	dev_info(dev, "QDSP6 card registered: %d link(s)\n", card->num_links);
++	return 0;
++}
++
++static const struct of_device_id lumia_q6_device_id[] = {
++	{ .compatible = "nokia,lumia1520-q6-sndcard" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, lumia_q6_device_id);
++
++static struct platform_driver lumia_q6_driver = {
++	.probe = lumia_q6_probe,
++	.driver = {
++		.name = DRV_NAME,
++		.of_match_table = lumia_q6_device_id,
++	},
++};
++module_platform_driver(lumia_q6_driver);
++
++MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
++MODULE_LICENSE("GPL v2");
++MODULE_VERSION("q6-card-rc1");

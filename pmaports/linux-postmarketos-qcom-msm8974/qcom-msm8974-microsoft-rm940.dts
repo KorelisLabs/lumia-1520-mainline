@@ -549,6 +549,26 @@
 				compatible = "slim217,a0";
 				reg = <1 0>;
 
+				/*
+				 * Makes this node usable as a "sound-dai"
+				 * phandle target. Zero cells because the codec
+				 * registers exactly ONE DAI: snd_soc_get_dlc()
+				 * maps args_count 0 to id 0, walks to the first
+				 * DAI of the component whose of_node matches
+				 * this node, and takes its name. With one DAI
+				 * that is unambiguous by construction, and
+				 * "exactly 1 DAI declared" is already asserted
+				 * by the artefact gate.
+				 *
+				 * It must be THIS node and not codec@0,0: the
+				 * ASoC component is registered on the control
+				 * function, and snd_soc_get_dlc() matches on
+				 * component->dev->of_node. A phandle to the
+				 * interface function would find no component
+				 * and return -EPROBE_DEFER forever.
+				 */
+				#sound-dai-cells = <0>;
+
 				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
 				 * driven low 20 ms then high 20 ms -- active low. */
 				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
@@ -592,6 +612,87 @@
 				vdd-a-1p2v-supply = <&pm8941_l1>;  /* 1.225 V */
 				vddcx-1-supply = <&pm8941_l1>;     /* 1.225 V */
 				vddcx-2-supply = <&pm8941_l1>;     /* 1.225 V */
+			};
+		};
+	};
+};
+
+/ {
+	/*
+	 * BRANCH A, BUILD 2 OF 2: the real playback card.
+	 *
+	 * Build 1 proved the QDSP6 graph instantiates. This adds the card that makes
+	 * ASoC drive it, and it is the build that first asks the ADSP to do
+	 * something.
+	 *
+	 * Every link is wired with sound-dai PHANDLES, not names. Measured on boot
+	 * #155: the front-end DAI is not called "MultiMedia1" -- q6asm's FE component
+	 * sets .legacy_dai_naming = 1, so with one declared DAI ASoC names it after
+	 * the device (fe200000.remoteproc:smd-edge:apr:service@7:dais). Naming it in
+	 * C would silently fail to match; qcom_snd_parse_of() resolves the phandle
+	 * through the component that owns each of_node instead.
+	 *
+	 * qcom_snd_parse_of() also derives the DPCM roles from the child shape:
+	 *   cpu only              -> front end (dynamic = 1, dummy codec, platform
+	 *                            defaults to the cpu node, which is q6asm-dais --
+	 *                            the component whose .pcm_construct allocates the
+	 *                            DMA buffer the ASM memory map later needs)
+	 *   cpu + platform + codec -> back end (no_pcm = 1)
+	 *
+	 * The minimal diagnostic card (wcd9320-lumia-card) is NOT replaced and NOT
+	 * disabled. It is a frozen proof oracle. The two cards are mutually exclusive
+	 * at runtime and ASoC enforces that: it refuses to bind the codec component
+	 * to a second card and logs which card already owns it.
+	 */
+	lumia_q6_sound: sound {
+		compatible = "nokia,lumia1520-q6-sndcard";
+		model = "Lumia1520-Q6";
+		status = "okay";
+
+		/*
+		 * The front end. No codec child, so qcom_snd_parse_of() marks it
+		 * dynamic and gives it a dummy codec. link->id becomes the phandle
+		 * argument, MSM_FRONTEND_DAI_MULTIMEDIA1, which is what q6routing
+		 * uses as the fedai id when the stream opens.
+		 */
+		mm1-dai-link {
+			link-name = "MultiMedia1 Playback";
+
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+			};
+		};
+
+		/*
+		 * The back end. Both a codec and a platform child are required for
+		 * qcom_snd_parse_of() to mark it no_pcm; the platform is the routing
+		 * component, which is how the FE reaches this BE at all.
+		 *
+		 * The codec phandle carries no argument because the WCD9320 node
+		 * declares #sound-dai-cells = <0> and its component registers exactly
+		 * one DAI -- snd_soc_get_dlc() maps args_count 0 to index 0, which is
+		 * unambiguous by construction. It must point at codec@1,0 (the control
+		 * function), because that is the device the ASoC component is
+		 * registered against.
+		 *
+		 * SLIMBUS_0_RX is the hypothesis under test, not a settled fact. If
+		 * the ADSP does not accept RX1 traffic on AFE port 0x4000, this build
+		 * fails at AFE prepare -- observably, and without invalidating the
+		 * topology around it.
+		 */
+		slim-dai-link {
+			link-name = "SLIM Playback";
+
+			cpu {
+				sound-dai = <&q6afedai SLIMBUS_0_RX>;
+			};
+
+			platform {
+				sound-dai = <&q6routing>;
+			};
+
+			codec {
+				sound-dai = <&wcd9320>;
 			};
 		};
 	};
