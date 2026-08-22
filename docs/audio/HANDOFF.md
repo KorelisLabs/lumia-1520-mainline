@@ -1,6 +1,6 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-15. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-22. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
@@ -888,6 +888,37 @@ action, but it survives probe on the ADSP manager's timing, not structure. If
 it is ever seen to defer, verify that devres power teardown plus retry
 performs a complete clean bring-up.
 
+### The QDSP6 playback control plane — PROVEN, r155
+
+Full detail in [msm8974-q6-playback-control-plane.md](msm8974-q6-playback-control-plane.md). In short: the card instantiates from
+DT with the predicted FE/BE split, and an ordinary open + hw_params + prepare
+drives ASM map/open, ADM open/matrix, and AFE config/start -- every one
+observed as an actual call by kprobe, and all acknowledged, since prepare()
+returns the DSP status and returned 0. 22/22.
+
+SLIMBUS_0_RX with channel map 144 was a *provisional* apq8096-derived guess in
+the Branch A map, flagged as the likeliest thing to be wrong. It accepted the
+configuration, so the endpoint is now hardware evidence.
+
+The boundary holds: `q6asm_run_nowait` observed **zero** times, no
+`slim_stream_*`, no sample moved, nothing audible.
+
+Splitting this into two builds paid for the extra boot exactly as intended.
+Build 1 proved the DT/service graph; build 2 proved the control plane. Had
+they been one build, the zero-byte module failure below would have been
+indistinguishable from "QDSP6 does not work".
+
+**The zero-byte scp trap recurred and cost a full diagnostic cycle.** Two
+modules arrived as 0 bytes; `depmod` and `modprobe` both said `Invalid
+argument`; the gate reported 17 "ADSP failures" that were one fact. Note that
+`ENOEXEC`/"Invalid module format" means a vermagic mismatch, while `EINVAL`
+here meant an unparseable ELF. The gate now names the cause and exits 2
+instead of producing a verdict about the DSP.
+
+`tools/alsa-setctl.c` was added because the device has no amixer, tinymix or
+alsactl and no DNS to install them. Control plane only, audited before
+compilation, reads back every value it writes.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done
@@ -912,9 +943,11 @@ performs a complete clean bring-up.
     `asoc-card-rc1` + `lumia-card-rc2`. ASoC entered the production
     `hw_params()` and produced a delta byte-identical to the manual path.
     See `wcd9320-asoc-callback.md`.
-11. Machine driver
+11. ~~Machine driver~~ — done, r155, `q6-card-rc1`; the QDSP6 card
+    registers from DT with a real FE/BE split
 12. External MCLK / AFE clock work
-13. First 48 kHz playback route
+13. First 48 kHz playback route — the **control plane** half is proven (r155);
+    what remains is the data plane: `slim_stream_*` allocation, then ASM RUN
 
 The pmaports recipe is now mirrored at pkgrel 144 under `pmaports/`, checksums
 rebuilt positionally against the repo's own files, so the build no longer

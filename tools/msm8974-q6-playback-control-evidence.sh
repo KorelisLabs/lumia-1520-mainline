@@ -156,21 +156,27 @@ afe_send:afe_apr_send_pkt"
 # "echo" and "printf" are regular builtins: a failed redirect on those
 # just sets a status we can ignore.
 clear_probes() {
-	echo 0 > "$TRACE/tracing_on" 2>/dev/null
+	echo 0 2>/dev/null > "$TRACE/tracing_on"
 	for _p in $PROBES; do
-		echo 0 > "$TRACE/events/kprobes/q6g_${_p%%:*}/enable" 2>/dev/null
+		_e="$TRACE/events/kprobes/q6g_${_p%%:*}/enable"
+		# Guard on existence AND put 2>/dev/null BEFORE the target: the
+		# shell opens the redirect target first, so a trailing 2>/dev/null
+		# is applied too late to swallow the failure message.
+		[ -e "$_e" ] && echo 0 2>/dev/null > "$_e"
 	done
-	printf "" > "$TRACE/kprobe_events" 2>/dev/null
+	printf "" 2>/dev/null > "$TRACE/kprobe_events"
 	if [ -s "$TRACE/kprobe_events" ]; then
 		for _p in $PROBES; do
-			printf -- "-:q6g_%s\n" "${_p%%:*}" >> "$TRACE/kprobe_events" 2>/dev/null
+			printf -- "-:q6g_%s" "${_p%%:*}" 2>/dev/null \
+				>> "$TRACE/kprobe_events"
 		done
 	fi
+	true
 }
 
 
 clear_probes
-printf "" > "$TRACE/trace" 2>/dev/null
+printf "" 2>/dev/null > "$TRACE/trace"
 
 PROBE_OK=""
 PROBE_BAD=""
