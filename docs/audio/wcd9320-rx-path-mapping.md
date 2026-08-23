@@ -105,28 +105,21 @@ speaker. Nothing can make a sound, which is the point: the failure class here is
 register sequencing, and mixing it with analog power sequencing would confound
 both.
 
-## 5. The clock question, which may gate everything
+## 5. The clock question -- RESOLVED, see the follow-up
 
-Downstream takes `WCD9XXX_CLK_RCO` for most blocks but has a separate
-`taiko_mclk_enable()` that demands `WCD9XXX_CLK_MCLK`.
+This was raised here as the largest risk to the branch. It is now settled in
+[wcd9320-rx-clock-resolution.md](wcd9320-rx-clock-resolution.md): the RX1
+digital path requests no clock at all, the `RX_I2S_CLK` dependency belongs to
+the I2S-only route table, nothing calls `taiko_mclk_enable()`, and the codec is
+measured to be running on RCO right now with its CDC clock gate already open.
 
-This board has **no external MCLK** — established earlier and recorded in
-`wcd9320-mclk-investigation.md` and the RCO wake work, which is why the CDC core
-is brought up on the internal RC oscillator.
+The register named `CDC_CLK_MCLK_CTL` turned out to be a gate rather than a
+source selector -- it reads 0x01 on a board with no MCLK. Judging by the name
+alone would have blocked the branch for no reason.
 
-An RC oscillator is not frequency-accurate and is not locked to the ADSP's
-sample clock. A digital interpolator consuming a SLIMbus stream needs a clock
-related to the data rate, or it drifts. Whether Taiko derives its audio clock
-from the SLIMbus clock in a no-MCLK configuration is **not yet established**,
-and it is the single largest risk to this branch.
-
-Worth noting it is a *different* question from Branch B's unexplained 1.45%
-pacing offset: that one is unchanged with SLIMbus removed, so it lives on the
-ASM/host/DSP side, not here.
-
-I would answer this by reading the resource manager's clock selection before
-writing any RX code, because if the interpolator cannot be clocked correctly
-then the digital milestone's shape changes.
+The milestone is also tightened there: stop at `RX1 CHAIN`, before
+`CLASS_H_DSM MUX` and the DAC, and treat 0x376 as an observation point rather
+than a proven activity indicator until its own control says otherwise.
 
 ## The ladder from here
 
