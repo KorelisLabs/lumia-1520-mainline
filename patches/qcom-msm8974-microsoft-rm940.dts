@@ -104,6 +104,12 @@
  *   (ACPI: edge/both, pull-up => active-low), volume-down = PON RESIN. */
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+/* APR_DOMAIN_ADSP and APR_SVC_ADSP_CORE, for the q6core inventory probe. */
+#include <dt-bindings/soc/qcom,apr.h>
+/* SLIMBUS_0_RX, for the AFE back-end DAI id. */
+#include <dt-bindings/sound/qcom,q6afe.h>
+/* MSM_FRONTEND_DAI_MULTIMEDIA1 and Q6ASM_DAI_RX, for the ASM front end. */
+#include <dt-bindings/sound/qcom,q6asm.h>
 
 / {
 	gpio-keys {
@@ -134,11 +140,89 @@
 	};
 };
 
+
+/*
+ * PM8941 clock dividers -- the external MCLK transport for the codec.
+ *
+ * WHY THIS EXISTS, AND WHAT IT DOES NOT CLAIM
+ *
+ * The WCD9320's analog conversion path will not accept two of its clock
+ * registers: CDC_CLK_RDAC_CLK_EN_CTL (0x30d) bit 1 and CDC_CLK_POWER_CTL
+ * (0x314) both refuse writes, while the digital RX path -- interpolator,
+ * compander, connection muxes -- accepts everything. See
+ * docs/audio/wcd9320-mclk-mapping.md.
+ *
+ * The board description points at a missing external clock. The Lumia's own
+ * ACPI power state for \_SB.ADSP.SLM1.ADCM.AUDD enables DIV_CLK_1 and
+ * configures a PM8941 GPIO in the same FSTATE as the codec's 2.15 V and 1.8 V
+ * rails, and disables the divider when the codec powers down.
+ *
+ * The peripherals are confirmed present by reading the PMIC directly: three
+ * CLKDIV blocks at 0x5b00/0x5c00/0x5d00, all PERPH_TYPE 0x06 SUBTYPE 0x0b.
+ * The boot chain leaves DIV_CLK1 and DIV_CLK2 enabled, but at DIV_CTL1 factor
+ * 0, which the driver treats as divide-by-1 -- so 19.2 MHz, not the 9.6 MHz
+ * Taiko's own defaults table asks for. assigned-clock-rates corrects that.
+ *
+ * Provider index is 1-BASED: spmi_pmic_div_clk_hw_get() does
+ * args[0] - 1 and rejects 0. So <&pm8941_clk_divs 1> is the peripheral at
+ * 0x5b00, DIV_CLK1.
+ *
+ * NOT ESTABLISHED: that the pad this divider is routed to physically reaches
+ * the codec's MCLK input on RM-940. That needs a schematic or an instrumented
+ * measurement, and neither exists here.
+ */
+&pm8941_0 {
+	pm8941_clk_divs: clock-controller@5b00 {
+		compatible = "qcom,spmi-clkdiv";
+		reg = <0x5b00>;
+		clocks = <&xo_board>;
+		clock-names = "xo";
+		#clock-cells = <1>;
+		qcom,num-clkdivs = <3>;
+
+		/* 19.2 MHz XO / 2 = 9.6 MHz, the rate Taiko expects. */
+		assigned-clocks = <&pm8941_clk_divs 1>;
+		assigned-clock-rates = <9600000>;
+	};
+};
+
 &pm8941_gpios {
 	gpio_keys_pin_a: gpio-keys-active-state {
 		pins = "gpio3", "gpio4", "gpio5";
 		function = "normal";
 		bias-pull-up;
+		power-source = <PM8941_GPIO_S3>;
+	};
+
+	/*
+	 * The divider output has to be muxed onto a pad; the clkdiv driver only
+	 * programs DIV_CTL1 and EN_CTL and knows nothing about pins. The
+	 * binding says so outright: "These clocks are typically wired through
+	 * alternate functions on GPIO pins."
+	 *
+	 * WHICH PIN. The codec's ACPI power state configures GPIO index 0x0E as
+	 * a digital output. That field is 0-BASED -- values across the table
+	 * include Zero and top out at 0x23 = 35, and PM8941 has exactly 36
+	 * GPIOs -- so 0x0E is gpio15, not gpio14.
+	 *
+	 * WHICH FUNCTION IS NOT PROVEN. Nothing in the kernel maps a pmic-gpio
+	 * function index to DIV_CLK; the pinctrl driver and its binding define
+	 * only the generic normal/paired/func1..func4/dtest1..4, and what each
+	 * means on a given pad is PM8941 hardware documentation. What IS known
+	 * from the driver: pmic_gpio_set_mux() rejects func3/func4 on non-LV/MV
+	 * subtypes, and gpio15 reports PERPH_SUBTYPE 0x05, so the choice is
+	 * exactly func1 or func2. func1 is used here; func2 can be selected at
+	 * runtime through the pinctrl debugfs pinmux-select without rebuilding,
+	 * which is how the gate tests the alternative.
+	 *
+	 * POWER SOURCE. S3 is the codec's own 1.8 V I/O rail -- the same
+	 * supply its vddpx-1 takes -- chosen for that reason rather than by
+	 * copying another board's sleep-clock pin.
+	 */
+	wcd9320_mclk_pin: wcd9320-mclk-state {
+		pins = "gpio15";
+		function = "func1";
+		output-high;
 		power-source = <PM8941_GPIO_S3>;
 	};
 };
@@ -268,6 +352,174 @@
  * from the stock Windows install (see docs/trustzone-quirks.md). */
 &remoteproc_adsp {
 	status = "okay";
+
+	/*
+	 * APR, for ONE question only: what audio services does this firmware
+	 * actually have?
+	 *
+	 * Mainline's APR does not discover services -- of_register_apr_devices()
+	 * creates one device per DT child with a "reg", and the driver binds
+	 * whether or not the firmware implements anything at that address. A
+	 * missing service does not fail at probe; it fails later as a timeout.
+	 * So the inventory cannot be read out of DT or sysfs. It has to be
+	 * asked, and q6core's AVCS_GET_VERSIONS (0x00012905) is the question:
+	 * the reply carries num_services and a {service_id, version} array
+	 * reported by the ADSP itself.
+	 *
+	 * That question is ANSWERED: the ADSP reported a complete 11-service
+	 * inventory including AFE, ASM and ADM
+	 * (msm8974-q6-service-inventory-proven). This node no longer carries
+	 * q6core alone -- see the Branch A comment below the q6core child.
+	 *
+	 * CONFIG_SND_SOC_QDSP6 has no per-service symbols -- the umbrella
+	 * selects the whole group -- so every q6 driver is BUILT regardless.
+	 * Kconfig decides what is compiled; this node decides what probes, and
+	 * that is still how scope is controlled here: the services below are
+	 * the minimum for one playback path, and nothing more is instantiated.
+	 *
+	 * The transport is not new: this smd-edge is the same "lpass" edge
+	 * (qcom,smd-edge = <1>) that QRTR already uses for the SLIMbus QMI
+	 * service the NGD work proved. What is new is only whether the ADSP
+	 * also opens the "apr_audio_svc" channel on it -- and if it does not,
+	 * apr never probes at all, which is a distinguishable outcome from the
+	 * core service failing to answer.
+	 */
+	smd-edge {
+		apr {
+			compatible = "qcom,apr-v2";
+			qcom,smd-channels = "apr_audio_svc";
+			qcom,domain = <APR_DOMAIN_ADSP>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/*
+			 * q6core is a hard singleton -- q6core_probe() assigns a
+			 * static g_core unconditionally -- so there must never be
+			 * two of these. The negative control (same driver, same
+			 * command, deliberately wrong service id) is therefore a
+			 * SEPARATE build with this reg changed, never a second
+			 * child here.
+			 */
+			q6core: service@3 {
+				compatible = "qcom,q6core";
+				reg = <APR_SVC_ADSP_CORE>;
+			};
+
+			/*
+			 * BRANCH A, BUILD 1 OF 2: the QDSP6 graph only.
+			 *
+			 * These services are added WITHOUT a machine driver, on
+			 * purpose. Nothing here creates a sound card, so this
+			 * build answers exactly one question -- does the QDSP6
+			 * graph instantiate on this firmware? -- and cannot be
+			 * confused with "the playback control plane works",
+			 * which is build 2.
+			 *
+			 * Conflating those two is easy and expensive: a card
+			 * that fails to register looks very much like a DSP
+			 * that refuses a command, and the fix for each is in a
+			 * different place.
+			 *
+			 * NONE of these probes sends anything to the DSP. q6afe
+			 * and q6asm kzalloc, call q6core_get_svc_api_info() --
+			 * the AVCS query already proven -- and populate their
+			 * children; q6routing registers a component. So binding
+			 * them is NOT evidence about the firmware, and the gate
+			 * for this build asserts instantiation only.
+			 *
+			 * One useful side effect: q6afe_probe() triggers the
+			 * AVCS version query on its own, so the service
+			 * inventory gets re-confirmed by the real stack rather
+			 * than by our diagnostic probe module.
+			 *
+			 * Deliberately absent:
+			 *   - clock-controller (qcom,q6afe-clocks). Its provider
+			 *     enumerates MI2S, PCM, TDM, MCLK and LPASS clocks
+			 *     with no SLIMbus entries; SLIMbus clocking belongs
+			 *     to the bus. Fewer objects means a failure here has
+			 *     fewer candidate causes.
+			 *   - iommus on the q6asm dais. Absent, q6asm-dai sets
+			 *     sid = -1 and uses the raw physical address, which
+			 *     is correct for a port with no ADSP SMMU mapping.
+			 *   - qcom,protection-domain. Not required, and this
+			 *     ADSP has no audio_pd.
+			 *   - every AFE port except SLIMBUS_0_RX, and every ASM
+			 *     front end except MultiMedia1.
+			 */
+			q6afe: service@4 {
+				compatible = "qcom,q6afe";
+				reg = <APR_SVC_AFE>;
+
+				/*
+				 * SLIMBUS_0_RX (DAI id 2, AFE port 0x4000) is
+				 * a PROPOSAL, not a proven fact: it is what
+				 * apq8096 uses for a WCD codec, and nothing
+				 * measured on this device has confirmed the
+				 * ADSP expects RX1 traffic there. The
+				 * correspondence under test is codec slave
+				 * port 16 <-> SLIMbus channel 144 <-> AFE port
+				 * 0x4000, and it is build 2 that tests it --
+				 * a rejection would surface as an AFE command
+				 * failure at prepare, not here.
+				 */
+				q6afedai: dais {
+					compatible = "qcom,q6afe-dais";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					#sound-dai-cells = <1>;
+
+					dai@2 {
+						reg = <SLIMBUS_0_RX>;
+					};
+				};
+			};
+
+			q6asm: service@7 {
+				compatible = "qcom,q6asm";
+				reg = <APR_SVC_ASM>;
+
+				/*
+				 * The front end. q6asm-dais is also the FE's
+				 * PLATFORM component -- its .pcm_construct
+				 * allocates the DMA buffer that
+				 * ASM_CMD_SHARED_MEM_MAP_REGIONS later maps to
+				 * the DSP. Build 2's FE link must therefore
+				 * name this node as its platform; supplying a
+				 * different one would leave dma_buffer.addr at
+				 * 0 and fail the memory map for a reason that
+				 * has nothing to do with the firmware.
+				 */
+				q6asmdai: dais {
+					compatible = "qcom,q6asm-dais";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					#sound-dai-cells = <1>;
+
+					dai@0 {
+						reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+						direction = <Q6ASM_DAI_RX>;
+					};
+				};
+			};
+
+			q6adm: service@8 {
+				compatible = "qcom,q6adm";
+				reg = <APR_SVC_ADM>;
+
+				/*
+				 * Not optional. q6routing_stream_open(), called
+				 * from q6asm-dai when the FE opens, calls
+				 * q6adm_open() (ADM_CMD_DEVICE_OPEN_V5) and
+				 * q6adm_matrix_map() -- so ADM is on the
+				 * critical path for any FE->BE connection.
+				 */
+				q6routing: routing {
+					compatible = "qcom,q6adm-routing";
+					#sound-dai-cells = <0>;
+				};
+			};
+		};
+	};
 };
 
 &soc {
@@ -375,9 +627,47 @@
 				compatible = "slim217,a0";
 				reg = <1 0>;
 
+				/*
+				 * Makes this node usable as a "sound-dai"
+				 * phandle target. Zero cells because the codec
+				 * registers exactly ONE DAI: snd_soc_get_dlc()
+				 * maps args_count 0 to id 0, walks to the first
+				 * DAI of the component whose of_node matches
+				 * this node, and takes its name. With one DAI
+				 * that is unambiguous by construction, and
+				 * "exactly 1 DAI declared" is already asserted
+				 * by the artefact gate.
+				 *
+				 * It must be THIS node and not codec@0,0: the
+				 * ASoC component is registered on the control
+				 * function, and snd_soc_get_dlc() matches on
+				 * component->dev->of_node. A phandle to the
+				 * interface function would find no component
+				 * and return -EPROBE_DEFER forever.
+				 */
+				#sound-dai-cells = <0>;
+
 				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
 				 * driven low 20 ms then high 20 ms -- active low. */
 				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * The external MCLK, from PM8941 DIV_CLK1 at
+				 * 9.6 MHz, muxed onto gpio15.
+				 *
+				 * r166 acquires and enables this clock but does
+				 * NOT switch the codec's internal source:
+				 * CLK_BUFF_EN1 bit 3 still selects the RC
+				 * oscillator. That separation is deliberate --
+				 * it makes "an external MCLK is present and
+				 * routed" a single testable change, before
+				 * "the codec runs from it" is asked as a
+				 * separate question.
+				 */
+				clocks = <&pm8941_clk_divs 1>;
+				clock-names = "mclk";
+				pinctrl-names = "default";
+				pinctrl-0 = <&wcd9320_mclk_pin>;
 
 				/*
 				 * Parent interrupt, TLMM 72. The trigger type is
@@ -418,6 +708,87 @@
 				vdd-a-1p2v-supply = <&pm8941_l1>;  /* 1.225 V */
 				vddcx-1-supply = <&pm8941_l1>;     /* 1.225 V */
 				vddcx-2-supply = <&pm8941_l1>;     /* 1.225 V */
+			};
+		};
+	};
+};
+
+/ {
+	/*
+	 * BRANCH A, BUILD 2 OF 2: the real playback card.
+	 *
+	 * Build 1 proved the QDSP6 graph instantiates. This adds the card that makes
+	 * ASoC drive it, and it is the build that first asks the ADSP to do
+	 * something.
+	 *
+	 * Every link is wired with sound-dai PHANDLES, not names. Measured on boot
+	 * #155: the front-end DAI is not called "MultiMedia1" -- q6asm's FE component
+	 * sets .legacy_dai_naming = 1, so with one declared DAI ASoC names it after
+	 * the device (fe200000.remoteproc:smd-edge:apr:service@7:dais). Naming it in
+	 * C would silently fail to match; qcom_snd_parse_of() resolves the phandle
+	 * through the component that owns each of_node instead.
+	 *
+	 * qcom_snd_parse_of() also derives the DPCM roles from the child shape:
+	 *   cpu only              -> front end (dynamic = 1, dummy codec, platform
+	 *                            defaults to the cpu node, which is q6asm-dais --
+	 *                            the component whose .pcm_construct allocates the
+	 *                            DMA buffer the ASM memory map later needs)
+	 *   cpu + platform + codec -> back end (no_pcm = 1)
+	 *
+	 * The minimal diagnostic card (wcd9320-lumia-card) is NOT replaced and NOT
+	 * disabled. It is a frozen proof oracle. The two cards are mutually exclusive
+	 * at runtime and ASoC enforces that: it refuses to bind the codec component
+	 * to a second card and logs which card already owns it.
+	 */
+	lumia_q6_sound: sound {
+		compatible = "nokia,lumia1520-q6-sndcard";
+		model = "Lumia1520-Q6";
+		status = "okay";
+
+		/*
+		 * The front end. No codec child, so qcom_snd_parse_of() marks it
+		 * dynamic and gives it a dummy codec. link->id becomes the phandle
+		 * argument, MSM_FRONTEND_DAI_MULTIMEDIA1, which is what q6routing
+		 * uses as the fedai id when the stream opens.
+		 */
+		mm1-dai-link {
+			link-name = "MultiMedia1 Playback";
+
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+			};
+		};
+
+		/*
+		 * The back end. Both a codec and a platform child are required for
+		 * qcom_snd_parse_of() to mark it no_pcm; the platform is the routing
+		 * component, which is how the FE reaches this BE at all.
+		 *
+		 * The codec phandle carries no argument because the WCD9320 node
+		 * declares #sound-dai-cells = <0> and its component registers exactly
+		 * one DAI -- snd_soc_get_dlc() maps args_count 0 to index 0, which is
+		 * unambiguous by construction. It must point at codec@1,0 (the control
+		 * function), because that is the device the ASoC component is
+		 * registered against.
+		 *
+		 * SLIMBUS_0_RX is the hypothesis under test, not a settled fact. If
+		 * the ADSP does not accept RX1 traffic on AFE port 0x4000, this build
+		 * fails at AFE prepare -- observably, and without invalidating the
+		 * topology around it.
+		 */
+		slim-dai-link {
+			link-name = "SLIM Playback";
+
+			cpu {
+				sound-dai = <&q6afedai SLIMBUS_0_RX>;
+			};
+
+			platform {
+				sound-dai = <&q6routing>;
+			};
+
+			codec {
+				sound-dai = <&wcd9320>;
 			};
 		};
 	};

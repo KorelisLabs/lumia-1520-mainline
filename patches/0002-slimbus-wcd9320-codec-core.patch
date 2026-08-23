@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 18:18:45.937154574 -0400
-@@ -0,0 +1,6883 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 18:43:23.778731590 -0400
+@@ -0,0 +1,7038 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -115,6 +115,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * exchange.
 + */
 +
++#include <linux/clk.h>
 +#include <linux/delay.h>
 +#include <linux/gpio/consumer.h>
 +#include <linux/interrupt.h>
@@ -1573,6 +1574,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 clk_power_pre;              /* 0x314 as measured before any write */
 +	unsigned int rdac_probes;
 +	int rdac_latched;              /* -1 never probed, 0 refused, 1 latched */
++
++	/* ---- the external MCLK (r166) ---- */
++	struct clk *mclk;              /* NULL when the DT does not provide one */
++	unsigned int mclk_refs;
 +};
 +
 +/*
@@ -4639,6 +4644,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + */
 +#define WCD9320_A_CHIP_CTL			0x001	/* observed, never written */
 +#define WCD9320_CDC_CLK_POWER_CTL		0x314
++#define WCD9320_A_CLK_BUFF_EN1			0x108	/* bit 3 set = RCO selected */
++#define WCD9320_A_CLK_BUFF_EN2			0x109
++#define WCD9320_A_RC_OSC_FREQ			0x1fa
++#define WCD9320_CDC_CLK_MCLK_CTL		0x311	/* the CDC clock GATE, not a source */
 +#define WCD9320_CLK_POWER_MASK			0x03
 +
 +/* The PA enables: bit 5 HPHL, bit 4 HPHR. Both stay clear for all of C2b. */
@@ -5439,6 +5448,140 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/* ------------------------------ the external MCLK (r166) -- */
++
++/*
++ * The board-level clock the analog path may need.
++ *
++ * WHAT r166 IS FOR
++ *
++ * Two codec registers refuse writes on this part -- CDC_CLK_RDAC_CLK_EN_CTL
++ * (0x30d) bit 1 and CDC_CLK_POWER_CTL (0x314) -- while the entire digital RX
++ * path accepts everything. The board description says the codec should have an
++ * external 9.6 MHz MCLK from PM8941 DIV_CLK1 that this port has never
++ * provided. See docs/audio/wcd9320-mclk-mapping.md.
++ *
++ * ONE VARIABLE. This acquires and enables that clock. It deliberately does NOT
++ * switch the codec's internal source: CLK_BUFF_EN1 (0x108) bit 3 still selects
++ * the RC oscillator, exactly as it did in r165. So r166 asks whether an
++ * external MCLK being PRESENT AND ROUTED is enough, separately from whether
++ * the codec has to be running from it. If r166 says no, the source switch is a
++ * different question and gets its own build.
++ *
++ * OPTIONAL ON PURPOSE. devm_clk_get_optional() returns NULL when the DT has no
++ * "mclk", so a device tree without the provider still probes and every earlier
++ * milestone still runs on this driver. A missing clock must not become a
++ * regression in paths that never needed one.
++ *
++ * NOT ENABLED AT PROBE. The gate turns it on explicitly so the evidence file
++ * records the transition rather than inheriting it. The pin mux and the
++ * divider rate are applied earlier regardless -- pinctrl-0 by the driver core
++ * before probe, assigned-clock-rates by the provider -- which is why the gate
++ * verifies those from the PMIC's own registers rather than from this driver.
++ */
++static int wcd9320_mclk_enable(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->mclk) {
++		dev_err(dev,
++			"mclk: no \"mclk\" clock in DT -- this build needs the PM8941 clkdiv provider\n");
++		return -ENODEV;
++	}
++
++	if (enable) {
++		wcd->mclk_refs++;
++		if (wcd->mclk_refs > 1) {
++			dev_info(dev, "mclk: already held, refs now %u\n",
++				 wcd->mclk_refs);
++			return 0;
++		}
++		ret = clk_prepare_enable(wcd->mclk);
++		if (ret) {
++			wcd->mclk_refs--;
++			dev_err(dev, "mclk: prepare_enable failed: %d\n", ret);
++			return ret;
++		}
++		dev_info(dev, "mclk: ENABLED, rate %lu Hz (refs 0 -> 1)\n",
++			 clk_get_rate(wcd->mclk));
++		return 0;
++	}
++
++	if (!wcd->mclk_refs) {
++		dev_warn(dev, "mclk: released without a reference\n");
++		return -EINVAL;
++	}
++	wcd->mclk_refs--;
++	if (wcd->mclk_refs) {
++		dev_info(dev, "mclk: still held, refs now %u\n", wcd->mclk_refs);
++		return 0;
++	}
++	clk_disable_unprepare(wcd->mclk);
++	dev_info(dev, "mclk: DISABLED (refs 1 -> 0)\n");
++	return 0;
++}
++
++/*
++ *   echo on  > mclk_test
++ *   echo off > mclk_test
++ */
++static ssize_t mclk_test_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "on"))
++		ret = wcd9320_mclk_enable(wcd, true);
++	else if (sysfs_streq(buf, "off"))
++		ret = wcd9320_mclk_enable(wcd, false);
++	else
++		return -EINVAL;
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(mclk_test);
++
++/*
++ * What the driver knows about the external clock, plus the codec-side source
++ * selection it is deliberately NOT changing.
++ *
++ * CLK_BUFF_EN1 bit 3 set means the codec is running from its RC oscillator.
++ * The gate asserts that it stays set for the whole of r166 -- the entire point
++ * is that only the external clock changed.
++ */
++static ssize_t mclk_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int buff1 = 0, buff2 = 0, rcosc = 0, mclkctl = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CLK_BUFF_EN1, &buff1);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CLK_BUFF_EN2, &buff2);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RC_OSC_FREQ, &rcosc);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_MCLK_CTL, &mclkctl);
++
++	return sysfs_emit(buf,
++			  "present=%u refs=%u rate=%lu\n"
++			  "buff1_0x108=%02x buff2_0x109=%02x rcosc_0x1fa=%02x mclkgate_0x311=%02x\n"
++			  "source=%s\n",
++			  wcd->mclk ? 1 : 0, wcd->mclk_refs,
++			  wcd->mclk ? clk_get_rate(wcd->mclk) : 0UL,
++			  buff1 & 0xff, buff2 & 0xff, rcosc & 0xff, mclkctl & 0xff,
++			  (buff1 & 0x08) ? "RCO" : "EXTERNAL");
++}
++static DEVICE_ATTR_RO(mclk_state);
++
 +/* ------------------------- the RDAC clock prerequisite (r165) -- */
 +
 +/*
@@ -6014,6 +6157,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_hphl_dac_state.attr,
 +	&dev_attr_cdc_clk_prereq.attr,
 +	&dev_attr_rdac_probe.attr,
++	&dev_attr_mclk_test.attr,
++	&dev_attr_mclk_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -6533,6 +6678,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * from that, or the state file would report a refusal nobody measured.
 +	 */
 +	wcd->rdac_latched = -1;
++
++	/*
++	 * Optional: a device tree without the PM8941 clkdiv provider still
++	 * probes, and every milestone before r166 still runs. Only the analog
++	 * conversion path is suspected of needing this.
++	 */
++	wcd->mclk = devm_clk_get_optional(dev, "mclk");
++	if (IS_ERR(wcd->mclk))
++		return dev_err_probe(dev, PTR_ERR(wcd->mclk),
++				     "failed to get the external mclk\n");
 +	mutex_init(&wcd->state_lock);
 +	mutex_init(&wcd->wake_lock);
 +	mutex_init(&wcd->slim_stream_lock);
@@ -6952,7 +7107,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("rdac-clk-rc1");
++MODULE_VERSION("mclk-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

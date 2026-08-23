@@ -52,7 +52,9 @@ EXPECT = {
     #            observations), 4 in wcd9320_hphl_dac_path (the prerequisite
     #            check), 3 in wcd9320_rdac_probe, 1 in wcd9320_cdc_clk_prereq,
     #            1 in wcd9320_c2b_write, 1 in wcd9320_pa_guard.
-    "read_bypassed_calls": 28,
+    # r166: 32 = the above plus 4 in mclk_state_show -- 0x108, 0x109, 0x1fa and
+    #            0x311, the codec's clock source, READ and never written.
+    "read_bypassed_calls": 32,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -391,6 +393,8 @@ def main():
              "the r165 prerequisite toggle"),
             ("wcd9320_rdac_probe", "rdac-probe: 0x314 = %02x",
              "the r165 RDAC bit probe"),
+            ("wcd9320_mclk_enable", "mclk: ENABLED, rate %lu Hz",
+             "the r166 external MCLK consumer"),
     ):
         present = e.code_present(sym, witness)
         how = ("symbol" if sym in e.syms
@@ -426,6 +430,12 @@ def main():
     for sym, addr, why in (
             ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", "the PA"),
             ("WCD9320_A_CHIP_CTL", "0x001", "CHIP_CTL, observed only in r165"),
+            # r166 supplies an external MCLK and leaves the codec running from
+            # its RC oscillator. If the driver wrote CLK_BUFF_EN1 it would be
+            # changing two things at once and a positive result could not be
+            # attributed to the clock being present rather than selected.
+            ("WCD9320_A_CLK_BUFF_EN1", "0x108",
+             "the codec clock source -- r166 must not switch it"),
     ):
         sites = write_sites(sym)
         check("%s is never written (%s)" % (addr, why), not sites,
