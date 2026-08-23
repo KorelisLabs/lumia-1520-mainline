@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 17:33:40.828307285 -0400
-@@ -0,0 +1,6856 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 18:18:45.937154574 -0400
+@@ -0,0 +1,6883 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -4711,7 +4711,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	unsigned int got;
-+	int ret;
++	int ret, drop;
 +
 +	ret = regmap_update_bits(wcd->regmap, reg, mask, want);
 +	if (ret) {
@@ -4734,6 +4734,33 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if ((got & mask) != (want & mask)) {
 +		dev_err(dev, "c2b: 0x%03x did not take on the chip [%s]\n",
 +			reg, what);
++		/*
++		 * THE CACHE IS NOW WRONG, AND MUST NOT BE LEFT THAT WAY.
++		 *
++		 * regmap_update_bits() succeeded from regmap's point of view:
++		 * it wrote the cache and issued the bus transaction without
++		 * error. The chip simply declined the value. So the cache now
++		 * holds something the hardware does not -- and because regmap
++		 * skips a write whose cached value already equals the target,
++		 * the NEXT attempt at this register would be optimised away
++		 * entirely and silently do nothing.
++		 *
++		 * r165 hit exactly this: 0x314 was refused, the cache kept 03
++		 * against a chip holding 00, and cache_check went from one
++		 * mismatch to two. A retry on that boot could not have worked
++		 * no matter what else changed.
++		 *
++		 * Dropping the entry forces the next access back to hardware.
++		 */
++		drop = regcache_drop_region(wcd->regmap, reg, reg);
++		if (drop)
++			dev_err(dev,
++				"c2b: 0x%03x cache drop failed: %d -- the cache now disagrees with the chip and a retry may be silently skipped\n",
++				reg, drop);
++		else
++			dev_info(dev,
++				 "c2b: 0x%03x dropped from the cache after the refused write\n",
++				 reg);
 +		return -EIO;
 +	}
 +
