@@ -990,16 +990,102 @@ order, before touching anything:
    [wcd9320-buck-voltage.md](wcd9320-buck-voltage.md) -- C2b is MAPPED but NOT
    BUILT. This is the next code.
 
+### Where C2b actually got to
+
+C2b is BUILT and runs. On hardware it reaches stage 6 of 7 and stops:
+
+```
+0x3b0 mask 30 want 10 -> chip 10   CLASS_H_DSM MUX = DSM_HPHL_RX1
+0x3b0 mask 0c want 04 -> chip 14   ZOH, derived from the source select
+0x1a2 mask 80 want 80 -> chip 80   RX bias on (refs 0 -> 1)
+0x30d mask 02 want 02 -> chip 00   HPHL RDAC clock on   <-- REFUSED
+```
+
+The compander now runs at its 48 kHz operating point rather than the discharge
+transient it was parked on, `0x373` bit 7 is clear for this 2.15 V board, and
+the gain handoff moves and comes back. The teardown unwinds cleanly and leaves
+nothing powered.
+
+**The refusal was only visible because every write is verified with
+`regmap_read_bypassed()`.** All of these registers are non-volatile in our
+regmap; a cached readback would have reported `02`, the DAC would have powered
+with no reconstruction clock, and the milestone would have looked clean.
+
+### The blocker: two registers refuse writes
+
+| accepts | refuses |
+|---|---|
+| `0x309` `0x310` compander clocks/reset | **`0x30d`** RDAC clock enable |
+| `0x370`-`0x373` `0x377` compander block | **`0x314`** CDC clock power |
+| `0x1ae` `0x1b4` HPH gain source | |
+| `0x3b0` DSM mux, `0x1a2` RX bias | |
+| class-H buck/NCP (C2a, 82/82) | |
+
+r165 tried downstream's `CDC_CLK_POWER_CTL = 0x03` as the prerequisite and
+found **0x314 refuses too**, so that hypothesis is neither proven nor refuted --
+the independent variable never moved. Eliminated by measurement, not argument:
+the RX1 chain does reach silicon (`0x2b5` moved `hw=88 -> a8`), class-H being
+fully established changes nothing (`0x320 = a7`, `0x30d` still `00`), and no
+DAPM supply on the route was omitted.
+
+### The current lead, and its exact status
+
+[wcd9320-mclk-mapping.md](wcd9320-mclk-mapping.md) -- the board-level clock the
+port has never provided. **Outcome B**: the divider exists and runs, the
+physical routing is not proven.
+
+Established by reading the PMIC directly: three CLKDIV peripherals at SPMI
+`0x5b00`/`0x5c00`/`0x5d00` (type `06`, subtype `0b`), DIV_CLK1 and 2 enabled by
+the boot chain at divide-by-1, so 19.2 MHz where Taiko wants 9.6. The Lumia's
+ACPI power state for `\_SB.ADSP.SLM1.ADCM.AUDD` enables DIV_CLK_1 and
+configures a PMIC GPIO in the same FSTATE as the codec's 2.15 V and 1.8 V
+rails. No PMIC GPIO is currently in an alternate function, and the codec is
+selecting RCO.
+
+NOT established: that the pad reaches the codec's MCLK input, or which
+pmic-gpio function carries DIV_CLK. Nothing in the kernel documents the latter;
+`pmic_gpio_set_mux()` rejects func3/func4 on non-LV/MV subtypes and gpio15
+reports subtype `0x05`, so it is **func1 or func2** and no third option.
+
 ### The next task, precisely
 
-Implement C2b in `wcd9320-core.c`: the compander->HPH gain handoff (0x1ae,
-0x1b4 bit 5; 0x373 bit 7 = 0 because the buck is 2.15 V), the CLASS_H_DSM mux
-(0x3b0 -> 0x14, two writes: source select then the derived ZOH), a refcounted
-RX bias (0x1a2 bit 7), the RDAC clock (0x30d bit 1), and the HPHL DAC
-(0x1b1 -> **0xc0**, both bit 7 power AND bit 6 input switch). Reuse the proven
-C2a class-H enable/teardown. Stop before the PA; guard 0x1ab mask 0x30 == 0
-before and after every stage. Then a gate, two cycles, no audible-output claim.
-If it passes: tag `wcd9320-hphl-dac-path-proven`.
+**r166 is BUILT (63/0) and staged but NOT YET RUN** -- the battery died before
+the run. `boot-1520-mclk-rc1.img` and `wcd9320.ko` are in `RegenX AE/r166`,
+module sha `a1662842...`.
+
+It adds `CONFIG_SPMI_PMIC_CLKDIV`, a clkdiv provider at `0x5b00` with DIV_CLK1
+at 9.6 MHz, `gpio15` on `func1` as an output at `PM8941_GPIO_S3`, and a
+refcounted `clk_prepare_enable()` in the codec. **The codec deliberately stays
+on RCO** -- the artefact gate proves zero write sites for `0x108`, so r166
+supplies the clock and cannot select it.
+
+To run it: install the module FIRST (a `fastboot boot` never updates
+`/lib/modules`, and a stale module fails the version gate), power cycle,
+`fastboot boot` the image, then
+
+```
+sudo sh ~/wcd9320-tools/wcd9320-mclk-evidence.sh
+```
+
+Five facts must cross before the codec is asked anything -- rate, divide
+factor, enable bit, pad mux, and the codec's unchanged source, four of them
+read from the PMIC's own registers. Then it retries `0x314` and `0x30d`.
+
+- **A** they latch: the external clock's presence was the prerequisite, and
+  that also confirms by the only means software has that gpio15 reaches this
+  codec. C2b resumes.
+- **B** they still refuse: real negative, but it only says presence is
+  insufficient *while the codec is not selecting it*. Then r167 maps and adds
+  the RCO -> MCLK switch from `wcd9xxx_enable_clock_block()` as one further
+  change -- with the hazard that if no clock is really arriving, switching away
+  from RCO stops the CDC core until it is switched back.
+- **C** the path did not configure: a board-description problem, NOT a result
+  about the codec. If gpio15 reports func2 rather than func1, that is testable
+  at runtime through the pinctrl debugfs `pinmux-select` without rebuilding.
+
+Do not write `CHIP_CTL` (0x001). It is observe-only and unmapped; downstream
+sets it beside `0x314` under one "set MCLk to 9.6" comment and then adjusts it
+by MCLK rate, and this board is RCO-based.
 
 ### Rules this branch has been run under
 
@@ -1016,7 +1102,16 @@ If it passes: tag `wcd9320-hphl-dac-path-proven`.
 
 ### Build/deploy state
 
-- Latest build r163 `clsh-rc1`, installed on the phone. Next is r164.
+- Latest build **r166 `mclk-rc1`**, verified 63/0 and staged in
+  `RegenX AE/r166`, but NOT yet installed or run -- the battery died
+  first. The phone was last running r165 `rdac-clk-rc1`. Next is r167,
+  and only if r166 comes back outcome B.
+- `tools/wcd9320-stage-patch.sh` now does the staging half -- patch
+  regeneration, pkgrel, and both APKBUILD checksum sets -- which used to
+  live in whatever commands a session happened to run. `--check` verifies
+  without touching anything.
+- **Push with Windows `git.exe`, not WSL git.** Only the Windows side has
+  credentials; a push from WSL hangs silently waiting for a username.
 - Driver source (WSL, not in git): `~/corepatch/new/drivers/slimbus/wcd9320-core.c`
 - Card source: `~/q6card/new/sound/soc/qcom/lumia1520-q6.c`
 - Staging scripts regenerate patches 0002/0005 from those trees, bump pkgrel
