@@ -35,6 +35,24 @@ EXPECT = {
     "defaults": 460,
     "zero_defaults": 230,
     "bypass_calls": 10,      # five bypass(true)/bypass(false) pairs
+    # C2b reads the CHIP instead of the cache. Every register that branch
+    # touches -- 0x1a2, 0x1ab, 0x1ae, 0x1b1, 0x1b4, 0x30d, 0x3b0 and the 0x370
+    # block -- is non-volatile in our regmap, so a plain regmap_read() after a
+    # write is answered by the cache. That would confirm 0x1b1 = c0 for a write
+    # that never left the SoC, and a DAC-power milestone cannot rest on that.
+    #
+    # regmap_read_bypassed() rather than more regcache_cache_bypass() pairs:
+    # it reads the device without moving the regmap's bypass flag, so it opens
+    # no window in which a concurrent reader -- MBHC, an IRQ, another sysfs
+    # reader -- sees the whole map in bypass.
+    #
+    # r164: 21 = 16 in hphl_dac_state_show, 3 in wcd9320_hphl_dac_path,
+    #            1 in wcd9320_c2b_write, 1 in wcd9320_pa_guard.
+    # r165: 28 = 18 in hphl_dac_state_show (0x001 and 0x314 added as
+    #            observations), 4 in wcd9320_hphl_dac_path (the prerequisite
+    #            check), 3 in wcd9320_rdac_probe, 1 in wcd9320_cdc_clk_prereq,
+    #            1 in wcd9320_c2b_write, 1 in wcd9320_pa_guard.
+    "read_bypassed_calls": 28,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -103,6 +121,24 @@ class Elf:
 
     def is_undefined(self, name):
         return name in self.syms and self.syms[name]["shndx"] == 0
+
+    def has_string(self, text):
+        """Is this literal present anywhere in the object?
+
+        Needed because a `static` function called from exactly one place may be
+        INLINED, which legally removes its standalone symbol while leaving its
+        code and its string literals in the binary. Asserting on the symbol
+        alone therefore fails correct builds at the compiler's discretion --
+        wcd9320_rdac_probe did exactly that at r165, where the symbol was gone,
+        rdac_probe_store had grown from 136 to 528 bytes, and every string
+        unique to the probe body was present.
+        """
+        return text.encode() in self.blob
+
+    def code_present(self, name, witness):
+        """The function shipped: either its symbol survived, or a literal that
+        exists only inside its body is in the binary."""
+        return name in self.syms or self.has_string(witness)
 
     def count_relocs_to(self, name):
         """How many relocation entries reference this symbol (call sites)."""
@@ -326,6 +362,75 @@ def main():
                      ("dev_attr_cache_check", "sysfs attribute the gate reads")):
         check("%s present" % sym, sym in e.syms, why)
 
+    print()
+    print("=== 5c. the C2b readbacks reach the chip ===")
+    nrb = e.count_relocs_to("regmap_read_bypassed")
+    check("regmap_read_bypassed linked (undefined import)",
+          e.is_undefined("regmap_read_bypassed"),
+          "resolved by regmap at load time")
+    check("regmap_read_bypassed call sites",
+          nrb == EXPECT["read_bypassed_calls"],
+          "%d (want %d)" % (nrb, EXPECT["read_bypassed_calls"]))
+    # Static functions: symbol OR a witness literal from inside the body.
+    #
+    # These are all `static`, and any of them called from exactly one place may
+    # be inlined away as a symbol. What matters is that the CODE shipped, so
+    # each carries a literal that exists nowhere else in the driver. A build
+    # where both the symbol and the witness are gone really has lost the
+    # function.
+    for sym, witness, why in (
+            ("wcd9320_c2b_write", "did not take on the chip",
+             "chip-verified write helper"),
+            ("wcd9320_pa_guard", "PA GUARD TRIPPED at %s",
+             "the PA guard, read bypassed"),
+            ("wcd9320_rx_bias", "RX bias on (refs 0 -> 1)",
+             "refcounted RX bias"),
+            ("wcd9320_hphl_dac_path", "HPHL DAC enable, map stages 3-7",
+             "the DAC sequence"),
+            ("wcd9320_cdc_clk_prereq", "CDC_CLK_POWER_CTL = 0x03",
+             "the r165 prerequisite toggle"),
+            ("wcd9320_rdac_probe", "rdac-probe: 0x314 = %02x",
+             "the r165 RDAC bit probe"),
+    ):
+        present = e.code_present(sym, witness)
+        how = ("symbol" if sym in e.syms
+               else "inlined, witness literal present")
+        check("%s shipped" % sym, present, "%s -- %s" % (how, why))
+
+    # Data objects are never inlined away; the symbol is the right assertion.
+    for sym, why in (("dev_attr_hphl_dac_test", "sysfs trigger the gate drives"),
+                     ("dev_attr_hphl_dac_state", "sysfs state the gate reads"),
+                     ("dev_attr_cdc_clk_prereq", "sysfs, 0x314 only"),
+                     ("dev_attr_rdac_probe", "sysfs, the causal experiment")):
+        check("%s present" % sym, sym in e.syms, why)
+
+    # Two registers this branch must never write, checked the same way.
+    #
+    #   0x1ab  the PA. The whole milestone is defined by it staying off.
+    #   0x001  CHIP_CTL. r165 tests ONE variable. Downstream sets 0x001 and
+    #          0x314 together under the same "set MCLk to 9.6" comment and then
+    #          adjusts 0x001 by MCLK rate; this board is RCO-based, so writing
+    #          both would make a positive 0x314 result uninterpretable.
+    #
+    # The driver may only NAME these from guards and state readers, so any
+    # write would have to appear on an added line this check can see.
+    ptext_c2b = PATCH.read_text(errors="replace") if PATCH.exists() else ""
+    added = [ln[1:] for ln in ptext_c2b.splitlines()
+             if ln.startswith("+") and not ln.startswith("+++")]
+
+    def write_sites(symbol):
+        return [ln for ln in added
+                if symbol in ln
+                and ("update_bits" in ln or "regmap_write" in ln)]
+
+    for sym, addr, why in (
+            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", "the PA"),
+            ("WCD9320_A_CHIP_CTL", "0x001", "CHIP_CTL, observed only in r165"),
+    ):
+        sites = write_sites(sym)
+        check("%s is never written (%s)" % (addr, why), not sites,
+              "%d write site(s)" % len(sites))
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")
@@ -386,12 +491,27 @@ def main():
 
         # The register sequence must exist once. The research hook may call
         # the production helper but must not re-implement it.
+        #
         # Count DEFINITIONS, not declarations: there is one forward
         # declaration so the research hook (which appears earlier in the file)
         # can call the helper. A definition's parameter list is followed by an
         # opening brace; a declaration by a semicolon.
-        ndef = len(re.findall(r'bool enable\)\n\+\{', ptext))
-        ndecl = len(re.findall(r'bool enable\);', ptext))
+        #
+        # ANCHORED ON THE FUNCTION NAME, and it has to be. The original pattern
+        # was a bare r'bool enable\)\n\+\{', which matches ANY function whose
+        # last parameter is `bool enable` -- so it silently started counting
+        # wcd9320_rx1_digital_path, wcd9320_comp1_enable and wcd9320_clsh_hphl
+        # as port-programming helpers as each milestone landed. It read 4 at
+        # r163 and 6 at r164, having last been correct at r160. A check whose
+        # subject drifts as unrelated code is added is not checking anything;
+        # it just happened to be dormant because 5b only runs under
+        # --expect-asoc.
+        PORT_HELPER = r'\+static int wcd9320_rx_port_program\([^;]*?bool enable\)'
+        ndef = len(re.findall(PORT_HELPER + r'\n\+\{', ptext))
+        ndecl = len(re.findall(PORT_HELPER + r';', ptext))
+        # A rename must not turn this into a vacuous pass at zero.
+        check("the port-programming helper was found at all", ndef >= 1,
+              "%d definition(s) of wcd9320_rx_port_program" % ndef)
         check("one production port-programming helper", ndef == 1,
               "%d definition(s)" % ndef)
         check("at most one forward declaration of it", ndecl <= 1,
