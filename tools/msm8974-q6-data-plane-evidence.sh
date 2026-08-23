@@ -205,6 +205,7 @@ N_EOS=$(cnt d2_eos)
 T_RUN=$(first_ts d2_run);       T_W1=$(first_ts d2_write)
 T_E1=$(first_ts d2_elapsed);    T_EN=$(last_ts d2_elapsed)
 T_ENABLE=$(first_ts d2_enable); T_DISABLE=$(first_ts d2_disable)
+T_EOS=$(first_ts d2_eos)
 
 NGD_RET=$(grep -m1 "d2_ngd_ret" "$TRACE/trace" 2>/dev/null |
 	sed -n "s/.*ret=\(-\{0,1\}[0-9]\{1,\}\).*/\1/p")
@@ -227,8 +228,31 @@ ORDER_RUN_FIRST=$(awk -v a="${T_RUN:-0}" -v b="${T_W1:-0}" \
 	'BEGIN { print (a > 0 && b > a) ? 1 : 0 }')
 STREAM_BEFORE=$(awk -v a="${T_ENABLE:-0}" -v b="${T_E1:-0}" \
 	'BEGIN { print (a > 0 && b > a) ? 1 : 0 }')
-STREAM_AFTER=$(awk -v a="${T_EN:-0}" -v b="${T_DISABLE:-0}" \
-	'BEGIN { print (b > 0 && b > a) ? 1 : 0 }')
+# THE TAIL IS NOT SYMMETRIC WITH THE HEAD.
+#
+# A completion before the sink is connected means the DSP pushed data at a
+# channel nobody was listening to -- a real defect, and TRIGGER_POST fixed it.
+#
+# A completion AFTER the sink is disconnected does not mean the same thing.
+# snd_pcm_period_elapsed is an ACKNOWLEDGEMENT, and the FE stop is
+# q6asm_cmd_nowait(CMD_EOS) -- asynchronous. The state goes to STOPPED so no
+# further write is issued, but a WRITE_DONE already in flight still lands, and
+# the transfer it acknowledges happened BEFORE the disconnect. Exactly one
+# such ack is unavoidable; no driver change removes it.
+#
+# So the tail asserts the ordering of the REQUESTS, which is the real
+# property: the source was told to stop before the sink was torn down. The
+# trailing ack is bounded rather than forbidden.
+STOP_ORDER=$(awk -v e="${T_EOS:-0}" -v d="${T_DISABLE:-0}" 'BEGIN { print (e > 0 && d > e) ? 1 : 0 }')
+STREAM_AFTER=$STOP_ORDER
+
+# How BADLY, not just whether. ASoC reverses the order for STOP, so the
+# default TRIGGER_PRE gets a playback FE wrong at BOTH ends: RUN before the
+# sink is connected, and the sink disconnected before the source stops. The
+# severity is the number of periods that completed outside that window.
+LEAK_PRE=$(awk -v a="${T_ENABLE:-0}" '$2 == "d2_elapsed" && a > 0 && $1 < a { c++ } END { print c + 0 }' "$EV")
+LEAK_POST=$(awk -v b="${T_DISABLE:-0}" '$2 == "d2_elapsed" && b > 0 && $1 > b { c++ } END { print c + 0 }' "$EV")
+LEAK_POST_OK=$([ "${LEAK_POST:-9}" -le 1 ] 2>/dev/null && echo 1 || echo 0)
 
 # writes and completions should track one-for-one, the extra write being the
 # first one, issued from RUN_DONE.
@@ -301,7 +325,12 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 	say "RUN before first WRITE       : $ORDER_RUN_FIRST   (RUN ack drove the first write)"
 	say "SLIM stream up before periods: $STREAM_BEFORE"
 	say "SLIM stream down after them  : $STREAM_AFTER"
-
+	say ""
+	say "periods before the stream was up : $LEAK_PRE"
+	say "acks after the stream came down  : $LEAK_POST   (<=1 is inherent)"
+	say "EOS requested before disconnect  : $STOP_ORDER"
+	say "  (the head leak is data pushed at nothing; the tail is an"
+	say "   in-flight acknowledgement of a transfer already done)"
 	hdr "the DAI path drove it, not the research hook"
 	say "ASoC startup         : $L_ASOC_STARTUP"
 	say "ASoC hw_params       : $L_ASOC_HWP"
@@ -330,8 +359,8 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 	L D9 "$(is "$HWPTR_MATCH" 1)" "hw_ptr advanced by completions"
 	L D10 "$(is "$RATE_OK" 1)" "sustained $RATE fps"
 	L D11 "$(is "$HELPER_XRUNS" 0)" "no xrun"
-	L D12 "$(is "$STREAM_BEFORE" 1)" "SLIM stream up throughout"
-	L D13 "$(is "$STREAM_AFTER" 1)" "...and taken down after"
+	L D12 "$(is "$STREAM_BEFORE" 1)" "stream up first (leaked $LEAK_PRE)"
+	L D13 "$(is "$STOP_ORDER" 1)" "source stopped first (trailing acks $LEAK_POST)"
 	L D14 "$(ge "$N_UNP" 1)" "clean SLIMbus teardown"
 	L D15 "$(is "$S_ALLOC" 0)" "no residue"
 
@@ -370,9 +399,12 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 
 	# --- the transport was live while it happened --------------------
 	check_cond "the SLIM stream was up before the first period" "$STREAM_BEFORE" \
-		"periods completed before the codec stream was enabled"
-	check_cond "the SLIM stream came down after the last period" "$STREAM_AFTER" \
-		"the stream was torn down before the last period completed"
+		"$LEAK_PRE period(s) completed before the codec stream was enabled -- TRIGGER_PRE runs the FE first"
+	check_cond "the source was stopped before the sink" "$STOP_ORDER" \
+		"disable ran before the EOS request -- the sink was torn down while the source still ran"
+	check_cond "trailing acknowledgements bounded" "$LEAK_POST_OK" \
+		"$LEAK_POST acks after disconnect; at most 1 is inherent in the asynchronous EOS" \
+		"$LEAK_POST"
 
 	# --- the DAI drove it, not the hook ------------------------------
 	check_cond "ASoC drove startup" \
