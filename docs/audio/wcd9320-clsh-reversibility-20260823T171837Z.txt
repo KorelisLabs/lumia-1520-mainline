@@ -1,0 +1,316 @@
+
+=== the pristine baseline ===
+  on=0 enables=0 disables=0 writes=0 cp_refs=0
+  power b1_0x320=e4 buck1_0x181=21 ncpen_0x192=fe cp_0x30c=00
+  config b2_0x321=00 b3_0x322=00 vars_0x323=00 ncps_0x194=28
+  config buck3_0x183=ce buck4_0x184=3a buck5_0x185=00
+  config ccl1_0x189=5b ccl3_0x18b=6a ccl4_0x18c=51
+  offlimits dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+
+=== cycle 1 enabled ===
+  on=1 enables=1 disables=0 writes=46 cp_refs=1
+  power b1_0x320=a7 buck1_0x181=a5 ncpen_0x192=ff cp_0x30c=01
+  config b2_0x321=35 b3_0x322=3b vars_0x323=04 ncps_0x194=28
+  config buck3_0x183=c2 buck4_0x184=ff buck5_0x185=02
+  config ccl1_0x189=5b ccl3_0x18b=60 ccl4_0x18c=50
+  offlimits dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+
+=== cycle 1 after teardown ===
+  on=0 enables=1 disables=1 writes=52 cp_refs=0
+  power b1_0x320=a6 buck1_0x181=25 ncpen_0x192=fe cp_0x30c=00
+  config b2_0x321=35 b3_0x322=3b vars_0x323=04 ncps_0x194=28
+  config buck3_0x183=c2 buck4_0x184=ff buck5_0x185=02
+  config ccl1_0x189=5b ccl3_0x18b=60 ccl4_0x18c=50
+  offlimits dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+
+=== cycle 2 enabled ===
+  on=1 enables=2 disables=1 writes=98 cp_refs=1
+  power b1_0x320=a7 buck1_0x181=a5 ncpen_0x192=ff cp_0x30c=01
+  config b2_0x321=35 b3_0x322=3b vars_0x323=04 ncps_0x194=28
+  config buck3_0x183=c2 buck4_0x184=ff buck5_0x185=02
+  config ccl1_0x189=5b ccl3_0x18b=60 ccl4_0x18c=50
+  offlimits dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+
+=== cycle 2 after teardown ===
+  on=0 enables=2 disables=2 writes=104 cp_refs=0
+  power b1_0x320=a6 buck1_0x181=25 ncpen_0x192=fe cp_0x30c=00
+  config b2_0x321=35 b3_0x322=3b vars_0x323=04 ncps_0x194=28
+  config buck3_0x183=c2 buck4_0x184=ff buck5_0x185=02
+  config ccl1_0x189=5b ccl3_0x18b=60 ccl4_0x18c=50
+  offlimits dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+
+=== the transition the milestone rests on ===
+predicted   E4 -> A7 -> A6   then   A6 -> A7 -> A6
+observed    e4 -> a7 -> a6   then   a6 -> a7 -> a6
+
+=== checks ===
+  PASS  module version                   clsh-rc1
+  PASS  cycle 1 enable accepted          0
+  PASS  cycle 1 teardown accepted        0
+  PASS  cycle 2 enable accepted          0
+  PASS  cycle 2 teardown accepted        0
+
+-- POWER STATE: reaches the derived value, then returns exactly --
+  ....  b1_0x320                         base e4 -> enabled a7 -> after a6 (derived)
+  PASS  c1 on  b1_0x320                  a7
+  PASS  c1 off b1_0x320                  a6
+  PASS  c2 on  b1_0x320                  a7
+  PASS  c2 off b1_0x320                  a6
+  FAIL  c1 off b1_0x320 returned to base got=a6 want=e4
+  ....  buck1_0x181                      base 21 -> enabled a5 -> after 25 (derived)
+  PASS  c1 on  buck1_0x181               a5
+  PASS  c1 off buck1_0x181               25
+  PASS  c2 on  buck1_0x181               a5
+  PASS  c2 off buck1_0x181               25
+  FAIL  c1 off buck1_0x181 returned to base got=25 want=21
+  ....  ncpen_0x192                      base fe -> enabled ff -> after fe (derived)
+  PASS  c1 on  ncpen_0x192               ff
+  PASS  c1 off ncpen_0x192               fe
+  PASS  c2 on  ncpen_0x192               ff
+  PASS  c2 off ncpen_0x192               fe
+  PASS  c1 off ncpen_0x192 returned to base fe
+  ....  cp_0x30c                         base 00 -> enabled 01 -> after 00 (derived)
+  PASS  c1 on  cp_0x30c                  01
+  PASS  c1 off cp_0x30c                  00
+  PASS  c2 on  cp_0x30c                  01
+  PASS  c2 off cp_0x30c                  00
+  PASS  c1 off cp_0x30c returned to base 00
+
+-- CONFIGURATION: reaches the derived value and stays programmed --
+  ....  b2_0x321                         base 00 -> enabled 35 -> after 35 (derived)
+  PASS  c1 on  b2_0x321                  35
+  PASS  c1 off b2_0x321                  35
+  PASS  c2 on  b2_0x321                  35
+  PASS  c2 off b2_0x321                  35
+  ....  b3_0x322                         base 00 -> enabled 3b -> after 3b (derived)
+  PASS  c1 on  b3_0x322                  3b
+  PASS  c1 off b3_0x322                  3b
+  PASS  c2 on  b3_0x322                  3b
+  PASS  c2 off b3_0x322                  3b
+  ....  vars_0x323                       base 00 -> enabled 04 -> after 04 (derived)
+  PASS  c1 on  vars_0x323                04
+  PASS  c1 off vars_0x323                04
+  PASS  c2 on  vars_0x323                04
+  PASS  c2 off vars_0x323                04
+  ....  ncps_0x194                       base 28 -> enabled 28 -> after 28 (derived)
+  PASS  c1 on  ncps_0x194                28
+  PASS  c1 off ncps_0x194                28
+  PASS  c2 on  ncps_0x194                28
+  PASS  c2 off ncps_0x194                28
+  ....  buck3_0x183                      base ce -> enabled c2 -> after c2 (derived)
+  PASS  c1 on  buck3_0x183               c2
+  PASS  c1 off buck3_0x183               c2
+  PASS  c2 on  buck3_0x183               c2
+  PASS  c2 off buck3_0x183               c2
+  ....  buck4_0x184                      base 3a -> enabled ff -> after ff (derived)
+  PASS  c1 on  buck4_0x184               ff
+  PASS  c1 off buck4_0x184               ff
+  PASS  c2 on  buck4_0x184               ff
+  PASS  c2 off buck4_0x184               ff
+  ....  buck5_0x185                      base 00 -> enabled 02 -> after 02 (derived)
+  PASS  c1 on  buck5_0x185               02
+  PASS  c1 off buck5_0x185               02
+  PASS  c2 on  buck5_0x185               02
+  PASS  c2 off buck5_0x185               02
+  ....  ccl1_0x189                       base 5b -> enabled 5b -> after 5b (derived)
+  PASS  c1 on  ccl1_0x189                5b
+  PASS  c1 off ccl1_0x189                5b
+  PASS  c2 on  ccl1_0x189                5b
+  PASS  c2 off ccl1_0x189                5b
+  ....  ccl3_0x18b                       base 6a -> enabled 60 -> after 60 (derived)
+  PASS  c1 on  ccl3_0x18b                60
+  PASS  c1 off ccl3_0x18b                60
+  PASS  c2 on  ccl3_0x18b                60
+  PASS  c2 off ccl3_0x18b                60
+  ....  ccl4_0x18c                       base 51 -> enabled 50 -> after 50 (derived)
+  PASS  c1 on  ccl4_0x18c                50
+  PASS  c1 off ccl4_0x18c                50
+  PASS  c2 on  ccl4_0x18c                50
+  PASS  c2 off ccl4_0x18c                50
+
+-- OUT OF SCOPE: the DAC, the PA and the earpiece must not move --
+  PASS  no out-of-scope register moved    dac_0x1b1=00 pa_0x1ab=80 ear_0x1bc=00
+  PASS  stayed put: dac_0x1b1            00
+  PASS  stayed put: pa_0x1ab             80
+  PASS  stayed put: ear_0x1bc            00
+
+-- the lifecycle is reusable, not a one-shot --
+  PASS  cycle 2 enabled == cycle 1 enabled ok
+  PASS  cycle 2 teardown == cycle 1 teardown ok
+
+-- the charge pump was balanced --
+  PASS  charge-pump refs released        0
+  PASS  no chargepump warning            0
+  PASS  enables == disables              2
+  PASS  two cycles ran                   2
+  PASS  writes as mapped (46 in + 6 out, twice) 104
+  PASS  no clsh failure logged           0
+  PASS  no kernel WARNING/BUG            0
+
+=== finding ===
+NOT PROVEN. 2 check(s) failed above.
+
+Do NOT proceed to the DAC. Every expected value here was derived
+from the downstream write tables, so a mismatch means the mapping
+is wrong -- revisit it rather than adjusting the expectation to
+match what the hardware happened to do.
+
+=== run identity ===
+mode              : wcd9320-clsh-reversibility
+date              : 2026-08-23T17:18:39Z (UTC)
+module version    : clsh-rc1   (expected clsh-rc1)
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #164-postmarketos-qcom-msm8974 SMP PREEMPT Sun Aug 23 19:06:46 U
+uptime            : 300.28 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 77 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[   48.698972] wcd9320 217:a0:0:0: IFD probe #1: sdev=e53f4b66 dev=e53f4b66 name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.699114] wcd9320 217:a0:0:0: IFD probe #1: driver=5917bd06 name=wcd9320 task=(udev-worker) pid=429
+[   48.702575] wcd9320 217:a0:0:0: IFD probe #1: before: ifd_instance=00000000 drvdata=00000000 this_wcd=33e5da50
+[   48.702787] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.702874] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.702955] wcd9320 217:a0:0:0: IFD probe #1: after:  ifd_instance=33e5da50 drvdata=33e5da50 replaced=0
+[   48.703048] wcd9320 217:a0:0:0: IFD probe #1: exit after 4 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.703163] wcd9320 217:a0:0:0: IFD probe #1: returning 0 (bound)
+[   48.719322] wcd9320 217:a0:0:0: Failed to get logical address
+[   48.719699] wcd9320 217:a0:1:0: CTL probe #1: sdev=e28ab0a9 dev=e28ab0a9 name=217:a0:1:0 laddr=0x00 laddr_valid=0 status=0
+[   48.719806] wcd9320 217:a0:1:0: CTL probe #1: driver=5917bd06 name=wcd9320 task=(udev-worker) pid=429 drvdata_before=00000000
+[   48.734137] wcd9320 217:a0:1:0: ASoC component registered: wcd9320-codec, 1 DAI(s): wcd9320-slim-rx1
+[   48.758638] wcd9320 217:a0:0:0: IFD probe #2: sdev=e53f4b66 dev=e53f4b66 name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.758775] wcd9320 217:a0:0:0: IFD probe #2: driver=5917bd06 name=wcd9320 task=kworker/u16:1 pid=27
+[   48.758867] wcd9320 217:a0:0:0: IFD probe #2: before: ifd_instance=00000000 drvdata=00000000 this_wcd=ed8d7ef1
+[   48.759032] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.759271] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.759356] wcd9320 217:a0:0:0: IFD probe #2: after:  ifd_instance=ed8d7ef1 drvdata=ed8d7ef1 replaced=0
+[   48.759448] wcd9320 217:a0:0:0: IFD probe #2: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.759564] wcd9320 217:a0:0:0: IFD probe #2: returning 0 (bound)
+[   48.761952] wcd9320 217:a0:0:0: Failed to get logical address
+[   48.799248] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   48.799395] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   48.799471] wcd9320 217:a0:1:0: CTL probe #1: exit after 79 ms: laddr=0x00 laddr_valid=0 status=0 path=fresh -- slim_get_logical_addr() decides next
+[   48.809937] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   48.815763] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   48.819264] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[   48.855573] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 87
+[   48.855707] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   48.855803] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   48.869253] wcd9320 217:a0:0:0: IFD probe #3: sdev=e53f4b66 dev=e53f4b66 name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.869370] wcd9320 217:a0:0:0: IFD probe #3: driver=5917bd06 name=wcd9320 task=kworker/u16:1 pid=27
+[   48.869463] wcd9320 217:a0:0:0: IFD probe #3: before: ifd_instance=00000000 drvdata=00000000 this_wcd=ed8d7ef1
+[   48.869634] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.869720] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.869801] wcd9320 217:a0:0:0: IFD probe #3: after:  ifd_instance=ed8d7ef1 drvdata=ed8d7ef1 replaced=0
+[   48.869894] wcd9320 217:a0:0:0: IFD probe #3: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.870009] wcd9320 217:a0:0:0: IFD probe #3: returning 0 (bound)
+[   48.873486] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   49.276925] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   49.685151] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[   49.695731] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[   49.838768] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[   49.841591] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[   49.854691] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[   49.854718] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[   50.645708] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[   50.992336] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[   51.066077] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[   51.116224] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[   51.221724] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[   51.313403] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[   51.341822] wcd9320-lumia-q6 sound: front end: MultiMedia1 Playback (id 0), trigger POST
+[   51.347554] wcd9320-lumia-q6 sound: back end: SLIM Playback (id 2)
+[   51.410837] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[   51.419396] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[   51.443825] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[   51.459296] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[   51.462371] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[   51.469450] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[   51.471854] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[   51.472528] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[   51.474894] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[   51.475820] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[   51.475841] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[   52.080995] wcd9320-lumia-q6 sound: QDSP6 card registered: 2 link(s)
+[   52.214735] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[   52.214761] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[   52.214776] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   57.214239] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   82.972624] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  298.497894] wcd9320 217:a0:1:0: clsh: HPHL enable, from downstream state_hph_l()
+[  298.508862] wcd9320 217:a0:1:0: clsh: ENABLED, 46 write(s), B1_CTL = a7 (predicted a7)
+[  298.515569] wcd9320 217:a0:1:0: clsh: DISABLED, 52 write(s), B1_CTL = a6 (predicted a6)
+[  298.526015] wcd9320 217:a0:1:0: clsh: HPHL enable, from downstream state_hph_l()
+[  298.528314] wcd9320 217:a0:1:0: clsh: ENABLED, 98 write(s), B1_CTL = a7 (predicted a7)
+[  298.539625] wcd9320 217:a0:1:0: clsh: DISABLED, 104 write(s), B1_CTL = a6 (predicted a6)
+
+=== verdict ===
+mode   : wcd9320-clsh-reversibility
+checks : 76 passed, 2 failed
+VERDICT: FAIL (wcd9320-clsh-reversibility)
+REPORT_COMPLETE

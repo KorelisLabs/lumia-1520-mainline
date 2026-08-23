@@ -93,11 +93,20 @@ Concrete and falsifiable, from POR plus the write sets:
 | `CDC_CLSH_B1_CTL` | 0xE4 | **0xA6** | bit1 set and bit6 cleared by enable, never restored |
 | `BUCK_MODE_1` | 0x21 | **0x25** | bit2 set by enable, only bit7 restored |
 | `NCP_EN` | 0xFE | **0xFE** | bit0 set then cleared — fully restored |
-| `CDC_CLSH_B2_CTL` | 0x00 | **0x31** | configuration, not restored |
+| `CDC_CLSH_B2_CTL` | 0x00 | **0x35** | configuration, not restored |
 | `CDC_CLSH_K_DATA` | 0xA4 | last value written | table register |
 
 If the hardware disagrees with these, the mapping is wrong and that matters
 more than the milestone.
+
+**Two of these were wrong when first written, and hardware caught both.**
+`CDC_CLSH_B2_CTL` was given as 0x31 by hand; composing the three masked writes
+properly gives **0x35** (corrected above). And three baseline registers --
+`BUCK_MODE_3`, `BUCK_CTRL_CCL_1`, `BUCK_CTRL_CCL_4` -- do not reset to their
+header POR at all, because they are in the fuse-loaded 0x180-0x1e4 trim range.
+Expectations are now derived from the *measured* baseline with the transcribed
+masked writes applied, which is both correct and immune to per-device fuse
+variation. See `wcd9320-clsh-reversibility.md`.
 
 ## What the acceptance criterion must therefore be
 

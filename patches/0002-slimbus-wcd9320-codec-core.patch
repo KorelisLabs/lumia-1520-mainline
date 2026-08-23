@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 12:34:45.886914602 -0400
-@@ -0,0 +1,5601 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 14:58:16.388474743 -0400
+@@ -0,0 +1,5964 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1539,6 +1539,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool comp1_on;
 +	unsigned int comp1_enables;
 +	unsigned int comp1_disables;
++
++	/* ---- class-H HPHL power state (C2a) ---- */
++	bool clsh_on;
++	unsigned int clsh_enables;
++	unsigned int clsh_disables;
++	unsigned int clsh_writes;
++	unsigned int clsh_cp_refs;
 +};
 +
 +/*
@@ -4712,6 +4719,360 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_WO(comp1_test);
 +
++/* ------------------------------- class-H HPHL power state (C2a) -- */
++
++/*
++ * The HPHL class-H support circuitry: bring it up, and put it back.
++ *
++ * SCOPE. This powers the buck, the negative charge pump and the class-H block.
++ * It does NOT enable the HPHL DAC (0x1b1) or the PA (0x1ab), and it needs no
++ * audio data -- this is a power-state lifecycle experiment, nothing else.
++ *
++ * WHERE THE SEQUENCES COME FROM
++ *
++ * Enable is wcd9xxx_clsh_state_hph_l(is_enable=true), transcribed in order.
++ * Teardown is wcd9xxx_clsh_state_idle(req_state=HPHL, is_enable=false), which
++ * is comp_req(HPH_L,false) followed by wcd9xxx_clsh_turnoff_postpa(). Both are
++ * real downstream routines. Neither is a hand-reversal of the other, and the
++ * asymmetry between them is deliberate: downstream restores the POWER state and
++ * leaves the CONFIGURATION programmed, because the next enable reprograms it
++ * anyway.
++ *
++ * bit 3 OF CDC_CLSH_B1_CTL
++ *
++ * Downstream routes it through resmgr_add_cond_update_bits(COND_HPH, invert
++ * false), which writes IMMEDIATELY -- 1 if the COND_HPH flag is set, 0 if
++ * clear -- and rm_cond_update_bits() writes 0. There is no deferral. COND_HPH
++ * is set only by MBHC jack detection, which this port does not run, so the
++ * faithful equivalent here is: write 0 on enable, write 0 on teardown. See
++ * wcd9320-clsh-cond-hph.md.
++ *
++ * PREDICTED CDC_CLSH_B1_CTL: 0xE4 at POR -> 0xA7 enabled -> 0xA6 after
++ * teardown. 0xAF enabled would mean something is asserting COND_HPH and the
++ * analysis needs revisiting.
++ */
++/* Already defined earlier in this file: WCD9320_A_CDC_CLSH_B1_CTL 0x320. */
++#define WCD9320_CDC_CLK_OTHR_CTL		0x30c
++#define WCD9320_A_RX_HPH_CNP_EN			0x1ab	/* PA -- read only, guarded */
++#define WCD9320_A_RX_HPH_L_DAC_CTL		0x1b1	/* DAC -- read only, guarded */
++#define WCD9320_A_RX_EAR_EN			0x1bc	/* EAR -- read only, guarded */
++#define WCD9320_A_BUCK_MODE_1			0x181
++#define WCD9320_A_BUCK_MODE_3			0x183
++#define WCD9320_A_BUCK_MODE_4			0x184
++#define WCD9320_A_BUCK_MODE_5			0x185
++#define WCD9320_A_BUCK_CTRL_CCL_1		0x189
++#define WCD9320_A_BUCK_CTRL_CCL_3		0x18b
++#define WCD9320_A_BUCK_CTRL_CCL_4		0x18c
++#define WCD9320_A_NCP_EN			0x192
++#define WCD9320_A_NCP_STATIC			0x194
++#define WCD9320_CDC_CLSH_B2_CTL			0x321
++#define WCD9320_CDC_CLSH_B3_CTL			0x322
++#define WCD9320_CDC_CLSH_BUCK_NCP_VARS		0x323
++#define WCD9320_CDC_CLSH_IDLE_HPH_THSD		0x324
++#define WCD9320_CDC_CLSH_FCLKONLY_HPH_THSD	0x326
++#define WCD9320_CDC_CLSH_K_ADDR			0x328
++#define WCD9320_CDC_CLSH_K_DATA			0x329
++#define WCD9320_CDC_CLSH_I_PA_FACT_HPH_L	0x32a
++#define WCD9320_CDC_CLSH_I_PA_FACT_HPH_U	0x32b
++#define WCD9320_CDC_CLSH_V_PA_HD_HPH		0x32f
++#define WCD9320_CDC_CLSH_V_PA_MIN_HPH		0x331
++
++#define WCD9320_BUCK_VREF_2V			0xff
++#define WCD9320_NCP_FCLK_LEVEL_8		0x08
++#define WCD9320_BUCK_SETTLE_US			50
++#define WCD9320_NCP_SETTLE_US			50
++
++struct wcd9320_rmv {
++	unsigned int reg;
++	u8 mask;
++	u8 val;
++	const char *what;
++};
++
++/*
++ * wcd9xxx_cfg_clsh_buck, then _param_common, then _param_hph, in order.
++ * The eight K_DATA writes are a coefficient table pushed through an
++ * address/data pair -- one register, eight writes, and any "each register is
++ * written once" assumption would get this wrong.
++ */
++static const struct wcd9320_rmv wcd9320_clsh_cfg[] = {
++	{ WCD9320_A_BUCK_CTRL_CCL_4, 0x0b, 0x00, "buck ccl4" },
++	{ WCD9320_A_BUCK_CTRL_CCL_1, 0xf0, 0x50, "buck ccl1" },
++	{ WCD9320_A_BUCK_CTRL_CCL_3, 0x03, 0x00, "buck ccl3 a" },
++	{ WCD9320_A_BUCK_CTRL_CCL_3, 0x0b, 0x00, "buck ccl3 b" },
++
++	{ WCD9320_CDC_CLSH_BUCK_NCP_VARS, 0x03, 0x00, "ncp vars a" },
++	{ WCD9320_CDC_CLSH_BUCK_NCP_VARS, 0x0c, 0x04, "ncp vars b" },
++	{ WCD9320_CDC_CLSH_BUCK_NCP_VARS, 0x10, 0x00, "ncp vars c" },
++	{ WCD9320_CDC_CLSH_B2_CTL, 0x03, 0x01, "clsh b2 a" },
++	{ WCD9320_CDC_CLSH_B2_CTL, 0x0c, 0x04, "clsh b2 b" },
++	{ WCD9320_CDC_CLSH_B2_CTL, 0xf0, 0x30, "clsh b2 c" },
++	{ WCD9320_CDC_CLSH_B3_CTL, 0xf0, 0x30, "clsh b3 a" },
++	{ WCD9320_CDC_CLSH_B3_CTL, 0x0f, 0x0b, "clsh b3 b" },
++	{ WCD9320_A_CDC_CLSH_B1_CTL, 0x20, 0x20, "clsh b1 bit5" },
++	{ WCD9320_A_CDC_CLSH_B1_CTL, 0x02, 0x02, "clsh b1 bit1" },
++
++	{ WCD9320_A_CDC_CLSH_B1_CTL, 0x40, 0x00, "clsh b1 bit6 clear" },
++	{ WCD9320_CDC_CLSH_V_PA_HD_HPH, 0x3f, 0x0d, "V_PA_HD_HPH" },
++	{ WCD9320_CDC_CLSH_V_PA_MIN_HPH, 0x3f, 0x1d, "V_PA_MIN_HPH" },
++	{ WCD9320_CDC_CLSH_IDLE_HPH_THSD, 0x3f, 0x13, "IDLE_HPH_THSD" },
++	{ WCD9320_CDC_CLSH_FCLKONLY_HPH_THSD, 0x1f, 0x19, "FCLKONLY_THSD" },
++	{ WCD9320_CDC_CLSH_I_PA_FACT_HPH_L, 0xff, 0x97, "I_PA_FACT_L" },
++	{ WCD9320_CDC_CLSH_I_PA_FACT_HPH_U, 0xff, 0x05, "I_PA_FACT_U" },
++	{ WCD9320_CDC_CLSH_K_ADDR, 0x80, 0x00, "K_ADDR bit7" },
++	{ WCD9320_CDC_CLSH_K_ADDR, 0x0f, 0x00, "K_ADDR index" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0xae, "K[0]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x01, "K[1]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x1c, "K[2]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x00, "K[3]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x24, "K[4]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x00, "K[5]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x25, "K[6]" },
++	{ WCD9320_CDC_CLSH_K_DATA, 0xff, 0x00, "K[7]" },
++};
++
++/* wcd9xxx_enable_buck_mode(BUCK_VREF_2V), then a 50 us settle. */
++static const struct wcd9320_rmv wcd9320_clsh_buck_mode[] = {
++	{ WCD9320_A_BUCK_MODE_5, 0x02, 0x03, "buck mode5" },
++	{ WCD9320_A_BUCK_MODE_4, 0xff, WCD9320_BUCK_VREF_2V, "buck vref 2V" },
++	{ WCD9320_A_BUCK_MODE_1, 0x04, 0x04, "buck mode1 bit2" },
++	{ WCD9320_A_BUCK_MODE_1, 0x08, 0x00, "buck mode1 bit3" },
++	{ WCD9320_A_BUCK_MODE_3, 0x04, 0x00, "buck mode3 bit2" },
++	{ WCD9320_A_BUCK_MODE_3, 0x08, 0x00, "buck mode3 bit3" },
++	{ WCD9320_A_BUCK_MODE_1, 0x80, 0x80, "buck enable" },
++};
++
++/* wcd9xxx_set_fclk_enable_ncp(NCP_FCLK_LEVEL_8), then a 50 us settle. */
++static const struct wcd9320_rmv wcd9320_clsh_ncp[] = {
++	{ WCD9320_A_NCP_STATIC, 0x10, 0x00, "ncp static bit4" },
++	{ WCD9320_A_NCP_STATIC, 0x0f, WCD9320_NCP_FCLK_LEVEL_8, "ncp fclk 8" },
++	{ WCD9320_A_NCP_STATIC, 0x20, 0x20, "ncp static bit5" },
++	{ WCD9320_A_NCP_EN, 0x01, 0x01, "ncp enable" },
++};
++
++/*
++ * wcd9xxx_clsh_turnoff_postpa, in its own order: the charge pump first, then
++ * this table, then the class-H block. Six writes total, against 43 on the way
++ * in -- the configuration is deliberately left programmed.
++ */
++static const struct wcd9320_rmv wcd9320_clsh_off[] = {
++	{ WCD9320_A_NCP_EN, 0x01, 0x00, "ncp disable" },
++	{ WCD9320_A_BUCK_MODE_1, 0x80, 0x00, "buck disable" },
++	{ WCD9320_A_CDC_CLSH_B1_CTL, 0x10, 0x00, "clsh b1 bit4" },
++};
++
++static int wcd9320_clsh_apply(struct wcd9320 *wcd,
++			      const struct wcd9320_rmv *t, unsigned int n)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < n; i++) {
++		ret = regmap_update_bits(wcd->regmap, t[i].reg, t[i].mask,
++					 t[i].val);
++		if (ret) {
++			dev_err(&wcd->sdev->dev,
++				"clsh: 0x%03x write failed: %d [%s]\n",
++				t[i].reg, ret, t[i].what);
++			return ret;
++		}
++		wcd->clsh_writes++;
++	}
++	return 0;
++}
++
++/* One write, by value. Avoids taking the address of a compound literal. */
++static int wcd9320_clsh_one(struct wcd9320 *wcd, unsigned int reg, u8 mask,
++			    u8 val, const char *what)
++{
++	const struct wcd9320_rmv one = { reg, mask, val, what };
++
++	return wcd9320_clsh_apply(wcd, &one, 1);
++}
++
++static int wcd9320_clsh_hphl(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int b1;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "clsh: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	if (!enable)
++		goto teardown;
++
++	if (wcd->clsh_on) {
++		dev_err(dev, "clsh: already enabled\n");
++		return -EBUSY;
++	}
++
++	dev_info(dev, "clsh: HPHL enable, from downstream state_hph_l()\n");
++
++	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_cfg,
++				 ARRAY_SIZE(wcd9320_clsh_cfg));
++	if (ret)
++		goto unwind;
++
++	/* enable_clsh_block(true) */
++	ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x01, 0x01,
++			       "clsh block on");
++	if (ret)
++		goto unwind;
++
++	/*
++	 * chargepump_request(true). Downstream refcounts this in a
++	 * function-static and WARN_ON()s an unbalanced disable; we keep our own
++	 * strict pairing instead, one enable per teardown.
++	 */
++	ret = wcd9320_clsh_one(wcd, WCD9320_CDC_CLK_OTHR_CTL, 0x01, 0x01,
++			       "charge pump on");
++	if (ret)
++		goto unwind;
++	wcd->clsh_cp_refs++;
++
++	/* enable_anc_delay(true) */
++	ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x02, 0x02,
++			       "anc delay on");
++	if (ret)
++		goto unwind;
++
++	/* comp_req(HPH_L, true) -- COND_HPH is clear here, so bit 3 gets 0 */
++	ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x08, 0x00,
++			       "comp req HPH_L");
++	if (ret)
++		goto unwind;
++
++	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode,
++				 ARRAY_SIZE(wcd9320_clsh_buck_mode));
++	if (ret)
++		goto unwind;
++	usleep_range(WCD9320_BUCK_SETTLE_US, WCD9320_BUCK_SETTLE_US + 10);
++
++	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_ncp,
++				 ARRAY_SIZE(wcd9320_clsh_ncp));
++	if (ret)
++		goto unwind;
++	usleep_range(WCD9320_NCP_SETTLE_US, WCD9320_NCP_SETTLE_US + 10);
++
++	wcd->clsh_on = true;
++	wcd->clsh_enables++;
++	regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
++	dev_info(dev, "clsh: ENABLED, %u write(s), B1_CTL = %02x (predicted a7)\n",
++		 wcd->clsh_writes, b1 & 0xff);
++	return 0;
++
++unwind:
++	dev_err(dev, "clsh: enable failed, unwinding\n");
++teardown:
++	/* comp_req(HPH_L, false) */
++	wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x08, 0x00,
++			       "comp req off");
++
++	/* turnoff_postpa: charge pump first, then the table, then the block */
++	if (wcd->clsh_cp_refs > 0) {
++		wcd9320_clsh_one(wcd, WCD9320_CDC_CLK_OTHR_CTL, 0x01, 0x00,
++			       "charge pump off");
++		wcd->clsh_cp_refs--;
++	}
++	wcd9320_clsh_apply(wcd, wcd9320_clsh_off,
++			   ARRAY_SIZE(wcd9320_clsh_off));
++	wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x01, 0x00,
++			       "clsh block off");
++
++	if (wcd->clsh_on) {
++		wcd->clsh_on = false;
++		wcd->clsh_disables++;
++		regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
++		dev_info(dev,
++			 "clsh: DISABLED, %u write(s), B1_CTL = %02x (predicted a6)\n",
++			 wcd->clsh_writes, b1 & 0xff);
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ *   echo clsh-on  > clsh_test
++ *   echo clsh-off > clsh_test
++ */
++static ssize_t clsh_test_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "clsh-on"))
++		ret = wcd9320_clsh_hphl(wcd, true);
++	else if (sysfs_streq(buf, "clsh-off"))
++		ret = wcd9320_clsh_hphl(wcd, false);
++	else
++		return -EINVAL;
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(clsh_test);
++
++/*
++ * Everything the gate needs, in the three buckets the acceptance model uses:
++ * power state, persistent configuration, and the out-of-scope registers that
++ * must not move.
++ */
++static ssize_t clsh_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int b1 = 0, bm1 = 0, ncpen = 0, cp = 0;
++	unsigned int b2 = 0, b3 = 0, vars = 0, ncps = 0;
++	unsigned int bm3 = 0, bm4 = 0, bm5 = 0, ccl1 = 0, ccl3 = 0, ccl4 = 0;
++	unsigned int dac = 0, pa = 0, ear = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_MODE_1, &bm1);
++	regmap_read(wcd->regmap, WCD9320_A_NCP_EN, &ncpen);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLK_OTHR_CTL, &cp);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLSH_B2_CTL, &b2);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLSH_B3_CTL, &b3);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLSH_BUCK_NCP_VARS, &vars);
++	regmap_read(wcd->regmap, WCD9320_A_NCP_STATIC, &ncps);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_MODE_3, &bm3);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_MODE_4, &bm4);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_MODE_5, &bm5);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_CTRL_CCL_1, &ccl1);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_CTRL_CCL_3, &ccl3);
++	regmap_read(wcd->regmap, WCD9320_A_BUCK_CTRL_CCL_4, &ccl4);
++	regmap_read(wcd->regmap, WCD9320_A_RX_HPH_L_DAC_CTL, &dac);
++	regmap_read(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++	regmap_read(wcd->regmap, WCD9320_A_RX_EAR_EN, &ear);
++
++	return sysfs_emit(buf,
++			  "on=%u enables=%u disables=%u writes=%u cp_refs=%u\n"
++			  "power b1_0x320=%02x buck1_0x181=%02x ncpen_0x192=%02x cp_0x30c=%02x\n"
++			  "config b2_0x321=%02x b3_0x322=%02x vars_0x323=%02x ncps_0x194=%02x\n"
++			  "config buck3_0x183=%02x buck4_0x184=%02x buck5_0x185=%02x\n"
++			  "config ccl1_0x189=%02x ccl3_0x18b=%02x ccl4_0x18c=%02x\n"
++			  "offlimits dac_0x1b1=%02x pa_0x1ab=%02x ear_0x1bc=%02x\n",
++			  wcd->clsh_on ? 1 : 0, wcd->clsh_enables,
++			  wcd->clsh_disables, wcd->clsh_writes, wcd->clsh_cp_refs,
++			  b1 & 0xff, bm1 & 0xff, ncpen & 0xff, cp & 0xff,
++			  b2 & 0xff, b3 & 0xff, vars & 0xff, ncps & 0xff,
++			  bm3 & 0xff, bm4 & 0xff, bm5 & 0xff,
++			  ccl1 & 0xff, ccl3 & 0xff, ccl4 & 0xff,
++			  dac & 0xff, pa & 0xff, ear & 0xff);
++}
++static DEVICE_ATTR_RO(clsh_state);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -4738,6 +5099,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_rx1_digital_test.attr,
 +	&dev_attr_rx1_digital_state.attr,
 +	&dev_attr_comp1_test.attr,
++	&dev_attr_clsh_test.attr,
++	&dev_attr_clsh_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -5670,7 +6033,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("comp1-rc1");
++MODULE_VERSION("clsh-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
