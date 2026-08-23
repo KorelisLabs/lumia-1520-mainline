@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 09:29:57.781555955 -0400
-@@ -0,0 +1,5150 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 10:50:56.584653799 -0400
+@@ -0,0 +1,5424 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1530,6 +1530,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* negative control: suppress the physical transport only */
 +	bool slim_transport_off;
 +	unsigned int slim_transport_suppressed;
++
++	/* ---- RX1 digital path (Branch C) ---- */
++	bool rx1_digital_on;
++	unsigned int rx1_enables;
++	unsigned int rx1_disables;
++	unsigned int rx1_writes;
 +};
 +
 +/*
@@ -4264,6 +4270,272 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RW(slim_transport);
 +
++/* ------------------------------------ RX1 digital path (Branch C) -- */
++
++/*
++ * The RX1 digital chain, and deliberately nothing past it.
++ *
++ * SCOPE, FROZEN
++ *
++ *   SLIM RX1 / port 16 / channel 144      already proven
++ *          -> RX1 MIX1 INP1   0x380       select RX1
++ *          -> interpolator reset 0x301    pulse
++ *          -> RX1 MIX2/INTERP 0x30f b0    enable
++ *          -> RX1 digital gain 0x2b7      latch
++ *          -> RX1 CHAIN       0x2b5 b5    enable
++ *          -> STOP
++ *
++ * No CLASS_H mux, no HPHL DAC (0x1b1), no PA (0x1ab), no RX bias, no analog
++ * power of any kind. Analog power sequencing is a different failure class that
++ * can produce pops and full-scale output, and debugging it together with
++ * register sequencing would confound both.
++ *
++ * WHY NO SAMPLE-RATE WRITE
++ *
++ * Downstream sets the interpolator rate in CDC_RX1_B5_CTL (0x2b4) bits 0xe0,
++ * where 48 kHz is 0x60. That register reads 0x78 on this board at reset, whose
++ * rate field is ALREADY 0x60. So the only rate we support is the reset value,
++ * and writing it would add a sixth register for no effect. It is asserted
++ * instead -- if a future part or a prior write leaves it different, this
++ * refuses rather than silently running at the wrong rate.
++ *
++ * THE CLOCK
++ *
++ * Nothing here requests a clock. The interpolator runs on the CDC clock that
++ * the RCO wake sequence already established: CLK_BUFF_EN1 selects RCO, and
++ * CDC_CLK_MCLK_CTL -- a gate, not a source selector, despite the name -- is
++ * already open. Confirmed in wcd9320-rx-clock-resolution.md by source and by
++ * live register read.
++ */
++#define WCD9320_CDC_CONN_RX1_B1_CTL	0x380
++#define WCD9320_CDC_CLK_RX_RESET_CTL	0x301
++#define WCD9320_CDC_CLK_RX_B1_CTL	0x30f
++#define WCD9320_CDC_RX1_VOL_CTL_B2_CTL	0x2b7
++#define WCD9320_CDC_RX1_B6_CTL		0x2b5
++
++/* Asserted, never written. See the note above. */
++#define WCD9320_CDC_RX1_B5_CTL		0x2b4
++#define WCD9320_RX1_FS_MASK		0xe0
++#define WCD9320_RX1_FS_48K		0x60
++
++/* The compander status, the candidate receiver-side observable. Read only. */
++#define WCD9320_CDC_COMP1_SHUT_DOWN_STATUS	0x376
++
++#define WCD9320_RX_MIX1_INP_MASK	0x0f
++#define WCD9320_RX_MIX1_INP_RX1		0x05	/* rx_mix1_text index of "RX1" */
++#define WCD9320_RX1_INTERP_BIT		BIT(0)
++#define WCD9320_RX1_CHAIN_BIT		BIT(5)
++
++/* One verified write, logged the way the RX-port path already logs its own. */
++static int wcd9320_rx1_write(struct wcd9320 *wcd, unsigned int reg, u8 mask,
++			     u8 want, const char *what)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int got;
++	int ret;
++
++	ret = regmap_update_bits(wcd->regmap, reg, mask, want);
++	if (ret) {
++		dev_err(dev, "rx1-digital: 0x%03x write failed: %d\n", reg, ret);
++		return ret;
++	}
++	wcd->rx1_writes++;
++
++	ret = regmap_read(wcd->regmap, reg, &got);
++	if (ret) {
++		dev_err(dev, "rx1-digital: 0x%03x readback failed: %d\n", reg, ret);
++		return ret;
++	}
++
++	dev_info(dev, "rx1-digital: 0x%03x mask %02x want %02x -> read %02x  [%s]\n",
++		 reg, mask, want, got & 0xff, what);
++
++	if ((got & mask) != (want & mask)) {
++		dev_err(dev, "rx1-digital: 0x%03x did not take\n", reg);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int wcd9320_rx1_digital_path(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int fs, gain;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online) {
++		dev_err(dev, "rx1-digital: codec is not online\n");
++		return -ENODEV;
++	}
++	if (!wcd->core_ready) {
++		dev_err(dev, "rx1-digital: core is not ready\n");
++		return -EAGAIN;
++	}
++
++	if (!enable)
++		goto teardown;
++
++	/*
++	 * The rate is asserted, not written: 48 kHz is the reset value and the
++	 * only rate this path supports today.
++	 */
++	ret = regmap_read(wcd->regmap, WCD9320_CDC_RX1_B5_CTL, &fs);
++	if (ret)
++		return ret;
++	if ((fs & WCD9320_RX1_FS_MASK) != WCD9320_RX1_FS_48K) {
++		dev_err(dev,
++			"rx1-digital: 0x2b4 rate field is %02x, expected %02x (48 kHz)\n",
++			fs & WCD9320_RX1_FS_MASK, WCD9320_RX1_FS_48K);
++		return -EINVAL;
++	}
++	dev_info(dev, "rx1-digital: 0x2b4 = %02x, rate field %02x = 48 kHz (asserted, not written)\n",
++		 fs & 0xff, fs & WCD9320_RX1_FS_MASK);
++
++	/* 1. the input mux: RX1 MIX1 INP1 <- SLIM RX1 */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CONN_RX1_B1_CTL,
++				WCD9320_RX_MIX1_INP_MASK,
++				WCD9320_RX_MIX1_INP_RX1, "MIX1 INP1 = RX1");
++	if (ret)
++		goto unwind;
++
++	/* 2. the interpolator reset pulse, before enabling its clock */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_RESET_CTL,
++				WCD9320_RX1_INTERP_BIT, WCD9320_RX1_INTERP_BIT,
++				"interpolator reset asserted");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_RESET_CTL,
++				WCD9320_RX1_INTERP_BIT, 0,
++				"interpolator reset released");
++	if (ret)
++		goto unwind;
++
++	/* 3. the interpolator clock */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B1_CTL,
++				WCD9320_RX1_INTERP_BIT, WCD9320_RX1_INTERP_BIT,
++				"RX1 interpolator clock on");
++	if (ret)
++		goto unwind;
++
++	/*
++	 * 4. latch the digital gain. Downstream reads this register and writes
++	 * the same value back after the interpolator is enabled; the write is
++	 * what takes effect, not the value. Writing the value we just read
++	 * keeps the gain unchanged and makes the latch explicit.
++	 */
++	ret = regmap_read(wcd->regmap, WCD9320_CDC_RX1_VOL_CTL_B2_CTL, &gain);
++	if (ret)
++		goto unwind;
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_VOL_CTL_B2_CTL, 0xff,
++				gain & 0xff, "digital gain latched");
++	if (ret)
++		goto unwind;
++
++	/* 5. the chain output */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_B6_CTL,
++				WCD9320_RX1_CHAIN_BIT, WCD9320_RX1_CHAIN_BIT,
++				"RX1 CHAIN enabled");
++	if (ret)
++		goto unwind;
++
++	wcd->rx1_digital_on = true;
++	wcd->rx1_enables++;
++	dev_info(dev, "rx1-digital: PATH ENABLED, %u write(s) total\n",
++		 wcd->rx1_writes);
++	return 0;
++
++unwind:
++	dev_err(dev, "rx1-digital: enable failed, unwinding\n");
++teardown:
++	/* Reverse order, and best-effort: every step is attempted. */
++	wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_B6_CTL,
++			  WCD9320_RX1_CHAIN_BIT, 0, "RX1 CHAIN disabled");
++	wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B1_CTL,
++			  WCD9320_RX1_INTERP_BIT, 0, "RX1 interpolator clock off");
++	wcd9320_rx1_write(wcd, WCD9320_CDC_CONN_RX1_B1_CTL,
++			  WCD9320_RX_MIX1_INP_MASK, 0, "MIX1 INP1 = ZERO");
++
++	if (wcd->rx1_digital_on) {
++		wcd->rx1_digital_on = false;
++		wcd->rx1_disables++;
++		dev_info(dev, "rx1-digital: PATH DISABLED, %u write(s) total\n",
++			 wcd->rx1_writes);
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ * Research entry point, in the pattern rx_port_test and slim_stream_test
++ * already established: the trigger is research, the path is production. When
++ * the DAPM widgets arrive they will call wcd9320_rx1_digital_path() -- the
++ * register sequence lives in one place and cannot drift between the two.
++ *
++ *   echo rx1-on  > rx1_digital_test
++ *   echo rx1-off > rx1_digital_test
++ */
++static ssize_t rx1_digital_test_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "rx1-on")) {
++		dev_info(dev, "rx1-digital invocation: manual (rx1_digital_test)\n");
++		ret = wcd9320_rx1_digital_path(wcd, true);
++	} else if (sysfs_streq(buf, "rx1-off")) {
++		dev_info(dev, "rx1-digital invocation: manual (rx1_digital_test)\n");
++		ret = wcd9320_rx1_digital_path(wcd, false);
++	} else {
++		return -EINVAL;
++	}
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(rx1_digital_test);
++
++/*
++ * The five registers plus the candidate observable, read live on every access.
++ * 0x376 is volatile in our regmap, so this reaches the chip rather than the
++ * cache -- which is the only reason it is usable as an observable at all.
++ */
++static ssize_t rx1_digital_state_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int mux = 0, rst = 0, clk = 0, gain = 0, chain = 0;
++	unsigned int fs = 0, comp1 = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read(wcd->regmap, WCD9320_CDC_CONN_RX1_B1_CTL, &mux);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLK_RX_RESET_CTL, &rst);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLK_RX_B1_CTL, &clk);
++	regmap_read(wcd->regmap, WCD9320_CDC_RX1_VOL_CTL_B2_CTL, &gain);
++	regmap_read(wcd->regmap, WCD9320_CDC_RX1_B6_CTL, &chain);
++	regmap_read(wcd->regmap, WCD9320_CDC_RX1_B5_CTL, &fs);
++	regmap_read(wcd->regmap, WCD9320_CDC_COMP1_SHUT_DOWN_STATUS, &comp1);
++
++	return sysfs_emit(buf,
++			  "on=%u enables=%u disables=%u writes=%u\n"
++			  "mux_0x380=%02x reset_0x301=%02x clk_0x30f=%02x\n"
++			  "gain_0x2b7=%02x chain_0x2b5=%02x rate_0x2b4=%02x\n"
++			  "comp1_status_0x376=%02x\n",
++			  wcd->rx1_digital_on ? 1 : 0,
++			  wcd->rx1_enables, wcd->rx1_disables, wcd->rx1_writes,
++			  mux & 0xff, rst & 0xff, clk & 0xff,
++			  gain & 0xff, chain & 0xff, fs & 0xff, comp1 & 0xff);
++}
++static DEVICE_ATTR_RO(rx1_digital_state);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -4287,6 +4559,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_slim_stream_test.attr,
 +	&dev_attr_slim_stream_state.attr,
 +	&dev_attr_slim_transport.attr,
++	&dev_attr_rx1_digital_test.attr,
++	&dev_attr_rx1_digital_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -5219,7 +5493,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("dataplane-rc2");
++MODULE_VERSION("rx1-digital-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
