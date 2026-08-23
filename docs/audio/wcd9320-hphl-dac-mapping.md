@@ -64,32 +64,27 @@ That is roughly twenty registers, and it powers the **buck converter and the
 negative charge pump** — real analog rails, not a digital enable. Calling this
 step "the DAC" understates it considerably.
 
-## 4. The problem: there is no DAC-only teardown
+## 4. The teardown — CORRECTED
 
-This is the finding that should shape the milestone.
+This section originally said there is *"no inverse sequence to copy"*. **That
+was wrong.**
 
-`wcd9xxx_clsh_state_hph_l()` with `is_enable = false` handles only the HPHR
-case; for HPHL it logs *"stub fallback to hph_l"* and does nothing. The real
-teardown is `wcd9xxx_clsh_turnoff_postpa()` — which reverses `BUCK_MODE_1`,
-`CDC_CLSH_B1_CTL`, `NCP_EN`, the charge pump and the class-H block — and it is
-called **only from the POST_PA event**, at all three of its call sites.
+`wcd9xxx_clsh_state_hph_l(is_enable=false)` is indeed a stub for the HPHL case,
+but the FSM dispatches teardown through the **destination** state:
+`wcd9xxx_clsh_state_idle()` with `req_state = HPHL` calls
+`comp_req(HPH_L, false)` followed by `wcd9xxx_clsh_turnoff_postpa()`. The
+inverse exists; it is reached by transitioning to IDLE, and downstream only
+*invokes* that transition from the PA lifecycle.
 
-So in the downstream model, class-H is torn down when the **power amplifier**
-goes away, not when the DAC does. A milestone that enables class-H and never
-enables a PA therefore has **no inverse sequence to copy**. It would leave the
-buck and NCP configured with no defined way back, which breaks the discipline
-every milestone here has followed: establish teardown before enabling anything.
+The real finding is different and more interesting: the teardown restores only
+the **power** state and deliberately leaves ~15 configuration registers
+programmed. See
+[wcd9320-clsh-reversibility-mapping.md](wcd9320-clsh-reversibility-mapping.md),
+which maps both directions register for register and derives what a reversibility
+gate may and may not assert.
 
-Three ways out, in my order of preference:
-
-1. **Derive the teardown from `turnoff_postpa()` directly** and prove it
-   restores the analog baseline, treating "enable then cleanly disable" as the
-   milestone rather than "enable". This keeps the PA out and keeps the
-   discipline.
-2. **Split again**: a milestone for the DSM mux and RDAC clock only (0x3B0,
-   0x30D, 0x1B1) with class-H left alone — but it is unclear the DAC does
-   anything meaningful without class-H, so this may prove very little.
-3. Accept a one-way transition, which I would not do.
+That map is the C2a prerequisite: prove the class-H power state is reversible,
+with the DAC and PA off, before the DAC is allowed to depend on it.
 
 ## 5. No pre-PA observable is documented
 
