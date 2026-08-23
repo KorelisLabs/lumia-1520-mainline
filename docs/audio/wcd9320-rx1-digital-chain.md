@@ -56,6 +56,16 @@ corrected for future runs; the evidence file is kept verbatim, with this note as
 the correction, because rewriting a machine's output after the fact is worse
 than annotating it.
 
+## Resolved: `0x376` is an enable flag
+
+The follow-up ran with the compander actually enabled, four phases on one cold
+boot. `0x376` moved `03` -> `00` when the compander was switched on, and then
+did not move for a live chain, a live stream, or the transport being removed.
+
+It is an enable-state flag and carries nothing about received data. See
+[wcd9320-comp1-observable.md](wcd9320-comp1-observable.md). The "untested, not
+refuted" caveat below is now settled: properly tested, and refuted.
+
 ## Consequences
 
 Branch B's byte-arrival gap remains open. Nothing here changes it.

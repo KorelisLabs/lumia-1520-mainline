@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 10:50:56.584653799 -0400
-@@ -0,0 +1,5424 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 12:34:45.886914602 -0400
+@@ -0,0 +1,5601 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1536,6 +1536,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int rx1_enables;
 +	unsigned int rx1_disables;
 +	unsigned int rx1_writes;
++	bool comp1_on;
++	unsigned int comp1_enables;
++	unsigned int comp1_disables;
 +};
 +
 +/*
@@ -4326,6 +4329,27 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_RX1_INTERP_BIT		BIT(0)
 +#define WCD9320_RX1_CHAIN_BIT		BIT(5)
 +
++/*
++ * Compander 1. Declared here rather than beside its own code, because
++ * rx1_digital_state_show() reads these registers and sits earlier in the
++ * file than the compander functions -- which must stay where they are,
++ * after wcd9320_rx1_write(), since they call it.
++ */
++#define WCD9320_CDC_COMP1_B1_CTL		0x370
++#define WCD9320_CDC_COMP1_B2_CTL		0x371
++#define WCD9320_CDC_COMP1_B3_CTL		0x372
++#define WCD9320_CDC_COMP1_FS_CFG		0x377
++#define WCD9320_CDC_CLK_RX_B2_CTL		0x310
++#define WCD9320_CDC_CLK_OTHR_RESET_B2_CTL	0x309
++
++/* comp_shift[COMPANDER_1] is 0, and compander 1 is a two-channel block. */
++#define WCD9320_COMP1_MASK		0x03
++#define WCD9320_COMP1_FS_MASK		0x07
++#define WCD9320_COMP1_FS_48K		0x03
++#define WCD9320_COMP1_B2_DIV_MASK	0xf0
++#define WCD9320_COMP1_B2_DIV_5		0x50
++#define WCD9320_COMP1_B3_RMS		0x01
++
 +/* One verified write, logged the way the RX-port path already logs its own. */
 +static int wcd9320_rx1_write(struct wcd9320 *wcd, unsigned int reg, u8 mask,
 +			     u8 want, const char *what)
@@ -4511,7 +4535,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(dev);
 +	unsigned int mux = 0, rst = 0, clk = 0, gain = 0, chain = 0;
-+	unsigned int fs = 0, comp1 = 0;
++	unsigned int fs = 0, comp1 = 0, cctl = 0, cclk = 0, cfs = 0;
 +
 +	if (wcd->is_ifd)
 +		return sysfs_emit(buf, "interface function: not applicable\n");
@@ -4523,18 +4547,170 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read(wcd->regmap, WCD9320_CDC_RX1_B6_CTL, &chain);
 +	regmap_read(wcd->regmap, WCD9320_CDC_RX1_B5_CTL, &fs);
 +	regmap_read(wcd->regmap, WCD9320_CDC_COMP1_SHUT_DOWN_STATUS, &comp1);
++	regmap_read(wcd->regmap, WCD9320_CDC_COMP1_B1_CTL, &cctl);
++	regmap_read(wcd->regmap, WCD9320_CDC_CLK_RX_B2_CTL, &cclk);
++	regmap_read(wcd->regmap, WCD9320_CDC_COMP1_FS_CFG, &cfs);
 +
 +	return sysfs_emit(buf,
 +			  "on=%u enables=%u disables=%u writes=%u\n"
 +			  "mux_0x380=%02x reset_0x301=%02x clk_0x30f=%02x\n"
 +			  "gain_0x2b7=%02x chain_0x2b5=%02x rate_0x2b4=%02x\n"
-+			  "comp1_status_0x376=%02x\n",
++			  "comp1_status_0x376=%02x  ctl_0x370=%02x clk_0x310=%02x fs_0x377=%02x\n",
 +			  wcd->rx1_digital_on ? 1 : 0,
 +			  wcd->rx1_enables, wcd->rx1_disables, wcd->rx1_writes,
 +			  mux & 0xff, rst & 0xff, clk & 0xff,
-+			  gain & 0xff, chain & 0xff, fs & 0xff, comp1 & 0xff);
++			  gain & 0xff, chain & 0xff, fs & 0xff, comp1 & 0xff,
++			  cctl & 0xff, cclk & 0xff, cfs & 0xff);
 +}
 +static DEVICE_ATTR_RO(rx1_digital_state);
++
++/* --------------------------------- compander 1 (Branch C follow-up) -- */
++
++/*
++ * Compander 1, enabled only so that 0x376 can be characterised.
++ *
++ * WHY
++ *
++ * The RX1 chain milestone left 0x376 at its POR value in every sample -- but
++ * the compander was never enabled, so a disabled block reporting its reset
++ * status proved nothing. The observable is untested, not refuted. This turns
++ * the block on so the question can actually be asked.
++ *
++ * TWO STEPS OF THE DOWNSTREAM SEQUENCE ARE DELIBERATELY OMITTED
++ *
++ *   taiko_config_gain_compander() writes RX_HPH_L_GAIN (0x1ae) and
++ *   RX_HPH_R_GAIN (0x1b4) to make the compander the gain source for the
++ *   headphone output stage. There is no output stage here, so it would change
++ *   analog registers to no effect. Both addresses are in the gate's guarded
++ *   set, which asserts they do NOT move.
++ *
++ *   COMP1_B4_CTL (0x373) bit 7 is a static gain offset selected from the
++ *   board's buck voltage in platform data. Also an analog gain concern, also
++ *   omitted, and left at its reset value.
++ *
++ * So this configures and runs the compander's DIGITAL side and nothing else.
++ *
++ * FS_CFG IS ASSERTED, NOT WRITTEN
++ *
++ * COMPANDER_FS_48KHZ is 3 and COMP1_FS_CFG resets to 0x03, so the only rate we
++ * support is already selected -- the same situation as the interpolator rate
++ * at 0x2b4. Asserted so a different part or a stray write refuses rather than
++ * running at the wrong rate.
++ */
++static int wcd9320_comp1_enable(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int fs;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "comp1: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	if (!enable)
++		goto teardown;
++
++	ret = regmap_read(wcd->regmap, WCD9320_CDC_COMP1_FS_CFG, &fs);
++	if (ret)
++		return ret;
++	if ((fs & WCD9320_COMP1_FS_MASK) != WCD9320_COMP1_FS_48K) {
++		dev_err(dev, "comp1: 0x377 rate field is %02x, expected %02x\n",
++			fs & WCD9320_COMP1_FS_MASK, WCD9320_COMP1_FS_48K);
++		return -EINVAL;
++	}
++	dev_info(dev, "comp1: 0x377 = %02x, rate field 48 kHz (asserted, not written)\n",
++		 fs & 0xff);
++
++	/* 1. the compander's clocks, on the RX interpolation path */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B2_CTL,
++				WCD9320_COMP1_MASK, WCD9320_COMP1_MASK,
++				"comp1 clocks on");
++	if (ret)
++		goto unwind;
++
++	/* 2. the reset pulse */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_OTHR_RESET_B2_CTL,
++				WCD9320_COMP1_MASK, WCD9320_COMP1_MASK,
++				"comp1 reset asserted");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_OTHR_RESET_B2_CTL,
++				WCD9320_COMP1_MASK, 0, "comp1 reset released");
++	if (ret)
++		goto unwind;
++
++	/* 3. enable */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_COMP1_B1_CTL,
++				WCD9320_COMP1_MASK, WCD9320_COMP1_MASK,
++				"comp1 enabled");
++	if (ret)
++		goto unwind;
++
++	/*
++	 * 4. the discharge settings downstream applies right after enabling:
++	 * level-meter divide by 5, RMS sampling 1, then a 3 ms settle that the
++	 * comment there calls the worst-case compander sleep timeout.
++	 */
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_COMP1_B2_CTL,
++				WCD9320_COMP1_B2_DIV_MASK, WCD9320_COMP1_B2_DIV_5,
++				"comp1 level meter div 5");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_COMP1_B3_CTL, 0xff,
++				WCD9320_COMP1_B3_RMS, "comp1 RMS sampling");
++	if (ret)
++		goto unwind;
++	usleep_range(3000, 3100);
++
++	wcd->comp1_on = true;
++	wcd->comp1_enables++;
++	dev_info(dev, "comp1: ENABLED\n");
++	return 0;
++
++unwind:
++	dev_err(dev, "comp1: enable failed, unwinding\n");
++teardown:
++	wcd9320_rx1_write(wcd, WCD9320_CDC_COMP1_B1_CTL,
++			  WCD9320_COMP1_MASK, 0, "comp1 disabled");
++	wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B2_CTL,
++			  WCD9320_COMP1_MASK, 0, "comp1 clocks off");
++
++	if (wcd->comp1_on) {
++		wcd->comp1_on = false;
++		wcd->comp1_disables++;
++		dev_info(dev, "comp1: DISABLED\n");
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ *   echo comp1-on  > comp1_test
++ *   echo comp1-off > comp1_test
++ */
++static ssize_t comp1_test_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "comp1-on"))
++		ret = wcd9320_comp1_enable(wcd, true);
++	else if (sysfs_streq(buf, "comp1-off"))
++		ret = wcd9320_comp1_enable(wcd, false);
++	else
++		return -EINVAL;
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(comp1_test);
 +
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
@@ -4561,6 +4737,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_slim_transport.attr,
 +	&dev_attr_rx1_digital_test.attr,
 +	&dev_attr_rx1_digital_state.attr,
++	&dev_attr_comp1_test.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -5493,7 +5670,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("rx1-digital-rc1");
++MODULE_VERSION("comp1-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
