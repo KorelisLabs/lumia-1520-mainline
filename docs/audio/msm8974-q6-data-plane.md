@@ -103,8 +103,43 @@ measurement noise. It is a real clock offset, most likely the ADSP's. Notably it
 is **unchanged in the negative control**, which means whatever paces the loop is
 not the SLIMbus side.
 
+## Where the boundary now sits
+
+The negative control did not merely weaken the claim in principle; it
+quantified how independent the two halves are. What that leaves:
+
+```
+PROVEN                     PROVEN SEPARATELY        NOT YET PROVEN
+
+PCM buffer                 WCD9320 RX1              DSP-consumed bytes
+   |                          |                        |
+ASM RUN                    SLIMbus port 16          actually traverse SLIMbus
+   |                          |                        |
+WRITE_V2                   channel 144              codec digital RX chain
+   |                          |                        |
+WRITE_DONE                 CONNECT_SINK             DAC / analog routing
+   |                          + activation             |
+real-time DSP                                       audible output
+consumption
+```
+
+The two proven columns are not joined by any measurement available on this
+hardware. Joining them requires a receiver -- which means the codec RX path.
+
 ## Next
 
-Byte-level proof needs a receiver, which means the codec's RX path: interpolator,
-CLSH, an output stage, and a DAPM graph. That is a separate and much larger
-branch, and it is also the first point at which anything becomes audible.
+The next major branch is **WCD9320 RX / audio-path bring-up**, not more QDSP6
+plumbing. The DSP side is now proven as far as this hardware permits; every
+remaining question about byte arrival needs something on the receiving end to
+ask. Interpolator, CLSH, an output stage and a DAPM graph -- and it is also the
+first point at which anything becomes audible.
+
+## The two open items, carried deliberately
+
+1. **Pacing runs ~1.45% fast.** Reproducible to 0.02% over six runs and
+   unchanged when SLIMbus is removed, so it sits on the ASM/host/DSP timing
+   side rather than in codec transport. Not fixed during this milestone, and
+   it does not invalidate the proof that the DSP data loop operates.
+2. **No receiver-side byte proof.** This is now a *measured* limitation rather
+   than a disclaimer. Without a WCD9320 receiver counter or a loopback, Branch
+   B cannot establish byte arrival at the codec.
