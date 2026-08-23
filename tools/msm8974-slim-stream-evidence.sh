@@ -77,6 +77,26 @@ if [ "$(kv "$STATE" up)" = "1" ]; then
 	exit 2
 fi
 
+# A boot that has already run a cycle cannot produce clean evidence: dmesg is
+# cumulative, so the frozen-delta counts would include the earlier cycle and
+# the file would not describe one bring-up. This is a contaminated SETUP, not
+# a driver fault, so it exits 2 rather than failing the driver.
+#
+# It is worth knowing separately that a second cycle DOES work -- teardown
+# leaves the codec able to come back up. That is a repeatability result and
+# belongs in its own run, not smuggled into the milestone evidence.
+PRIOR_UPS=$(printf "%s" "$(cat "$STATE" 2>/dev/null)" | tr " " "
+" |
+	sed -n "s/^ups=//p" | head -n1)
+[ -n "${PRIOR_UPS:-}" ] || PRIOR_UPS=0
+if [ "$PRIOR_UPS" != "0" ]; then
+	say "INVALID RUN: this boot has already run $PRIOR_UPS stream cycle(s)."
+	say "  dmesg is cumulative, so the frozen-delta counts would include"
+	say "  them and the evidence would not describe a single bring-up."
+	say "  Cold boot, then run this once."
+	exit 2
+fi
+
 snap_dmesg
 open_output "$OUTDIR/msm8974-slim-stream-$STAMP.txt"
 
@@ -95,11 +115,17 @@ b1_ngd_en:qcom_slim_ngd_enable_stream
 b1_tid:slim_alloc_txn_tid
 b1_xfer:qcom_slim_ngd_xfer_msg"
 
+# A RETURN probe, for two reasons: its entry/exit pair brackets the enable
+# phase tightly -- the plain windows below are otherwise bounded by the next
+# userspace step and sweep up a second of unrelated bus traffic -- and
+# $retval is the ADSP's own answer to DEF_ACT_CHAN.
+RETPROBES="b1_ngd_ret:qcom_slim_ngd_enable_stream"
+
 # kprobe_events returns EBUSY while any of its events is still enabled, and
 # ":" is a POSIX special builtin whose failed redirect would exit the shell.
 clear_probes() {
 	echo 0 2>/dev/null > "$TRACE/tracing_on"
-	for _p in $PROBES; do
+	for _p in $PROBES $RETPROBES; do
 		_e="$TRACE/events/kprobes/${_p%%:*}/enable"
 		[ -e "$_e" ] && echo 0 2>/dev/null > "$_e"
 	done
@@ -116,6 +142,16 @@ for _p in $PROBES; do
 	_n=${_p%%:*}
 	_s=${_p#*:}
 	if printf 'p:%s %s\n' "$_n" "$_s" >> "$TRACE/kprobe_events" 2>/dev/null; then
+		PROBE_OK="$PROBE_OK $_n"
+		echo 1 2>/dev/null > "$TRACE/events/kprobes/$_n/enable"
+	else
+		PROBE_BAD="$PROBE_BAD $_n"
+	fi
+done
+for _p in $RETPROBES; do
+	_n=${_p%%:*}
+	_s=${_p#*:}
+	if printf 'r:%s %s ret=$retval:s32\n' "$_n" "$_s" >> "$TRACE/kprobe_events" 2>/dev/null; then
 		PROBE_OK="$PROBE_OK $_n"
 		echo 1 2>/dev/null > "$TRACE/events/kprobes/$_n/enable"
 	else
@@ -141,6 +177,11 @@ sleep 1
 STATE_DOWN=$(cat "$STATE" 2>/dev/null)
 
 echo 0 2>/dev/null > "$TRACE/tracing_on"
+
+# dmesg is re-read HERE, not before the run. The earlier snapshot was taken
+# during setup and cannot contain anything this run logged -- reading it made
+# seven checks fail against hardware that had in fact worked.
+snap_dmesg
 
 # --------------------------------------------------------------- the windows --
 #
@@ -168,6 +209,13 @@ T_PREP=$(first_ts b1_prepare)
 T_EN=$(first_ts b1_enable)
 T_DIS=$(first_ts b1_disable)
 T_UNP=$(first_ts b1_unprepare)
+T_FREE=$(first_ts b1_free)
+T_NGD=$(first_ts b1_ngd_en)
+T_NGDR=$(first_ts b1_ngd_ret)
+# The ADSP's own answer to DEF_ACT_CHAN, straight off the return probe.
+NGD_RET=$(grep -m1 "b1_ngd_ret" "$TRACE/trace" 2>/dev/null |
+	sed -n "s/.*ret=\(\-\{0,1\}[0-9]\{1,\}\).*/\1/p")
+[ -n "${NGD_RET:-}" ] || NGD_RET=absent
 T_END=999999999
 
 N_PREP=$(cnt_all b1_prepare);   N_EN=$(cnt_all b1_enable)
@@ -180,9 +228,18 @@ WINDOWS_OK=0
 if [ -n "$T_PREP" ] && [ -n "$T_EN" ] && [ -n "$T_DIS" ] && [ -n "$T_UNP" ]; then
 	WINDOWS_OK=1
 	TID_PREP=$(cnt_win b1_tid "$T_PREP" "$T_EN")
-	TID_EN=$(cnt_win b1_tid "$T_EN" "$T_DIS")
+	# Bounded by the NGD hook's own entry and exit, not by the next
+	# userspace step, so this counts DEF_ACT_CHAN and nothing else.
+	if [ -n "$T_NGD" ] && [ -n "$T_NGDR" ]; then
+		TID_EN=$(cnt_win b1_tid "$T_NGD" "$T_NGDR")
+	else
+		TID_EN=$(cnt_win b1_tid "$T_EN" "$T_DIS")
+	fi
 	TID_DIS=$(cnt_win b1_tid "$T_DIS" "$T_UNP")
-	TID_UNP=$(cnt_win b1_tid "$T_UNP" "$T_END")
+	# Bounded by free(), which follows immediately. Left open-ended this
+	# window also swallowed the port-teardown register writes and a
+	# second of background traffic, and reported 121.
+	TID_UNP=$(cnt_win b1_tid "$T_UNP" "${T_FREE:-$T_END}")
 	XFER_DIS=$(cnt_win b1_xfer "$T_DIS" "$T_UNP")
 else
 	TID_PREP=-1; TID_EN=-1; TID_DIS=-1; TID_UNP=-1; XFER_DIS=-1
@@ -251,6 +308,10 @@ D_ALLOC=$(printf '%s' "$STATE_DOWN" | sed -n 's/^allocated=//p' | head -n1)
 	say "  xfer_msg during disable: $XFER_DIS  (expect >= 1: it WAS called,"
 	say "                           and the controller dropped it -- which is"
 	say "                           not the same as never calling it)"
+	say ""
+	say "  NGD enable_stream returned : $NGD_RET"
+	say "                           (the ADSP own answer to DEF_ACT_CHAN,"
+	say "                            taken from the return probe)"
 
 	hdr "the codec's frozen delta"
 	say "port $WANT_PORT PROGRAMMED       : $RX_PROG"
@@ -287,6 +348,11 @@ D_ALLOC=$(printf '%s' "$STATE_DOWN" | sed -n 's/^allocated=//p' | head -n1)
 	check "prepare was called" "$N_PREP" "1"
 	check "enable was called" "$N_EN" "1"
 	check "the NGD hook ran" "$N_NGD" "1"
+	#
+	# The hook running proves a request was made. Its return value is the
+	# ADSP answer, and only that separates "we asked" from "it agreed".
+	#
+	check "the ADSP accepted DEF_ACT_CHAN" "$NGD_RET" "0"
 	check_cond "CONNECT_SINK went out" \
 		"$([ "$TID_PREP" -ge 1 ] 2>/dev/null && echo 1 || echo 0)" \
 		"no TID allocated during prepare -- nothing reached the manager" \

@@ -920,6 +920,31 @@ instead of producing a verdict about the DSP.
 alsactl and no DNS to install them. Control plane only, audited before
 compilation, reads back every value it writes.
 
+### The codec SLIMbus RX stream -- PROVEN, r156 (Branch B1)
+
+Full detail in [msm8974-slim-rx-stream.md](msm8974-slim-rx-stream.md).
+Slave port 16 connected to channel 144 and activated on the ADSP bus:
+CONNECT_SINK and DEF_ACT_CHAN each reached the manager, and the NGD hook
+RETURNED 0 -- the ADSP own answer, not merely evidence that we asked.
+31/31 from a cold boot, one bring-up and one teardown.
+
+The design map claim that slim_stream_disable() is a no-op here is now
+MEASURED: sliced by ftrace timestamp, the disable window shows ZERO
+transaction IDs allocated against FOUR xfer_msg calls. It was called, and the
+controller dropped it -- which is not the same as never calling it, and the
+two are asserted as separate checks because they fail for opposite reasons.
+
+Still transport only. No PCM, no ASM RUN, no sample moved, nothing audible --
+this driver has no RX interpolator and no output path, so audio could not have
+been produced under any circumstances.
+
+Two gate defects were found on hardware and are worth remembering. dmesg was
+snapshotted during SETUP, before the sequence, so seven checks failed against
+hardware that had worked. And because dmesg is cumulative, a boot that had
+already run one cycle reported PROGRAMMED : 2 and still passed every ">= 1"
+check while describing two bring-ups; the gate now refuses a contaminated boot
+as an invalid setup rather than a driver fault.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done

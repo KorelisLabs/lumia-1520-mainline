@@ -1,0 +1,280 @@
+
+=== the hook ===
+control function     : 217:a0:1:0
+interface function   : 217:a0:0:0
+stream-on  exit      : 0
+stream-off exit      : 0
+
+=== slim_stream_state while up ===
+  up=1 port=16 channel=144 ups=1 downs=0
+  origin=manual
+  rc_prepare=0 rc_enable=0 rc_disable=0 rc_unprepare=0
+  allocated=1
+
+=== slim_stream_state after teardown ===
+  up=0 port=16 channel=144 ups=1 downs=1
+  origin=manual
+  rc_prepare=0 rc_enable=0 rc_disable=0 rc_unprepare=0
+  allocated=0
+
+=== observed calls ===
+probes registered    : b1_prepare b1_enable b1_disable b1_unprepare b1_free b1_ngd_en b1_tid b1_xfer b1_ngd_ret
+
+  slim_stream_prepare        : 1
+  slim_stream_enable         : 1
+  qcom_slim_ngd_enable_stream: 1
+  slim_stream_disable        : 1
+  slim_stream_unprepare      : 1
+  slim_stream_free           : 1
+  slim_alloc_txn_tid (total) : 362
+  ngd xfer_msg (total)       : 370
+
+=== messages that actually reached the manager, by phase ===
+A TID is allocated only for a message that really goes out.
+Dropped message codes return before ever reaching it.
+
+  during prepare       : 1   (expect >= 1, CONNECT_SINK)
+  during enable        : 2   (expect >= 1, DEF_ACT_CHAN)
+  during disable       : 0   (expect EXACTLY 0 -- the no-op)
+  during unprepare     : 1   (expect >= 1, DISCONNECT_PORT)
+
+  xfer_msg during disable: 4  (expect >= 1: it WAS called,
+                           and the controller dropped it -- which is
+                           not the same as never calling it)
+
+  NGD enable_stream returned : 0
+                           (the ADSP own answer to DEF_ACT_CHAN,
+                            taken from the return probe)
+
+=== the codec's frozen delta ===
+port 16 PROGRAMMED       : 1
+port 16 TORN DOWN        : 1
+0x040 -> 05              : 1
+0x180 -> 01              : 1
+
+=== the ladder ===
+  B0   PASS  stream-on accepted
+  B1   PASS  slim_stream_prepare called
+  B2   PASS  CONNECT_SINK reached the manager
+  B3   PASS  prepare returned 0
+  B4   PASS  the NGD enable_stream hook ran
+  B5   PASS  DEF_ACT_CHAN reached the manager
+  B6   PASS  enable returned 0
+  B7   PASS  stream UP on port 16 ch 144
+  B8   PASS  codec port programmed
+  B9   PASS  stream-off accepted
+  B10  PASS  disable sent nothing (the no-op)
+  B11  PASS  ...but disable WAS called
+  B12  PASS  DISCONNECT_PORT reached the manager
+  B13  PASS  codec port torn down
+
+=== checks ===
+  PASS  module version                   slim-stream-rc1
+  PASS  every kprobe registered          all
+  PASS  stream-on accepted               0
+  PASS  prepare was called               1
+  PASS  enable was called                1
+  PASS  the NGD hook ran                 1
+  PASS  the ADSP accepted DEF_ACT_CHAN   0
+  PASS  CONNECT_SINK went out            1
+  PASS  DEF_ACT_CHAN went out            2
+  PASS  prepare returned 0               ok
+  PASS  enable returned 0                ok
+  PASS  the stream came up               ok
+  PASS  state: up                        1
+  PASS  state: port                      16
+  PASS  state: channel                   144
+  PASS  state: runtime allocated         1
+  PASS  codec port programmed            ok
+  PASS  0x040 00 -> 05 reproduced        ok
+  PASS  0x180 00 -> 01 reproduced        ok
+  PASS  stream-off accepted              0
+  PASS  disable was called               1
+  PASS  disable sent NOTHING             0
+  PASS  disable did enter the controller 4
+  PASS  DISCONNECT_PORT went out         1
+  PASS  unprepare was called             1
+  PASS  free was called                  1
+  PASS  state: down                      0
+  PASS  state: runtime released          0
+  PASS  codec port torn down             ok
+  PASS  no slim-stream failure logged    0
+  PASS  no kernel WARNING/BUG            0
+
+=== finding ===
+THE CODEC'S SLIMbus RX STREAM COMES UP.
+
+Slave port 16 was connected to channel 144 and activated on the
+ADSP's bus. CONNECT_SINK and DEF_ACT_CHAN each reached the
+manager and were accepted, and the codec reproduced its frozen
+register delta through the same production helper the DAI uses.
+
+The no-op is now measured rather than read out of the source:
+slim_stream_disable() entered the controller (4 message(s))
+and allocated ZERO transaction IDs, so nothing left for the
+manager. The real teardown was unprepare's DISCONNECT_PORT.
+
+WHAT THIS DOES NOT CLAIM. No PCM was opened, no ASM RUN was
+issued, no sample moved, and nothing was audible. This driver
+has no RX interpolator and no output path, so audio could not
+have been produced by this run under any circumstances.
+
+=== run identity ===
+mode              : slim-stream
+date              : 2026-08-23T10:06:13Z (UTC)
+module version    : slim-stream-rc1   (expected slim-stream-rc1)
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #157-postmarketos-qcom-msm8974 SMP PREEMPT Sun Aug 23 10:57:33 U
+uptime            : 234.92 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 77 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=87 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[   48.034439] wcd9320 217:a0:0:0: IFD probe #1: sdev=80187a0a dev=80187a0a name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.034581] wcd9320 217:a0:0:0: IFD probe #1: driver=c167be1b name=wcd9320 task=(udev-worker) pid=428
+[   48.034673] wcd9320 217:a0:0:0: IFD probe #1: before: ifd_instance=00000000 drvdata=00000000 this_wcd=85583793
+[   48.034868] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.034956] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.035037] wcd9320 217:a0:0:0: IFD probe #1: after:  ifd_instance=85583793 drvdata=85583793 replaced=0
+[   48.035130] wcd9320 217:a0:0:0: IFD probe #1: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.035243] wcd9320 217:a0:0:0: IFD probe #1: returning 0 (bound)
+[   48.056618] wcd9320 217:a0:0:0: Failed to get logical address
+[   48.056910] wcd9320 217:a0:1:0: CTL probe #1: sdev=d9d83820 dev=d9d83820 name=217:a0:1:0 laddr=0x00 laddr_valid=0 status=0
+[   48.057017] wcd9320 217:a0:1:0: CTL probe #1: driver=c167be1b name=wcd9320 task=(udev-worker) pid=428 drvdata_before=00000000
+[   48.058937] wcd9320 217:a0:1:0: ASoC component registered: wcd9320-codec, 1 DAI(s): wcd9320-slim-rx1
+[   48.129271] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   48.129413] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   48.129490] wcd9320 217:a0:1:0: CTL probe #1: exit after 72 ms: laddr=0x00 laddr_valid=0 status=0 path=fresh -- slim_get_logical_addr() decides next
+[   48.131419] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   48.132486] wcd9320 217:a0:0:0: IFD probe #2: sdev=80187a0a dev=80187a0a name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   48.132611] wcd9320 217:a0:0:0: IFD probe #2: driver=c167be1b name=wcd9320 task=kworker/u16:3 pid=40
+[   48.132701] wcd9320 217:a0:0:0: IFD probe #2: before: ifd_instance=00000000 drvdata=00000000 this_wcd=06861ab0
+[   48.132870] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   48.132956] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   48.133038] wcd9320 217:a0:0:0: IFD probe #2: after:  ifd_instance=06861ab0 drvdata=06861ab0 replaced=0
+[   48.133130] wcd9320 217:a0:0:0: IFD probe #2: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   48.133245] wcd9320 217:a0:0:0: IFD probe #2: returning 0 (bound)
+[   48.135539] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   48.138487] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   48.143767] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[   48.161179] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 87
+[   48.161296] wcd9320 217:a0:1:0: parent irq 87 requested, kernel reports trigger type 0x1 (edge rising)
+[   48.161387] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   48.423050] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   48.678164] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[   48.679235] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[   48.687019] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[   48.689678] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[   48.699230] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[   48.759318] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[   49.498940] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[   50.068923] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[   50.158839] wcd9320-lumia-q6 sound: front end: MultiMedia1 Playback (id 0)
+[   50.158859] wcd9320-lumia-q6 sound: back end: SLIM Playback (id 2)
+[   50.189577] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[   50.211805] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[   50.219772] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[   50.229559] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[   50.239211] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[   50.240692] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[   50.244716] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[   50.258051] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[   50.262251] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[   50.279171] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[   50.308560] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[   50.329192] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[   50.349646] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[   50.357501] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[   50.357526] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[   50.983195] wcd9320-lumia-q6 sound: QDSP6 card registered: 2 link(s)
+[   51.130153] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[   51.130178] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[   51.130192] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   56.013799] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   82.172619] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[  231.952214] wcd9320 217:a0:1:0: slim-stream invocation: manual (slim_stream_test)
+[  231.987390] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 01 -> read 01
+[  231.988179] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 05 -> read 05
+[  232.030530] wcd9320 217:a0:1:0: rx-port 16: PROGRAMMED, 2 write(s) total
+[  232.030901] wcd9320 217:a0:1:0: slim-stream: config port 16 (mask 0x10000) channel 144 rate 48000 bps 16
+[  232.031788] wcd9320 217:a0:1:0: slim-stream: prepare -> 0 (CONNECT_SINK to the manager)
+[  232.033876] wcd9320 217:a0:1:0: slim-stream: enable -> 0 (SLIM_USR_MC_DEF_ACT_CHAN)
+[  232.034521] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  233.043965] wcd9320 217:a0:1:0: slim-stream invocation: manual (slim_stream_test)
+[  233.046050] wcd9320 217:a0:1:0: slim-stream: disable -> 0 (no-op here: the NGD drops every reconfiguration message)
+[  233.047251] wcd9320 217:a0:1:0: slim-stream: unprepare -> 0 (DISCONNECT_PORT -- the real teardown)
+[  233.048167] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 00 -> read 00
+[  233.049018] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 00 -> read 00
+[  233.107697] wcd9320 217:a0:1:0: rx-port 16: TORN DOWN, 4 write(s) total
+[  233.107806] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+
+=== verdict ===
+mode   : slim-stream
+checks : 31 passed, 0 failed
+VERDICT: PASS (slim-stream)
+REPORT_COMPLETE
