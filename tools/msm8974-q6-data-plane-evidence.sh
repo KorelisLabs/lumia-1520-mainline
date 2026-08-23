@@ -65,6 +65,16 @@ WANT_RATE="${WANT_RATE:-48000}"
 TOL_PCT="${TOL_PCT:-2}"		# kernel timestamps justify 2%; userspace would not
 MIN_PERIODS="${MIN_PERIODS:-100}"
 
+# NEGATIVE=1 runs the codec-absent control: the identical FE/ASM/ADM/AFE path,
+# the same AFE port and channel, the same geometry -- with the codec doing no
+# slim_stream_prepare() and no slim_stream_enable(). Exactly one variable
+# changes, so the comparison isolates whether progression depends on the
+# physical sink at all.
+NEG="${NEGATIVE:-0}"
+if [ "$NEG" = "1" ]; then
+	MODE="q6-data-plane-negative"
+fi
+
 RUNNER=""
 for c in "${PCM_RUNNER:-}" "$DIR/pcm-run-measured" /tmp/pcm-run-measured \
          "$HOME/pcm-run-measured"; do
@@ -101,6 +111,16 @@ grep -q '^ *0 ' /proc/asound/cards 2>/dev/null || {
 if lsmod 2>/dev/null | grep -q '^wcd9320_lumia_card '; then
 	say "INVALID RUN: the frozen minimal card is loaded; it owns the codec."
 	exit 2
+fi
+
+TRANSPORT="$PGD/slim_transport"
+if [ "$NEG" = "1" ]; then
+	[ -e "$TRANSPORT" ] || {
+		say "INVALID RUN: $TRANSPORT does not exist."
+		say "  The running codec has no negative-control toggle; it must be"
+		say "  dataplane-rc2 or later."
+		exit 2
+	}
 fi
 
 snap_dmesg
@@ -158,6 +178,13 @@ done
 echo 1 2>/dev/null > "$TRACE/tracing_on"
 
 # -------------------------------------------------------------- the sequence --
+if [ "$NEG" = "1" ]; then
+	echo off > "$TRANSPORT" 2>/dev/null
+	TRANSPORT_STATE=$(cat "$TRANSPORT" 2>/dev/null)
+else
+	TRANSPORT_STATE=$(cat "$TRANSPORT" 2>/dev/null)
+fi
+
 MIXER_OUT=$("$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 2>&1)
 MIXER_RC=$?
 MIXER_VAL=$(printf "%s" "$MIXER_OUT" | sed -n "s/^readback=//p" | head -n1 | cut -d, -f1)
@@ -167,6 +194,11 @@ RUN_OUT=$("$RUNNER" -D "$PCMDEV" -r "$WANT_RATE" -c 1 -p "$PERIOD" \
 RUN_RC=$?
 sleep 1
 
+# Restore immediately, so a crashed run cannot leave the control armed and
+# silently poison the next positive measurement.
+if [ "$NEG" = "1" ]; then
+	echo on > "$TRANSPORT" 2>/dev/null
+fi
 echo 0 2>/dev/null > "$TRACE/tracing_on"
 snap_dmesg
 
@@ -276,6 +308,7 @@ L_ASOC_STARTUP=$(d 'slim-stream: ASoC startup')
 L_ASOC_SHUTDOWN=$(d 'slim-stream: ASoC shutdown')
 L_ASOC_HWP=$(d 'RX path invocation: ASoC hw_params')
 L_RELAY=$(d 'reported by the codec')
+L_SUPPRESSED=$(d 'SUPPRESSED by the negative control')
 ERRS=$(dmesg 2>/dev/null | grep -c 'slim-stream:.*failed' || true)
 WARNS=$(dmesg 2>/dev/null | grep -cE 'WARNING:|BUG:|Call trace' || true)
 for v in L_ASOC_START L_ASOC_STOP L_ASOC_STARTUP L_ASOC_SHUTDOWN L_ASOC_HWP \
@@ -289,6 +322,11 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 
 {
 	hdr "the route"
+	say "codec transport      : ${TRANSPORT_STATE:-unknown}"
+	if [ "$NEG" = "1" ]; then
+		say "  NEGATIVE CONTROL: the codec set up no SLIMbus stream."
+		say "  Everything else is held fixed."
+	fi
 	say "mixer                : $MIXER"
 	say "set rc               : $MIXER_RC   value read back: ${MIXER_VAL:-unknown}"
 
@@ -373,9 +411,23 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 	check "helper started the stream" "$START_RC" "0"
 
 	# --- the B1 transport, re-proven inside this run -----------------
-	check "slim_stream_prepare called" "$N_PREP" "1"
-	check "slim_stream_enable called" "$N_EN" "1"
-	check "the ADSP accepted DEF_ACT_CHAN" "$NGD_RET" "0"
+	if [ "$NEG" = "1" ]; then
+		#
+		# The control is only valid if the transport really was absent. A
+		# run where the codec quietly set its stream up anyway would look
+		# like a negative control and be a second positive one.
+		#
+		check "NO slim_stream_prepare" "$N_PREP" "0"
+		check "NO slim_stream_enable" "$N_EN" "0"
+		check "NO DEF_ACT_CHAN" "$N_NGD" "0"
+		check_cond "the suppression was logged" \
+			"$([ "$L_SUPPRESSED" -ge 1 ] && echo 1 || echo 0)" \
+			"the driver never reported suppressing the transport"
+	else
+		check "slim_stream_prepare called" "$N_PREP" "1"
+		check "slim_stream_enable called" "$N_EN" "1"
+		check "the ADSP accepted DEF_ACT_CHAN" "$NGD_RET" "0"
+	fi
 
 	# --- RUN, and the acknowledgement --------------------------------
 	check "exactly one ASM RUN" "$N_RUN" "1"
@@ -398,13 +450,17 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 		"$RATE fps is outside $RATE_LO..$RATE_HI" "$RATE fps"
 
 	# --- the transport was live while it happened --------------------
-	check_cond "the SLIM stream was up before the first period" "$STREAM_BEFORE" \
-		"$LEAK_PRE period(s) completed before the codec stream was enabled -- TRIGGER_PRE runs the FE first"
-	check_cond "the source was stopped before the sink" "$STOP_ORDER" \
-		"disable ran before the EOS request -- the sink was torn down while the source still ran"
-	check_cond "trailing acknowledgements bounded" "$LEAK_POST_OK" \
-		"$LEAK_POST acks after disconnect; at most 1 is inherent in the asynchronous EOS" \
-		"$LEAK_POST"
+	if [ "$NEG" = "1" ]; then
+		note "ordering checks" "skipped: no stream to order against"
+	else
+		check_cond "the SLIM stream was up before the first period" "$STREAM_BEFORE" \
+			"$LEAK_PRE period(s) completed before the codec stream was enabled"
+		check_cond "the source was stopped before the sink" "$STOP_ORDER" \
+			"disable ran before the EOS request"
+		check_cond "trailing acknowledgements bounded" "$LEAK_POST_OK" \
+			"$LEAK_POST acks after disconnect; at most 1 is inherent" \
+			"$LEAK_POST"
+	fi
 
 	# --- the DAI drove it, not the hook ------------------------------
 	check_cond "ASoC drove startup" \
@@ -419,8 +475,8 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 
 	# --- teardown and residue ----------------------------------------
 	check "no xrun" "$HELPER_XRUNS" "0"
-	check "slim_stream_disable called" "$N_DIS" "1"
-	check "slim_stream_unprepare called" "$N_UNP" "1"
+	[ "$NEG" = "1" ] || check "slim_stream_disable called" "$N_DIS" "1"
+	[ "$NEG" = "1" ] || check "slim_stream_unprepare called" "$N_UNP" "1"
 	check_cond "ASoC drove trigger STOP" \
 		"$([ "$L_ASOC_STOP" -ge 1 ] && echo 1 || echo 0)" "no ASoC trigger STOP line"
 	check "no residue: stream down" "$(num "$S_UP" 1)" "0"
@@ -429,7 +485,30 @@ S_ALLOC=$(printf '%s' "$STATE_AFTER" | sed -n 's/^allocated=//p' | head -n1)
 	check "no kernel WARNING/BUG" "$WARNS" "0"
 
 	hdr "finding"
-	if [ "$FAIL_N" -eq 0 ]; then
+	if [ "$NEG" = "1" ] && [ "$FAIL_N" -eq 0 ]; then
+		say "NEGATIVE CONTROL COMPLETED."
+		say ""
+		say "The codec set up NO SLIMbus stream: no prepare, no enable, no"
+		say "DEF_ACT_CHAN. Everything else was identical -- same front end,"
+		say "same ASM session, same AFE port 0x4000, same channel 144, same"
+		say "period geometry."
+		say ""
+		say "Result: $N_ELAPSED completions at $RATE frames/s."
+		say ""
+		say "READ IT LIKE THIS. If that rate matches the positive run, then"
+		say "period progression is a property of the DSP consuming its own"
+		say "mapped buffer and says NOTHING about the bus -- so the data-plane"
+		say "milestone may claim concurrent DSP progression and active SLIMbus"
+		say "transport, but NOT that those bytes reached the WCD9320."
+		say ""
+		say "If instead it stalled, errored, or ran at a different rate, the"
+		say "loop depends on the physical sink, which is stronger evidence --"
+		say "though still short of byte-for-byte integrity, which needs a"
+		say "receiver-side counter this hardware does not have."
+		say ""
+		say "This run does not decide that on its own. Compare it with the"
+		say "positive run from the same boot."
+	elif [ "$FAIL_N" -eq 0 ]; then
 		say "THE QDSP6 CONSUMES PERIODS AT REAL TIME."
 		say ""
 		say "One ASM RUN was issued and acknowledged -- the first WRITE followed"

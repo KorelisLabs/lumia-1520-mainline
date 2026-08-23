@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 08:11:16.171741236 -0400
-@@ -0,0 +1,5065 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 09:29:57.781555955 -0400
+@@ -0,0 +1,5150 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1527,6 +1527,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	int slim_rc_disable;
 +	int slim_rc_unprepare;
 +	const char *slim_stream_origin;
++	/* negative control: suppress the physical transport only */
++	bool slim_transport_off;
++	unsigned int slim_transport_suppressed;
 +};
 +
 +/*
@@ -4186,6 +4189,81 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static DEVICE_ATTR_RO(slim_stream_state);
 +
 +
++/*
++ * The negative control: run everything except the physical transport.
++ *
++ * WHAT QUESTION THIS ANSWERS
++ *
++ * B2 measures the DSP consuming periods at real time while the codec's SLIMbus
++ * stream happens to be active. Those are two facts observed together, not a
++ * proven chain. If the WRITE/WRITE_DONE loop runs at the same rate with NO
++ * codec stream at all, then period progression says nothing whatsoever about
++ * the bus, and B2 may only claim DSP buffer consumption.
++ *
++ * So exactly one variable changes: the codec performs no slim_stream_prepare()
++ * and no slim_stream_enable(). Everything else is held fixed -- the same front
++ * end, the same ASM session, the same ADM routing, the same AFE port 0x4000,
++ * the same channel 144, the same period geometry. Changing the AFE port or the
++ * ASM configuration instead would confound the experiment.
++ *
++ * The codec's own port registers are still programmed. Writing 0x040 and 0x180
++ * configures the slave port; it does not allocate or activate a bus channel.
++ * Without CONNECT_SINK and DEF_ACT_CHAN there is no data channel, which is
++ * precisely the absent variable.
++ *
++ *   echo off > slim_transport    the codec sets up no SLIMbus stream
++ *   echo on  > slim_transport    normal behaviour (the default)
++ *
++ * This is a research control, not a feature. It defaults to on, it is logged
++ * loudly whenever it suppresses anything, and the B2 gate refuses to record a
++ * positive result while it is off.
++ */
++static ssize_t slim_transport_store(struct device *dev,
++				    struct device_attribute *attr,
++				    const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->slim_stream_lock);
++	if (wcd->slim_stream_up) {
++		mutex_unlock(&wcd->slim_stream_lock);
++		dev_err(dev, "slim-transport: refusing to change while a stream is up\n");
++		return -EBUSY;
++	}
++
++	if (sysfs_streq(buf, "off")) {
++		wcd->slim_transport_off = true;
++	} else if (sysfs_streq(buf, "on")) {
++		wcd->slim_transport_off = false;
++	} else {
++		mutex_unlock(&wcd->slim_stream_lock);
++		return -EINVAL;
++	}
++	mutex_unlock(&wcd->slim_stream_lock);
++
++	dev_info(dev, "slim-transport: %s\n",
++		 wcd->slim_transport_off ? "OFF (negative control)" : "on");
++
++	return len;
++}
++
++static ssize_t slim_transport_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	return sysfs_emit(buf, "transport=%s suppressed=%u\n",
++			  wcd->slim_transport_off ? "off" : "on",
++			  wcd->slim_transport_suppressed);
++}
++static DEVICE_ATTR_RW(slim_transport);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -4208,6 +4286,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_sentinel_teardown.attr,
 +	&dev_attr_slim_stream_test.attr,
 +	&dev_attr_slim_stream_state.attr,
++	&dev_attr_slim_transport.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -4632,7 +4711,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(&wcd->sdev->dev,
 +			 "slim-stream: ASoC trigger START (dai %s)\n",
 +			 dai->name);
-+		ret = __wcd9320_slim_start(wcd);
++		if (wcd->slim_transport_off) {
++			wcd->slim_transport_suppressed++;
++			dev_info(&wcd->sdev->dev,
++				 "slim-stream: SUPPRESSED by the negative control -- no prepare, no enable\n");
++		} else {
++			ret = __wcd9320_slim_start(wcd);
++		}
 +		break;
 +	case SNDRV_PCM_TRIGGER_STOP:
 +	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -4646,7 +4731,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 * failed START, and reporting -EINVAL there would turn a
 +		 * cleanup path into a spurious failure.
 +		 */
-+		if (wcd->slim_stream_up)
++		if (wcd->slim_stream_up && !wcd->slim_transport_off)
 +			ret = __wcd9320_slim_stop(wcd);
 +		break;
 +	default:
@@ -5134,7 +5219,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("dataplane-rc1");
++MODULE_VERSION("dataplane-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

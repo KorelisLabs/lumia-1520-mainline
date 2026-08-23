@@ -945,6 +945,33 @@ already run one cycle reported PROGRAMMED : 2 and still passed every ">= 1"
 check while describing two bring-ups; the gate now refuses a contaminated boot
 as an invalid setup rather than a driver fault.
 
+### The QDSP6 data plane -- PROVEN, r160 (Branch B2)
+
+Full detail in [msm8974-q6-data-plane.md](msm8974-q6-data-plane.md). ASM RUN is
+issued and acknowledged, and the WRITE/WRITE_DONE loop sustains 48684 frames/s
+with hw_ptr advancing exactly 155 x 960 frames and no xruns. 29/29, with B1
+still 31/31 on the same cold boot.
+
+THE NEGATIVE CONTROL IS THE IMPORTANT PART, and it weakened the claim. Running
+the identical path with the codec doing no slim_stream_prepare and no
+slim_stream_enable gave 48677.1 fps against the positive run 48684.3 -- 0.015%
+apart, identical pointer advance. Period progression is therefore a property of
+the DSP consuming its own mapped buffer and says NOTHING about SLIMbus.
+
+So B2 may claim: RUN acknowledged, DSP consuming at real time, and
+concurrently a correctly established codec stream. It may NOT claim those bytes
+reached the WCD9320. That needs a receiver-side counter or loopback, which this
+hardware does not have.
+
+Also fixed a real defect: the ASoC default TRIGGER_PRE is backwards for a
+playback FE at both ends, costing 20 ms of samples pushed at an unconnected
+channel on each of start and stop. Every mainline Qualcomm board carries it.
+TRIGGER_POST on our own FE link corrects both.
+
+Unexplained: the rate is 1.4-1.5% fast across six runs, reproducible to 0.02%,
+and UNCHANGED in the negative control -- so whatever paces the loop is not the
+SLIMbus side.
+
 ## Sequence from here
 
 1. ~~Minimal MBHC configuration~~ — done
