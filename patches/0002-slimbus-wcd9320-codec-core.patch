@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 07:49:11.501814787 -0400
-@@ -0,0 +1,4873 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 08:11:16.171741236 -0400
+@@ -0,0 +1,5065 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -3915,6 +3915,136 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_SLIM_RATE		48000
 +#define WCD9320_SLIM_BPS		16
 +
++/*
++ * The SLIMbus stream, decomposed into the steps the ASoC lifecycle needs.
++ *
++ * B1 drove the whole thing from one debugfs write, so two functions were
++ * enough. The DAI path spreads the same sequence across five callbacks --
++ * startup, hw_params, trigger(START), trigger(STOP), shutdown -- so the steps
++ * are primitives now, and BOTH entry points call the same ones in the same
++ * order. The alternative was a second copy of the sequence that could drift
++ * from the proven one, which is exactly what this driver refuses to do
++ * elsewhere with wcd9320_rx_port_program().
++ *
++ * The __ primitives assume slim_stream_lock is held.
++ */
++static int __wcd9320_slim_alloc(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++
++	if (wcd->sruntime)
++		return 0;
++
++	wcd->sruntime = slim_stream_allocate(wcd->sdev,
++					     WCD9320_SLIM_STREAM_NAME);
++	if (IS_ERR_OR_NULL(wcd->sruntime)) {
++		int ret = wcd->sruntime ? PTR_ERR(wcd->sruntime) : -ENOMEM;
++
++		wcd->sruntime = NULL;
++		dev_err(dev, "slim-stream: allocate failed: %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static void __wcd9320_slim_config(struct wcd9320 *wcd, unsigned int port,
++				  unsigned int ch, unsigned int rate,
++				  unsigned int bps)
++{
++	struct device *dev = &wcd->sdev->dev;
++
++	wcd->slim_stream_port = port;
++	wcd->slim_stream_ch = ch;
++	wcd->slim_chs[0] = ch;
++
++	memset(&wcd->sconfig, 0, sizeof(wcd->sconfig));
++	wcd->sconfig.rate = rate;
++	wcd->sconfig.bps = bps;
++	wcd->sconfig.ch_count = 1;
++	wcd->sconfig.chs = wcd->slim_chs;
++	wcd->sconfig.port_mask = BIT(port);
++	wcd->sconfig.direction = SNDRV_PCM_STREAM_PLAYBACK;
++
++	dev_info(dev,
++		 "slim-stream: config port %u (mask 0x%lx) channel %u rate %u bps %u\n",
++		 port, wcd->sconfig.port_mask, ch, rate, bps);
++}
++
++static int __wcd9320_slim_start(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	if (!wcd->sruntime)
++		return -EINVAL;
++
++	ret = slim_stream_prepare(wcd->sruntime, &wcd->sconfig);
++	wcd->slim_rc_prepare = ret;
++	dev_info(dev, "slim-stream: prepare -> %d (CONNECT_SINK to the manager)\n",
++		 ret);
++	if (ret)
++		return ret;
++
++	ret = slim_stream_enable(wcd->sruntime);
++	wcd->slim_rc_enable = ret;
++	dev_info(dev, "slim-stream: enable -> %d (SLIM_USR_MC_DEF_ACT_CHAN)\n",
++		 ret);
++	if (ret) {
++		slim_stream_unprepare(wcd->sruntime);
++		return ret;
++	}
++
++	wcd->slim_stream_up = true;
++	wcd->slim_stream_ups++;
++	dev_info(dev, "slim-stream: UP port %u channel %u\n",
++		 wcd->slim_stream_port, wcd->slim_stream_ch);
++
++	return 0;
++}
++
++static int __wcd9320_slim_stop(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret_dis, ret_unp;
++
++	if (!wcd->slim_stream_up || !wcd->sruntime)
++		return -EINVAL;
++
++	ret_dis = slim_stream_disable(wcd->sruntime);
++	wcd->slim_rc_disable = ret_dis;
++	dev_info(dev,
++		 "slim-stream: disable -> %d (no-op here: the NGD drops every reconfiguration message)\n",
++		 ret_dis);
++
++	ret_unp = slim_stream_unprepare(wcd->sruntime);
++	wcd->slim_rc_unprepare = ret_unp;
++	dev_info(dev,
++		 "slim-stream: unprepare -> %d (DISCONNECT_PORT -- the real teardown)\n",
++		 ret_unp);
++
++	wcd->slim_stream_up = false;
++	wcd->slim_stream_downs++;
++	dev_info(dev, "slim-stream: DOWN port %u\n", wcd->slim_stream_port);
++
++	return ret_dis ? ret_dis : ret_unp;
++}
++
++static void __wcd9320_slim_release(struct wcd9320 *wcd)
++{
++	if (!wcd->sruntime)
++		return;
++
++	slim_stream_free(wcd->sruntime);
++	wcd->sruntime = NULL;
++}
++
++/*
++ * The research entry point, unchanged in behaviour from B1: one debugfs write
++ * performs the whole sequence. It exists so the SLIMbus stream can still be
++ * exercised with no PCM at all, which is what keeps a B1 regression
++ * distinguishable from a B2 failure.
++ */
 +static int wcd9320_slim_stream_up(struct wcd9320 *wcd, unsigned int port,
 +				  unsigned int ch, unsigned int rate,
 +				  unsigned int bps)
@@ -3938,67 +4068,28 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->slim_rc_enable = 0;
 +	wcd->slim_rc_disable = 0;
 +	wcd->slim_rc_unprepare = 0;
-+	wcd->slim_stream_port = port;
-+	wcd->slim_stream_ch = ch;
 +
-+	/*
-+	 * The codec's own port registers first, through the same production
-+	 * helper the DAI uses -- the register sequence exists in one place and
-+	 * cannot drift between the two entry points.
-+	 */
 +	ret = wcd9320_rx_port_program(wcd, port, WCD9320_RX_CH_MASK_ONE, true);
 +	if (ret) {
 +		dev_err(dev, "slim-stream: port programming failed: %d\n", ret);
 +		goto out;
 +	}
 +
-+	wcd->sruntime = slim_stream_allocate(wcd->sdev,
-+					     WCD9320_SLIM_STREAM_NAME);
-+	if (IS_ERR_OR_NULL(wcd->sruntime)) {
-+		ret = wcd->sruntime ? PTR_ERR(wcd->sruntime) : -ENOMEM;
-+		wcd->sruntime = NULL;
-+		dev_err(dev, "slim-stream: allocate failed: %d\n", ret);
++	ret = __wcd9320_slim_alloc(wcd);
++	if (ret)
 +		goto err_port;
-+	}
 +
-+	wcd->slim_chs[0] = ch;
-+	memset(&wcd->sconfig, 0, sizeof(wcd->sconfig));
-+	wcd->sconfig.rate = rate;
-+	wcd->sconfig.bps = bps;
-+	wcd->sconfig.ch_count = 1;
-+	wcd->sconfig.chs = wcd->slim_chs;
-+	wcd->sconfig.port_mask = BIT(port);
-+	wcd->sconfig.direction = SNDRV_PCM_STREAM_PLAYBACK;
++	__wcd9320_slim_config(wcd, port, ch, rate, bps);
 +
-+	dev_info(dev,
-+		 "slim-stream: config port %u (mask 0x%lx) channel %u rate %u bps %u\n",
-+		 port, wcd->sconfig.port_mask, ch, rate, bps);
-+
-+	ret = slim_stream_prepare(wcd->sruntime, &wcd->sconfig);
-+	wcd->slim_rc_prepare = ret;
-+	dev_info(dev, "slim-stream: prepare -> %d (CONNECT_SINK to the manager)\n",
-+		 ret);
++	ret = __wcd9320_slim_start(wcd);
 +	if (ret)
 +		goto err_free;
 +
-+	ret = slim_stream_enable(wcd->sruntime);
-+	wcd->slim_rc_enable = ret;
-+	dev_info(dev, "slim-stream: enable -> %d (SLIM_USR_MC_DEF_ACT_CHAN)\n",
-+		 ret);
-+	if (ret)
-+		goto err_unprepare;
-+
-+	wcd->slim_stream_up = true;
-+	wcd->slim_stream_ups++;
-+	dev_info(dev, "slim-stream: UP port %u channel %u\n", port, ch);
 +	mutex_unlock(&wcd->slim_stream_lock);
 +	return 0;
 +
-+err_unprepare:
-+	slim_stream_unprepare(wcd->sruntime);
 +err_free:
-+	slim_stream_free(wcd->sruntime);
-+	wcd->sruntime = NULL;
++	__wcd9320_slim_release(wcd);
 +err_port:
 +	wcd9320_rx_port_program(wcd, port, 0, false);
 +out:
@@ -4009,8 +4100,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static int wcd9320_slim_stream_down(struct wcd9320 *wcd)
 +{
 +	struct device *dev = &wcd->sdev->dev;
-+	int ret_dis, ret_unp, ret_port;
 +	unsigned int port;
++	int ret, ret_port;
 +
 +	if (wcd->is_ifd)
 +		return -ENODEV;
@@ -4024,35 +4115,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	port = wcd->slim_stream_port;
-+
-+	ret_dis = slim_stream_disable(wcd->sruntime);
-+	wcd->slim_rc_disable = ret_dis;
-+	dev_info(dev,
-+		 "slim-stream: disable -> %d (no-op here: the NGD drops every reconfiguration message)\n",
-+		 ret_dis);
-+
-+	ret_unp = slim_stream_unprepare(wcd->sruntime);
-+	wcd->slim_rc_unprepare = ret_unp;
-+	dev_info(dev,
-+		 "slim-stream: unprepare -> %d (DISCONNECT_PORT -- the real teardown)\n",
-+		 ret_unp);
-+
-+	slim_stream_free(wcd->sruntime);
-+	wcd->sruntime = NULL;
-+
++	ret = __wcd9320_slim_stop(wcd);
++	__wcd9320_slim_release(wcd);
 +	ret_port = wcd9320_rx_port_program(wcd, port, 0, false);
-+
-+	wcd->slim_stream_up = false;
-+	wcd->slim_stream_downs++;
-+	dev_info(dev, "slim-stream: DOWN port %u\n", port);
 +
 +	mutex_unlock(&wcd->slim_stream_lock);
 +
-+	if (ret_dis)
-+		return ret_dis;
-+	if (ret_unp)
-+		return ret_unp;
-+	return ret_port;
++	return ret ? ret : ret_port;
 +}
 +
 +/*
@@ -4398,6 +4467,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +				struct snd_soc_dai *dai)
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret;
 +
 +	if (!wcd)
 +		return -ENODEV;
@@ -4414,8 +4484,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 dai->name, params_rate(params), params_channels(params),
 +		 (unsigned int)params_format(params));
 +
-+	return wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
-+				       WCD9320_RX_CH_MASK_ONE, true);
++	ret = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
++				      WCD9320_RX_CH_MASK_ONE, true);
++	if (ret)
++		return ret;
++
++	/*
++	 * Configure the stream from the params ASoC actually negotiated,
++	 * not from the hook's constants. The channel number still comes
++	 * from this driver, which owns it -- see wcd9320_get_channel_map().
++	 */
++	mutex_lock(&wcd->slim_stream_lock);
++	__wcd9320_slim_config(wcd, WCD9320_RX_PORT_FIRST, WCD9320_SLIM_RX1_CH,
++			      params_rate(params), params_width(params));
++	mutex_unlock(&wcd->slim_stream_lock);
++
++	return 0;
 +}
 +
 +static int wcd9320_rx_hw_free(struct snd_pcm_substream *substream,
@@ -4469,10 +4553,118 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +
++/*
++ * The production path. ASoC drives exactly the primitives the research hook
++ * drives, in the same order, spread across the callbacks the DPCM state
++ * machine invokes:
++ *
++ *   startup      allocate the stream runtime
++ *   hw_params    program the slave port, then configure the stream
++ *   trigger UP   prepare + enable   (CONNECT_SINK, then DEF_ACT_CHAN)
++ *   trigger DOWN disable + unprepare
++ *   hw_free      tear the slave port down
++ *   shutdown     free the runtime
++ *
++ * WCD9335 allocates in hw_params and never frees, leaking a runtime onto
++ * sdev->stream_list on every hw_params. Pairing allocate with startup and free
++ * with shutdown makes the release observable -- slim_stream_state reports
++ * allocated=0 afterwards -- rather than merely intended.
++ */
++static int wcd9320_rx_startup(struct snd_pcm_substream *substream,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret;
++
++	if (!wcd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->slim_stream_lock);
++	wcd->slim_stream_origin = "asoc";
++	ret = __wcd9320_slim_alloc(wcd);
++	mutex_unlock(&wcd->slim_stream_lock);
++
++	dev_info(&wcd->sdev->dev, "slim-stream: ASoC startup (dai %s) -> %d\n",
++		 dai->name, ret);
++
++	return ret;
++}
++
++static void wcd9320_rx_shutdown(struct snd_pcm_substream *substream,
++				struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++
++	if (!wcd)
++		return;
++
++	mutex_lock(&wcd->slim_stream_lock);
++	/*
++	 * A stream still up here means trigger(STOP) never arrived -- an
++	 * aborted or killed client. Stop it rather than freeing a runtime the
++	 * manager still believes is connected.
++	 */
++	if (wcd->slim_stream_up)
++		__wcd9320_slim_stop(wcd);
++	__wcd9320_slim_release(wcd);
++	mutex_unlock(&wcd->slim_stream_lock);
++
++	dev_info(&wcd->sdev->dev, "slim-stream: ASoC shutdown (dai %s)\n",
++		 dai->name);
++}
++
++static int wcd9320_rx_trigger(struct snd_pcm_substream *substream, int cmd,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret = 0;
++
++	if (!wcd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->slim_stream_lock);
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		wcd->slim_stream_origin = "asoc-trigger";
++		dev_info(&wcd->sdev->dev,
++			 "slim-stream: ASoC trigger START (dai %s)\n",
++			 dai->name);
++		ret = __wcd9320_slim_start(wcd);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		wcd->slim_stream_origin = "asoc-trigger";
++		dev_info(&wcd->sdev->dev,
++			 "slim-stream: ASoC trigger STOP (dai %s)\n",
++			 dai->name);
++		/*
++		 * Not an error if nothing is up: ASoC can issue STOP after a
++		 * failed START, and reporting -EINVAL there would turn a
++		 * cleanup path into a spurious failure.
++		 */
++		if (wcd->slim_stream_up)
++			ret = __wcd9320_slim_stop(wcd);
++		break;
++	default:
++		break;
++	}
++
++	mutex_unlock(&wcd->slim_stream_lock);
++
++	return ret;
++}
++
 +static const struct snd_soc_dai_ops wcd9320_rx_dai_ops = {
 +	.hw_params = wcd9320_rx_hw_params,
 +	.hw_free = wcd9320_rx_hw_free,
 +	.get_channel_map = wcd9320_get_channel_map,
++	.startup = wcd9320_rx_startup,
++	.shutdown = wcd9320_rx_shutdown,
++	.trigger = wcd9320_rx_trigger,
 +};
 +
 +/*
@@ -4942,7 +5134,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("slim-stream-rc2");
++MODULE_VERSION("dataplane-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-08-23 07:50:46.595626494 -0400
-@@ -0,0 +1,249 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-08-23 08:49:05.389813142 -0400
+@@ -0,0 +1,273 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -264,7 +264,31 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +			dev_info(card->dev, "back end: %s (id %d)\n",
 +				 link->name, link->id);
 +		} else {
-+			dev_info(card->dev, "front end: %s (id %d)\n",
++			/*
++			 * A playback front end wants the SINK up before the
++			 * SOURCE starts, and stopped after it. The ASoC default
++			 * is TRIGGER_PRE, which is the wrong way round at BOTH
++			 * ends, because dpcm_fe_dai_do_trigger() reverses the
++			 * order for STOP: the FE runs first on START and the BE
++			 * first on STOP.
++			 *
++			 * Measured on r158, with the default: exactly ONE period
++			 * completed before the codec's SLIMbus stream was
++			 * enabled, and one more after it was disabled -- 960
++			 * frames, 20 ms, consumed at each end while the codec
++			 * channel was not connected.
++			 *
++			 * TRIGGER_POST inverts both, because ASoC applies the
++			 * same reversal to it. No mainline Qualcomm board sets
++			 * this, so they all carry the same 20 ms glitch; we own
++			 * this link, and the evidence says to fix it.
++			 */
++			link->trigger[SNDRV_PCM_STREAM_PLAYBACK] =
++				SND_SOC_DPCM_TRIGGER_POST;
++			link->trigger[SNDRV_PCM_STREAM_CAPTURE] =
++				SND_SOC_DPCM_TRIGGER_POST;
++			dev_info(card->dev,
++				 "front end: %s (id %d), trigger POST\n",
 +				 link->name, link->id);
 +		}
 +	}
@@ -322,4 +346,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc2");
++MODULE_VERSION("q6-card-rc3");
