@@ -1,6 +1,6 @@
 # WCD9320 audio bring-up — handoff
 
-State as of 2026-08-22. Everything is on GitHub unless marked otherwise.
+State as of 2026-08-23. Everything is on GitHub unless marked otherwise.
 
 ## Where things are
 
@@ -971,6 +971,59 @@ TRIGGER_POST on our own FE link corrects both.
 Unexplained: the rate is 1.4-1.5% fast across six runs, reproducible to 0.02%,
 and UNCHANGED in the negative control -- so whatever paces the loop is not the
 SLIMbus side.
+
+## WHERE WORK RESUMES (Branch C, the codec RX/analog path)
+
+Branch A (QDSP6 control plane) and Branch B (data plane) are closed and
+tagged. Branch C is bringing up the WCD9320 receive path. Read these four, in
+order, before touching anything:
+
+1. [wcd9320-rx1-digital-chain.md](wcd9320-rx1-digital-chain.md) -- TAGGED
+   `wcd9320-rx1-digital-chain-proven`. Five registers, RX1 mux/interpolator/chain.
+2. [wcd9320-comp1-observable.md](wcd9320-comp1-observable.md) -- compander 1
+   works; 0x376 is an enable flag only. No digital receiver-side observable
+   exists on this part, so byte arrival cannot be proven before the analog path.
+3. [wcd9320-clsh-reversibility.md](wcd9320-clsh-reversibility.md) -- C2a, 82/82,
+   deliberately UNTAGGED. The class-H power state is reversible; the DAC
+   milestone inherits a teardown already proven on hardware.
+4. [wcd9320-hphl-dac-c2b-mapping.md](wcd9320-hphl-dac-c2b-mapping.md) plus
+   [wcd9320-buck-voltage.md](wcd9320-buck-voltage.md) -- C2b is MAPPED but NOT
+   BUILT. This is the next code.
+
+### The next task, precisely
+
+Implement C2b in `wcd9320-core.c`: the compander->HPH gain handoff (0x1ae,
+0x1b4 bit 5; 0x373 bit 7 = 0 because the buck is 2.15 V), the CLASS_H_DSM mux
+(0x3b0 -> 0x14, two writes: source select then the derived ZOH), a refcounted
+RX bias (0x1a2 bit 7), the RDAC clock (0x30d bit 1), and the HPHL DAC
+(0x1b1 -> **0xc0**, both bit 7 power AND bit 6 input switch). Reuse the proven
+C2a class-H enable/teardown. Stop before the PA; guard 0x1ab mask 0x30 == 0
+before and after every stage. Then a gate, two cycles, no audible-output claim.
+If it passes: tag `wcd9320-hphl-dac-path-proven`.
+
+### Rules this branch has been run under
+
+- Map from downstream source BEFORE writing; never infer an inverse by
+  reversing the enable path -- find the real teardown routine.
+- DERIVE expectations, never record what the hardware did. Every gate error
+  in Branch C was caught only because expectations were derived first.
+- Expectations are BASELINE-RELATIVE: 0x180-0x1e4 is fuse-loaded and does not
+  reset to the header POR.
+- Power vs configuration is PER-BIT, not per-register: B1_CTL and BUCK_MODE_1
+  carry both.
+- Downstream GPL source is cached at `~/.cache/wcd9320-downstream/` for
+  analysis and is NEVER checked in.
+
+### Build/deploy state
+
+- Latest build r163 `clsh-rc1`, installed on the phone. Next is r164.
+- Driver source (WSL, not in git): `~/corepatch/new/drivers/slimbus/wcd9320-core.c`
+- Card source: `~/q6card/new/sound/soc/qcom/lumia1520-q6.c`
+- Staging scripts regenerate patches 0002/0005 from those trees, bump pkgrel
+  and fix both APKBUILD checksums. The build refuses if they are stale.
+- The phone now has key-based ssh (`ssh lumia`) and passwordless sudo, so the
+  agent can deploy, run gates and pull evidence unattended. Builds still need
+  an interactive sudo, and the boot chain still needs a physical power cycle.
 
 ## Sequence from here
 
