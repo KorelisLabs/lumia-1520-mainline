@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 06:50:58.289940804 -0400
-@@ -0,0 +1,4838 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-23 07:49:11.501814787 -0400
+@@ -0,0 +1,4873 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -4435,9 +4435,44 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
 +}
 +
++/*
++ * The codec owns its own physical channel numbers.
++ *
++ * Channel 144 on slave port 16 is not a guess. B1 proved this exact pairing on
++ * hardware: CONNECT_SINK and DEF_ACT_CHAN were both accepted by the ADSP for
++ * port 16 / channel 144, and qcom_slim_ngd_enable_stream() returned 0.
++ *
++ * Reporting it here, and having the machine driver relay it to the AFE,
++ * replaces two independently hardcoded 144s -- one in this driver, one in the
++ * machine driver -- that nothing forced to agree. They happened to match. A
++ * single source of truth cannot disagree with itself.
++ *
++ * There is deliberately no .set_channel_map. Nothing upstream knows better
++ * than the codec does about its own port wiring, and accepting an override
++ * would restore exactly the divergence this removes.
++ */
++static int wcd9320_get_channel_map(const struct snd_soc_dai *dai,
++				   unsigned int *tx_num, unsigned int *tx_slot,
++				   unsigned int *rx_num, unsigned int *rx_slot)
++{
++	/* This DAI is playback-only; say so rather than leaving it unset. */
++	if (tx_num)
++		*tx_num = 0;
++
++	if (!rx_num || !rx_slot)
++		return -EINVAL;
++
++	rx_slot[0] = WCD9320_SLIM_RX1_CH;
++	*rx_num = 1;
++
++	return 0;
++}
++
++
 +static const struct snd_soc_dai_ops wcd9320_rx_dai_ops = {
 +	.hw_params = wcd9320_rx_hw_params,
 +	.hw_free = wcd9320_rx_hw_free,
++	.get_channel_map = wcd9320_get_channel_map,
 +};
 +
 +/*
@@ -4907,7 +4942,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +};
 +module_slim_driver(wcd9320_driver);
 +
-+MODULE_VERSION("slim-stream-rc1");
++MODULE_VERSION("slim-stream-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

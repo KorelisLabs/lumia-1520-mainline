@@ -32,10 +32,10 @@ Not upstream material as it stands: the channel number is provisional.
 
 ---
 
-diff -uNr orig/sound/soc/qcom/Kconfig new/sound/soc/qcom/Kconfig
---- a/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.786861243 -0400
-+++ b/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.800972547 -0400
-@@ -274,3 +274,23 @@
+diff -uprN orig/sound/soc/qcom/Kconfig new/sound/soc/qcom/Kconfig
+--- orig/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.786861243 -0400
++++ new/sound/soc/qcom/Kconfig	2026-08-22 18:34:40.800972547 -0400
+@@ -274,3 +274,23 @@ config SND_SOC_X1E80100
  	  Say Y or M if you want to use audio device on this SoCs.
  
  endif #SND_SOC_QCOM
@@ -59,10 +59,10 @@ diff -uNr orig/sound/soc/qcom/Kconfig new/sound/soc/qcom/Kconfig
 +	  channel and moves no samples.
 +
 +	  If unsure, say N.
-diff -uNr orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
---- a/sound/soc/qcom/Makefile	2026-08-22 18:34:40.789297781 -0400
-+++ b/sound/soc/qcom/Makefile	2026-08-22 18:34:40.836078787 -0400
-@@ -47,3 +47,7 @@
+diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
+--- orig/sound/soc/qcom/Makefile	2026-08-22 18:34:40.789297781 -0400
++++ new/sound/soc/qcom/Makefile	2026-08-22 18:34:40.836078787 -0400
+@@ -47,3 +47,7 @@ obj-$(CONFIG_SND_SOC_QCOM_OFFLOAD_UTILS)
  
  #DSP lib
  obj-$(CONFIG_SND_SOC_QDSP6) += qdsp6/
@@ -70,10 +70,10 @@ diff -uNr orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +# Nokia Lumia 1520 QDSP6 machine driver, default off.
 +snd-soc-lumia1520-q6-y := lumia1520-q6.o
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
-diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
---- a/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ b/sound/soc/qcom/lumia1520-q6.c	2026-08-22 18:34:40.796972547 -0400
-@@ -0,0 +1,209 @@
+diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
+--- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-08-23 07:50:46.595626494 -0400
+@@ -0,0 +1,249 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -115,20 +115,28 @@ diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * which resolves names through the component that owns each of_node and also
 + * sets the DPCM flags correctly (dynamic on the FE, no_pcm on the BE).
 + *
-+ * THE CHANNEL MAP IS THE HYPOTHESIS UNDER TEST
++ * THE CHANNEL MAP COMES FROM THE CODEC
 + *
 + * q6slim_hw_params() records only rate and bit width; num_channels and
 + * ch_mapping[] come solely from q6slim_set_channel_map(). Without the call
 + * below, q6afe_dai_prepare() would configure the port with num_channels = 0.
 + *
-+ * The value 144 is a PROPOSAL: it is apq8096's convention for a WCD codec's
-+ * RX1, and this experiment tests whether the ADSP agrees that codec slave
-+ * port 16 corresponds to SLIMbus channel 144 on AFE port 0x4000. A rejection
-+ * at AFE prepare is a useful result, not a failure of the topology.
++ * Channel 144 on slave port 16 WAS a proposal borrowed from apq8096. It is
++ * now hardware evidence: the control-plane milestone had the AFE accept the
++ * pairing, and B1 had the ADSP accept CONNECT_SINK and DEF_ACT_CHAN for it,
++ * with qcom_slim_ngd_enable_stream() returning 0.
 + *
-+ * Deliberately NOT done here: no .get_channel_map on the codec, no codec-side
-+ * channel ABI. Encoding an unproven channel number into the codec's permanent
-+ * interface would be the wrong order.
++ * So the number now lives where it belongs. The codec reports its own
++ * physical mapping through .get_channel_map, and this driver relays it to
++ * the AFE. It previously held a second, independent #define of 144 that
++ * nothing forced to equal the codec's -- they matched by luck. A divergence
++ * would have configured the AFE for one channel and the codec for another,
++ * and the symptom would have been a stream that came up cleanly on both
++ * sides and carried nothing.
++ *
++ * The earlier note here said a codec-side channel ABI would be 'the wrong
++ * order'. That was correct at the time: the number was unproven. The order
++ * was measure first, then encode, and this is the encoding step.
 + */
 +
 +#include <linux/module.h>
@@ -144,11 +152,12 @@ diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +#define DRV_NAME	"wcd9320-lumia-q6"
 +
 +/*
-+ * WCD9320 RX1. The codec side is slave port 16 -- registers 0x180 and 0x040,
-+ * proven on every boot since the RX-DAI milestone. 144 is the SLIMbus channel
-+ * number that apq8096 pairs with a WCD codec's first RX port.
++ * An upper bound for the relay buffers only. This driver deliberately holds
++ * no channel numbers of its own -- see the header. The codec side is slave
++ * port 16, registers 0x180 and 0x040, proven on every boot since the RX-DAI
++ * milestone.
 + */
-+#define WCD9320_SLIM_RX1_CH	144
++#define LUMIA_MAX_SLIM_CH	8
 +
 +/*
 + * Pin the back end rather than inheriting whatever the front end negotiated.
@@ -177,28 +186,59 @@ diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +{
 +	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 +	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-+	unsigned int rx_ch[1] = { WCD9320_SLIM_RX1_CH };
-+	int ret;
++	struct snd_soc_dai *codec_dai;
++	unsigned int rx_ch[LUMIA_MAX_SLIM_CH], tx_ch[LUMIA_MAX_SLIM_CH];
++	unsigned int rx_ch_cnt = 0, tx_ch_cnt = 0;
++	int ret, i;
 +
 +	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
 +		return 0;
 +
 +	/*
-+	 * The AFE side only. The codec keeps its fixed RX1 selection and is
-+	 * not told a channel number -- see the header comment.
++	 * Ask the codec what its channels are, then tell the AFE. This driver
++	 * no longer holds an opinion about channel numbers.
++	 *
++	 * It used to carry its own "#define WCD9320_SLIM_RX1_CH 144" while the
++	 * codec carried another, with nothing to keep them equal -- a silent
++	 * mismatch would have configured the AFE for one channel and the codec
++	 * for a different one, and the symptom would have been a stream that
++	 * came up cleanly on both sides and carried nothing. This is the
++	 * mainline ownership model, and it is the one sdm845 uses.
 +	 */
-+	ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
-+					  ARRAY_SIZE(rx_ch), rx_ch);
-+	if (ret && ret != -ENOTSUPP) {
-+		dev_err(rtd->card->dev,
-+			"failed to set the AFE receive channel map: %d\n", ret);
-+		return ret;
-+	}
++	for_each_rtd_codec_dais(rtd, i, codec_dai) {
++		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
++						  &rx_ch_cnt, rx_ch);
++		if (ret == -ENOTSUPP)
++			continue;
++		if (ret) {
++			dev_err(rtd->card->dev,
++				"codec %s would not report its channel map: %d\n",
++				codec_dai->name, ret);
++			return ret;
++		}
 +
-+	dev_info(rtd->card->dev,
-+		 "BE hw_params: cpu=%s codec=%s rate=%u ch=%u ch_map={%u}\n",
-+		 cpu_dai->name, snd_soc_rtd_to_codec(rtd, 0)->name,
-+		 params_rate(params), params_channels(params), rx_ch[0]);
++		if (!rx_ch_cnt || rx_ch_cnt > LUMIA_MAX_SLIM_CH) {
++			dev_err(rtd->card->dev,
++				"codec %s reported %u receive channels\n",
++				codec_dai->name, rx_ch_cnt);
++			return -EINVAL;
++		}
++
++		ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
++						  rx_ch_cnt, rx_ch);
++		if (ret && ret != -ENOTSUPP) {
++			dev_err(rtd->card->dev,
++				"failed to set the AFE receive channel map: %d\n",
++				ret);
++			return ret;
++		}
++
++		dev_info(rtd->card->dev,
++			 "BE hw_params: cpu=%s codec=%s rate=%u ch=%u ch_map={%u} (reported by the codec)\n",
++			 cpu_dai->name, codec_dai->name,
++			 params_rate(params), params_channels(params),
++			 rx_ch[0]);
++	}
 +
 +	return 0;
 +}
@@ -282,4 +322,4 @@ diff -uNr orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc1");
++MODULE_VERSION("q6-card-rc2");
