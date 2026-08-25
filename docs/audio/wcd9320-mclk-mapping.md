@@ -192,19 +192,90 @@ configuring or routing it for audio:
 | gpio15 | function `normal`, nothing routed |
 | codec | RCO selected |
 
-### Map these three before any r167 code
+### The three ownership questions, answered
 
-1. **Does the Windows `PMICDIVCLK` request carry a rate/factor**, or only an
-   enable vote? If it names 9.6 MHz or a `/2`, that is the strongest possible
-   board-specific authority for `0x5b43`.
-2. **What did Qualcomm's own downstream MSM8974 do?** Its clock table also
-   models `div_clk1` as an RPM XO-buffer resource, so RPM ownership is not a
-   mainline artefact. Find whether its audio/machine code programs the PMIC
-   divider separately or merely enables the RPM clock.
-3. **Who legitimately owns `DIV_CTL1` under Linux?** If AP software must set
-   `/2` itself, the answer is board-specific PMIC configuration alongside the
-   RPM vote -- **not** a resurrected CCF provider. Establish that from
-   firmware/downstream evidence first; do not write `0x5b43` on a guess.
+**1. Does the Windows `PMICDIVCLK` request carry a rate or factor? NO.**
+
+```
+on :  "PPP_RESOURCE_ID_DIV_CLK_1_A", 0x02, One
+off:  "PPP_RESOURCE_ID_DIV_CLK_1_A", Zero, Zero
+```
+
+`0x02` is not a divide-by-2. It is the same value in the same slot that
+`PMICVREGVOTE` uses (6 instances), i.e. a parameter common to resource votes,
+and the off state zeroes it alongside the enable -- consistent with releasing a
+vote, not with clearing a divider. Corroborated independently by RPM's own
+protocol: `DEFINE_CLK_SMD_RPM_XO_BUFFER` passes
+`QCOM_RPM_KEY_SOFTWARE_ENABLE`, and the CLK_BUF_A resource has no rate key at
+all. The ACPI tables also never touch `0x5b43`/`0x5b46` directly.
+
+So Windows votes the resource on and off. It does not set the factor here.
+
+**2. What did Qualcomm downstream do? CANNOT BE ANSWERED FROM WHAT WE HOLD.**
+
+The cache is the codec plus resmgr plus wcd9xxx-common -- no MSM8974 machine
+driver and no downstream clock table. Stating that plainly rather than
+inferring. The one thing the cache does settle: the downstream **codec** driver
+never touches the PMIC or any divider register, so wherever that programming
+lives downstream, it is not in the codec.
+
+**3. Who owns `DIV_CTL1`? Constrained hard, but not proven.**
+
+The constraint that makes this tractable is in the codec, not the PMIC:
+
+```c
+if (wcd9xxx->mclk_rate == TAIKO_MCLK_CLK_12P288MHZ)
+        snd_soc_update_bits(codec, TAIKO_A_CHIP_CTL, 0x06, 0x0);
+else if (wcd9xxx->mclk_rate == TAIKO_MCLK_CLK_9P6MHZ)
+        snd_soc_update_bits(codec, TAIKO_A_CHIP_CTL, 0x06, 0x2);
+```
+
+`CHIP_CTL[2:1]` is the codec's MCLK **rate selector** and has exactly two legal
+values: 12.288 MHz or 9.6 MHz. **There is no 19.2 MHz setting.** The XO is
+19.2 MHz and 19.2 / 2 = 9.6 exactly, so for this part the divider must be at
+/2. The codec cannot consume the XO directly.
+
+Putting the measurements beside that:
+
+| | measured | meaning |
+|---|---|---|
+| `0x5b46` | `80` | buffer enabled by the boot chain |
+| `0x5b43` | `00` | divide by 1, so 19.2 MHz at the pad |
+| `0x001` CHIP_CTL | `00` | codec expecting 12.288 MHz -- the POR, unset for this board |
+| gpio15 | `normal` | nothing routed |
+| RPM votes | `enable_count 0` | Linux holds no vote; `deviceless` |
+
+So on this boot path nothing programs the factor, and **nothing in the clock
+framework can** -- RPM's branch ops have no `set_rate`, and the resource
+protocol has no rate key. That leaves two possibilities, and the evidence does
+not yet separate them:
+
+- the AP is expected to program `0x5b43` over SPMI, alongside an RPM enable
+  vote and the pin mux; or
+- RPM firmware programs it from a board configuration we cannot see, and does
+  so only in a boot path ours is not taking.
+
+**A hazard that must be designed for either way.** RPM owns the resource. If
+RPM firmware touches the peripheral when it processes an enable or disable
+vote, a factor written by the AP could be silently clobbered. Any experiment
+that writes `0x5b43` therefore has to re-read it *after* the vote transition,
+not just after the write -- otherwise a clobbered divider looks exactly like a
+successful one.
+
+**A second trap, worth stating because it would have gone into a gate.**
+`clk_get_rate()` on `div_clk1` returns 19 200 000 unconditionally: it is a
+branch clock whose `recalc_rate` reports the fixed nominal value and never
+reads `DIV_CTL1`. The CCF rate is nominal, not measured. Only the PMIC register
+can say what the pad is actually carrying.
+
+### What r167 may and may not do
+
+May: take an RPM enable vote via `<&rpmcc RPM_SMD_DIV_A_CLK1>`, set the pin
+mux, and read `0x5b43` back after every state change.
+
+Must not: resurrect the SPMI CCF provider, or write `0x5b43` before the
+ownership question above is settled by evidence rather than by the fact that
+nothing else in our stack does it.
 
 ## 3. The DT the provider needs
 
