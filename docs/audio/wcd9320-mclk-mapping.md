@@ -105,6 +105,107 @@ established is the physical trace from PM8941 GPIO 15 to the codec's MCLK pad.
 Confirming it needs either a schematic or an instrumented test — configure the
 pin to the divider function and observe whether the codec's behaviour changes.
 
+## 2b. THE FIRST PROVIDER DESIGN IS DISPROVEN, BY BOOT
+
+**r166 was a BOOT REGRESSION. It yields no MCLK or RDAC conclusion.**
+
+The design below in section 3 -- a `qcom,spmi-clkdiv` provider at `0x5b00` --
+was built, verified 63/0 by the artefact gate, flashed, and **broke the boot**:
+
+```
+[2.725605] qcom-clk-smd-rpm ...clock-controller: error -EEXIST:
+           failed to register clk 'div_clk1'
+[4.377581] sdhci_msm f9824900.mmc: no support for card's volts
+[4.377667] mmc0: error -22 whilst initialising MMC card
+[22.10765] [pmOS-rd]: ERROR: failed to mount subpartitions!
+```
+
+`spmi_pmic_clkdiv_probe()` names its outputs `div_clk1`, `div_clk2`,
+`div_clk3`. Clock names are a GLOBAL namespace, and **MSM8974's RPM already
+provides `div_clk1`**. The duplicate registration failed with `-EEXIST`, which
+took down the RPM clock controller and cascaded into the eMMC losing regulator
+support. No rootfs, initramfs debug shell.
+
+Note what this was NOT: not the pin mux (the codec module lives on the rootfs
+and never probed, so `pinctrl-0` was never applied -- and the mmc failure at
+4.379 s precedes the SLIMbus controller registering at 4.458 s anyway), and not
+the divider rate.
+
+### The ownership finding, which is the real content
+
+```c
+/* drivers/clk/qcom/clk-smd-rpm.c */
+DEFINE_CLK_SMD_RPM_XO_BUFFER(div_clk1, 11, 19200000);
+[RPM_SMD_DIV_CLK1]   = &clk_smd_rpm_div_clk1,
+[RPM_SMD_DIV_A_CLK1] = &clk_smd_rpm_div_clk1_a,
+```
+
+DIV_CLK1 is **RPM resource 11**, and `rpmcc` is already in
+`qcom-msm8974.dtsi`. The DSDT string that started this --
+`PPP_RESOURCE_ID_DIV_CLK_1_A` -- is an *RPM resource id*, and its `_A` suffix
+is RPM's active-only convention. That was readable from the beginning and was
+misread as generic firmware nomenclature.
+
+Instantiating a second CCF provider for hardware whose ownership already
+belongs to RPM is the actual mistake, and the SPMI block physically containing
+the divider registers is what makes it a tempting one.
+
+### And the obvious repair does not work either
+
+`clocks = <&rpmcc RPM_SMD_DIV_A_CLK1>` with `assigned-clock-rates = <9600000>`
+would NOT produce 9.6 MHz. `DEFINE_CLK_SMD_RPM_XO_BUFFER` expands through
+`__DEFINE_CLK_SMD_RPM_BRANCH` to `clk_smd_rpm_branch_ops`:
+
+```c
+static const struct clk_ops clk_smd_rpm_branch_ops = {
+        .prepare = ..., .unprepare = ..., .recalc_rate = ...,
+};
+```
+
+No `.set_rate`, no `.round_rate`, no `.determine_rate` -- only the non-branch
+`clk_smd_rpm_ops` carries those. `RPM_SMD_DIV_A_CLK1` is an **enable-only
+gate**, not a Linux-programmable divide-by-2.
+
+### So the open question has changed
+
+Not "how do we add DIV_CLK1" -- that is answered. It is:
+
+> **Who programs the PM8941 DIV_CLK1 divide factor, while RPM owns the
+> enable vote?**
+
+Two layers that appear separable:
+
+```
+RPM resource 11 / DIV_CLK_1_A   ->  ownership + active-only enable
+PM8941 CLKDIV1 @ 0x5b00         ->  DIV_CTL1 @ 0x5b43, the actual factor
+GPIO15 alternate function       ->  routing
+WCD9320 MCLK                    ->  consumer
+```
+
+and the measured state says the boot chain enabled the resource without
+configuring or routing it for audio:
+
+| | |
+|---|---|
+| `0x5b46` | `0x80` -- enabled |
+| `0x5b43` | `0` -- divide by 1, so 19.2 MHz |
+| gpio15 | function `normal`, nothing routed |
+| codec | RCO selected |
+
+### Map these three before any r167 code
+
+1. **Does the Windows `PMICDIVCLK` request carry a rate/factor**, or only an
+   enable vote? If it names 9.6 MHz or a `/2`, that is the strongest possible
+   board-specific authority for `0x5b43`.
+2. **What did Qualcomm's own downstream MSM8974 do?** Its clock table also
+   models `div_clk1` as an RPM XO-buffer resource, so RPM ownership is not a
+   mainline artefact. Find whether its audio/machine code programs the PMIC
+   divider separately or merely enables the RPM clock.
+3. **Who legitimately owns `DIV_CTL1` under Linux?** If AP software must set
+   `/2` itself, the answer is board-specific PMIC configuration alongside the
+   RPM vote -- **not** a resurrected CCF provider. Establish that from
+   firmware/downstream evidence first; do not write `0x5b43` on a guess.
+
 ## 3. The DT the provider needs
 
 From `Documentation/devicetree/bindings/clock/qcom,spmi-clkdiv.yaml` and the

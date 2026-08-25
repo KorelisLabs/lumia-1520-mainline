@@ -140,89 +140,11 @@
 	};
 };
 
-
-/*
- * PM8941 clock dividers -- the external MCLK transport for the codec.
- *
- * WHY THIS EXISTS, AND WHAT IT DOES NOT CLAIM
- *
- * The WCD9320's analog conversion path will not accept two of its clock
- * registers: CDC_CLK_RDAC_CLK_EN_CTL (0x30d) bit 1 and CDC_CLK_POWER_CTL
- * (0x314) both refuse writes, while the digital RX path -- interpolator,
- * compander, connection muxes -- accepts everything. See
- * docs/audio/wcd9320-mclk-mapping.md.
- *
- * The board description points at a missing external clock. The Lumia's own
- * ACPI power state for \_SB.ADSP.SLM1.ADCM.AUDD enables DIV_CLK_1 and
- * configures a PM8941 GPIO in the same FSTATE as the codec's 2.15 V and 1.8 V
- * rails, and disables the divider when the codec powers down.
- *
- * The peripherals are confirmed present by reading the PMIC directly: three
- * CLKDIV blocks at 0x5b00/0x5c00/0x5d00, all PERPH_TYPE 0x06 SUBTYPE 0x0b.
- * The boot chain leaves DIV_CLK1 and DIV_CLK2 enabled, but at DIV_CTL1 factor
- * 0, which the driver treats as divide-by-1 -- so 19.2 MHz, not the 9.6 MHz
- * Taiko's own defaults table asks for. assigned-clock-rates corrects that.
- *
- * Provider index is 1-BASED: spmi_pmic_div_clk_hw_get() does
- * args[0] - 1 and rejects 0. So <&pm8941_clk_divs 1> is the peripheral at
- * 0x5b00, DIV_CLK1.
- *
- * NOT ESTABLISHED: that the pad this divider is routed to physically reaches
- * the codec's MCLK input on RM-940. That needs a schematic or an instrumented
- * measurement, and neither exists here.
- */
-&pm8941_0 {
-	pm8941_clk_divs: clock-controller@5b00 {
-		compatible = "qcom,spmi-clkdiv";
-		reg = <0x5b00>;
-		clocks = <&xo_board>;
-		clock-names = "xo";
-		#clock-cells = <1>;
-		qcom,num-clkdivs = <3>;
-
-		/* 19.2 MHz XO / 2 = 9.6 MHz, the rate Taiko expects. */
-		assigned-clocks = <&pm8941_clk_divs 1>;
-		assigned-clock-rates = <9600000>;
-	};
-};
-
 &pm8941_gpios {
 	gpio_keys_pin_a: gpio-keys-active-state {
 		pins = "gpio3", "gpio4", "gpio5";
 		function = "normal";
 		bias-pull-up;
-		power-source = <PM8941_GPIO_S3>;
-	};
-
-	/*
-	 * The divider output has to be muxed onto a pad; the clkdiv driver only
-	 * programs DIV_CTL1 and EN_CTL and knows nothing about pins. The
-	 * binding says so outright: "These clocks are typically wired through
-	 * alternate functions on GPIO pins."
-	 *
-	 * WHICH PIN. The codec's ACPI power state configures GPIO index 0x0E as
-	 * a digital output. That field is 0-BASED -- values across the table
-	 * include Zero and top out at 0x23 = 35, and PM8941 has exactly 36
-	 * GPIOs -- so 0x0E is gpio15, not gpio14.
-	 *
-	 * WHICH FUNCTION IS NOT PROVEN. Nothing in the kernel maps a pmic-gpio
-	 * function index to DIV_CLK; the pinctrl driver and its binding define
-	 * only the generic normal/paired/func1..func4/dtest1..4, and what each
-	 * means on a given pad is PM8941 hardware documentation. What IS known
-	 * from the driver: pmic_gpio_set_mux() rejects func3/func4 on non-LV/MV
-	 * subtypes, and gpio15 reports PERPH_SUBTYPE 0x05, so the choice is
-	 * exactly func1 or func2. func1 is used here; func2 can be selected at
-	 * runtime through the pinctrl debugfs pinmux-select without rebuilding,
-	 * which is how the gate tests the alternative.
-	 *
-	 * POWER SOURCE. S3 is the codec's own 1.8 V I/O rail -- the same
-	 * supply its vddpx-1 takes -- chosen for that reason rather than by
-	 * copying another board's sleep-clock pin.
-	 */
-	wcd9320_mclk_pin: wcd9320-mclk-state {
-		pins = "gpio15";
-		function = "func1";
-		output-high;
 		power-source = <PM8941_GPIO_S3>;
 	};
 };
@@ -650,24 +572,6 @@
 				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
 				 * driven low 20 ms then high 20 ms -- active low. */
 				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
-
-				/*
-				 * The external MCLK, from PM8941 DIV_CLK1 at
-				 * 9.6 MHz, muxed onto gpio15.
-				 *
-				 * r166 acquires and enables this clock but does
-				 * NOT switch the codec's internal source:
-				 * CLK_BUFF_EN1 bit 3 still selects the RC
-				 * oscillator. That separation is deliberate --
-				 * it makes "an external MCLK is present and
-				 * routed" a single testable change, before
-				 * "the codec runs from it" is asked as a
-				 * separate question.
-				 */
-				clocks = <&pm8941_clk_divs 1>;
-				clock-names = "mclk";
-				pinctrl-names = "default";
-				pinctrl-0 = <&wcd9320_mclk_pin>;
 
 				/*
 				 * Parent interrupt, TLMM 72. The trigger type is
