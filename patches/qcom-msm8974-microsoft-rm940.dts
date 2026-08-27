@@ -140,11 +140,66 @@
 	};
 };
 
+
+/*
+ * The Lumia MCLK path -- EXPERIMENT, not permanent ownership.
+ *
+ * WCD9320 CHIP_CTL[2:1] offers only 12.288 MHz or 9.6 MHz, so this codec
+ * cannot run from the raw 19.2 MHz XO. A shipping MSM8974 + WCD9320 board (the
+ * Nexus 5) divides it by two in the PMIC and routes it out on PM8941 gpio15:
+ *
+ *   msm8974-clock.dtsi   pm8941_clkdiv1: clkdiv@5b00 { qcom,cxo-div = <2>; }
+ *   hammerhead.dtsi      taiko-mclk-clk = <&pm8941_clkdiv1>;
+ *                        qcom,cdc-mclk-gpios = <&pm8941_gpios 15 0>;
+ *                        qcom,taiko-mclk-clk-freq = <9600000>;
+ *
+ * The Lumia's own ACPI power state for the codec independently names the same
+ * pin -- GPIO index 0x0E, 0-based, so gpio15 -- alongside DIV_CLK_1_A.
+ *
+ * NOT a clock provider. r166 registered mainline's clk-spmi-pmic-div here and
+ * broke the boot: it exports CCF clocks named div_clk1..N, MSM8974's RPM
+ * already exports div_clk1, and the -EEXIST took the RPM clock controller and
+ * then the eMMC down with it. RPM keeps ownership of the enable vote; this node
+ * only carries the divide factor, the way downstream's private qpnp-clkdiv API
+ * did without registering any CCF clock.
+ */
+&pm8941_0 {
+	lumia_mclk_div: mclk-divider-experiment@5b00 {
+		compatible = "lumia,rm940-mclk-div-experiment";
+		reg = <0x5b00>;
+
+		pinctrl-names = "default", "divclk";
+		pinctrl-0 = <&wcd9320_mclk_off>;
+		pinctrl-1 = <&wcd9320_mclk_divclk>;
+	};
+};
+
 &pm8941_gpios {
 	gpio_keys_pin_a: gpio-keys-active-state {
 		pins = "gpio3", "gpio4", "gpio5";
 		function = "normal";
 		bias-pull-up;
+		power-source = <PM8941_GPIO_S3>;
+	};
+
+	/*
+	 * PM8941 gpio15 carries the codec MCLK on this design. func1 on
+	 * gpio15-18 is DIV_CLK per Qualcomm's PM8941 pin definitions; func2
+	 * there is SLEEP_CLK, which is what the Nexus 5 uses on gpio16 for
+	 * WLAN. Two states so the experiment can move the pin at runtime and
+	 * the evidence records the transition rather than inheriting it.
+	 */
+	wcd9320_mclk_off: wcd9320-mclk-off-state {
+		pins = "gpio15";
+		function = "normal";
+		input-enable;
+		power-source = <PM8941_GPIO_S3>;
+	};
+
+	wcd9320_mclk_divclk: wcd9320-mclk-divclk-state {
+		pins = "gpio15";
+		function = "func1";
+		output-high;
 		power-source = <PM8941_GPIO_S3>;
 	};
 };
@@ -572,6 +627,21 @@
 				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
 				 * driven low 20 ms then high 20 ms -- active low. */
 				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * The external MCLK, as an RPM consumer. RPM
+				 * owns the enable vote for DIV_CLK1; the
+				 * divide factor is a separate concern handled
+				 * by the experiment node above.
+				 *
+				 * r167 acquires and enables this but does NOT
+				 * switch the codec's internal source:
+				 * CLK_BUFF_EN1 bit 3 still selects the RC
+				 * oscillator, and the artefact gate proves the
+				 * driver has no write site for 0x108.
+				 */
+				clocks = <&rpmcc RPM_SMD_DIV_A_CLK1>;
+				clock-names = "mclk";
 
 				/*
 				 * Parent interrupt, TLMM 72. The trigger type is

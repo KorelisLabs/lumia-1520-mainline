@@ -54,7 +54,14 @@ EXPECT = {
     #            1 in wcd9320_c2b_write, 1 in wcd9320_pa_guard.
     # r166: 32 = the above plus 4 in mclk_state_show -- 0x108, 0x109, 0x1fa and
     #            0x311, the codec's clock source, READ and never written.
-    "read_bypassed_calls": 32,
+    # r167: 39 = those 32 in wcd9320-core.c, plus 7 from
+    #            lumia-mclk-experiment.o, which is now linked into the same
+    #            module. That file names regmap_read_bypassed once, inside the
+    #            one-line lumia_read() wrapper, and calls it from 7 places;
+    #            lumia_read has no standalone symbol in the built module, so it
+    #            inlined at every one. 32 + 7 = 39, confirmed against
+    #            readelf -rW on the r167 artefact.
+    "read_bypassed_calls": 39,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -395,6 +402,10 @@ def main():
              "the r165 RDAC bit probe"),
             ("wcd9320_mclk_enable", "mclk: ENABLED, rate %lu Hz",
              "the r166 external MCLK consumer"),
+            ("lumia_mclk_probe", "Lumia MCLK experiment ready",
+             "the r167 PM8941 divider experiment"),
+            ("lumia_mclk_apply", "mclk-div: DIV_CTL1 did not take",
+             "the r167 divider write, chip-verified"),
     ):
         present = e.code_present(sym, witness)
         how = ("symbol" if sym in e.syms
@@ -405,8 +416,20 @@ def main():
     for sym, why in (("dev_attr_hphl_dac_test", "sysfs trigger the gate drives"),
                      ("dev_attr_hphl_dac_state", "sysfs state the gate reads"),
                      ("dev_attr_cdc_clk_prereq", "sysfs, 0x314 only"),
-                     ("dev_attr_rdac_probe", "sysfs, the causal experiment")):
+                     ("dev_attr_rdac_probe", "sysfs, the causal experiment"),
+                     ("dev_attr_mclk_div_test", "sysfs, the r167 divider"),
+                     ("dev_attr_mclk_div_state", "sysfs, DIV_CTL1 + gpio15 mux")):
         check("%s present" % sym, sym in e.syms, why)
+
+    # r166 broke the boot by registering a second CCF provider for a clock RPM
+    # already owns. The module must contain no clock-provider registration at
+    # all: the divider is programmed directly, and RPM keeps the enable vote.
+    for sym in ("clk_hw_register", "devm_clk_hw_register",
+                "of_clk_add_hw_provider", "devm_of_clk_add_hw_provider",
+                "clk_register"):
+        check("%s absent (no second clock provider)" % sym,
+              sym not in e.syms,
+              "r166 registered div_clk1 twice and took the eMMC down with it")
 
     # Two registers this branch must never write, checked the same way.
     #

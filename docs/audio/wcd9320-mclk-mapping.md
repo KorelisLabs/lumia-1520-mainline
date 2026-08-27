@@ -370,14 +370,34 @@ architecture was right. The defect is narrower and worth recording upstream:
 On this SoC those two drivers **cannot coexist**, and nothing in the binding
 says so.
 
-### What is still NOT established
+### The pin function is settled
 
-Which pinctrl function routes the divider onto the pad. The hammerhead board DT
-reserves gpio15 for audio but sets no `qcom,src-sel` for it in the files
-fetched, the machine driver never configures the pin, and `qpnp-clkdiv.c`
-itself could not be located (four candidate paths tried, all 404). So **func1
-versus func2 remains open** -- still a two-way choice, still runtime-testable
-via pinctrl debugfs `pinmux-select` without a rebuild.
+Qualcomm's PM8941 pin definitions assign, for gpio15-18:
+
+```
+FUNC1 = DIV_CLK
+FUNC2 = SLEEP_CLK
+```
+
+So gpio15 `func1` is the divider output, and `func2` is the sleep clock -- which
+is exactly what other MSM8974 boards use on gpio16 for WLAN, and why that
+neighbouring usage was never a template for this pin. This is source-backed
+rather than inferred, and it converges with everything else: the Lumia's ACPI
+index `0x0E` resolving 0-based to gpio15, and the Nexus 5 naming
+`<&pm8941_gpios 15>` for its codec MCLK.
+
+The kernel does not document this mapping -- `pinctrl-spmi-gpio` and its
+binding define only the generic `normal/paired/func1..func4/dtest1..4`, and
+`qpnp-clkdiv.c` could not be located in the LineageOS tree (four candidate
+paths, all 404). It is a PM8941 hardware fact, not a kernel one.
+
+### What remains unmeasured
+
+That 9.6 MHz physically reaches the codec's MCLK pin. Every layer up to and
+including the PMIC pad is now software-verifiable -- divider factor, enable
+bit, pad mux -- but nothing in software observes the pad itself. Only a scope,
+or the codec's own behaviour changing, can close that last step. r167 is built
+to look for exactly the second of those.
 
 ### What r167 may and may not do
 
