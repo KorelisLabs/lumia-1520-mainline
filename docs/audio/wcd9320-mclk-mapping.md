@@ -268,6 +268,117 @@ branch clock whose `recalc_rate` reports the fixed nominal value and never
 reads `DIV_CTL1`. The CCF rate is nominal, not measured. Only the PMIC register
 can say what the pad is actually carrying.
 
+### RESOLVED: AP kernel software owns the divide factor
+
+Answered from a shipping MSM8974 + WCD9320 board -- LineageOS
+`android_kernel_lge_hammerhead`, `cm-11.0`, the Nexus 5. Same SoC, same codec.
+Source stays in `~/.cache/wcd9320-downstream/hammerhead/` and is never checked
+in; only these derived facts are recorded.
+
+**The divide factor is set in device tree and programmed by an AP-side kernel
+driver.**
+
+```dts
+/* arch/arm/boot/dts/msm8974-clock.dtsi */
+&spmi_bus {
+        qcom,pm8941@0 {
+                pm8941_clkdiv1: clkdiv@5b00 {
+                        qcom,cxo-div = <2>;      /* 19.2 MHz / 2 = 9.6 MHz */
+                };
+```
+
+consumed through a private kernel API, not the clock framework:
+
+```c
+/* include/linux/qpnp/clkdiv.h */
+enum q_clkdiv_cfg {
+        Q_CLKDIV_NO_CLK = 0,
+        Q_CLKDIV_XO_DIV_1,      /* 1 */
+        Q_CLKDIV_XO_DIV_2,      /* 2 */
+        Q_CLKDIV_XO_DIV_4,      /* 3 */
+        ...
+};
+int qpnp_clkdiv_config(struct q_clkdiv *, enum q_clkdiv_cfg cfg);
+```
+
+and the board wires the codec to exactly that node:
+
+```dts
+/* msm8974-hammerhead.dtsi */
+qcom,cdc-mclk-gpios      = <&pm8941_gpios 15 0>;
+taiko-mclk-clk           = <&pm8941_clkdiv1>;
+qcom,taiko-mclk-clk-freq = <9600000>;
+```
+
+**RPM owns only the enable vote, in downstream too.**
+
+```c
+DEFINE_CLK_RPM_SMD_XO_BUFFER(div_clk1, div_a_clk1, DIV_CLK1_ID);
+        /* -> RPM_CLK_BUFFER_A_REQ, RPM_KEY_SOFTWARE_ENABLE */
+
+static int rpm_branch_clk_set_rate(struct clk *clk, unsigned long rate)
+{
+        if (rate == clk->rate)
+                return 0;
+        return -EPERM;
+}
+
+CLK_LOOKUP("osr_clk", div_clk1.c, "msm-dai-q6-dev.16384");
+```
+
+So RPM ownership is Qualcomm's own model and not a mainline artefact, and the
+downstream branch `set_rate` refuses any change exactly as mainline's does by
+having none at all.
+
+**The audio machine driver programs nothing.** It resolves `osr_clk` from the
+QDSP6 AFE DAI device, calls `clk_prepare_enable()` on it, and `gpio_request()`s
+the MCLK pin under the name `TAIKO_CODEC_PMIC_MCLK` -- and never sets that
+pin's direction or value, and never issues a `clk_set_rate`. It only
+*validates* the frequency, erroring out if `qcom,taiko-mclk-clk-freq` is
+anything but 9 600 000.
+
+### Two independent derivations of the /2 encoding agree
+
+| source | value for divide-by-2 |
+|---|---|
+| downstream `Q_CLKDIV_XO_DIV_2` | **2** |
+| mainline `div_to_div_factor(2) = ilog2(2) + 1` | **2** |
+
+So `DIV_CTL1` (`0x5b43`) = **2** means XO/2 = 9.6 MHz, corroborated across two
+independently written implementations.
+
+### GPIO 15 is confirmed by a second, independent board
+
+`qcom,cdc-mclk-gpios = <&pm8941_gpios 15 0>` on the Nexus 5, and
+`gpio@ce00 { qcom,pin-num = <15>; }` in the PM8941 dtsi -- the same address this
+project read directly from the PMIC. That is independent agreement with the
+0-based decode of the Lumia's own ACPI GPIO index `0x0E`, from a completely
+different source.
+
+### Why r166 failed, stated precisely
+
+Mainline's equivalent of `qpnp-clkdiv` **is**
+`drivers/clk/qcom/clk-spmi-pmic-div.c` -- the driver r166 used. The
+architecture was right. The defect is narrower and worth recording upstream:
+
+- downstream's `qpnp-clkdiv` exposed a **private API** (`qpnp_clkdiv_get`,
+  `_enable`, `_config`) and registered **no CCF clocks**, so it had no
+  namespace to collide with;
+- mainline's `clk-spmi-pmic-div` registers CCF clocks named `div_clk1..N`,
+  which on MSM8974 collide with the ones `rpmcc` already exports.
+
+On this SoC those two drivers **cannot coexist**, and nothing in the binding
+says so.
+
+### What is still NOT established
+
+Which pinctrl function routes the divider onto the pad. The hammerhead board DT
+reserves gpio15 for audio but sets no `qcom,src-sel` for it in the files
+fetched, the machine driver never configures the pin, and `qpnp-clkdiv.c`
+itself could not be located (four candidate paths tried, all 404). So **func1
+versus func2 remains open** -- still a two-way choice, still runtime-testable
+via pinctrl debugfs `pinmux-select` without a rebuild.
+
 ### What r167 may and may not do
 
 May: take an RPM enable vote via `<&rpmcc RPM_SMD_DIV_A_CLK1>`, set the pin
