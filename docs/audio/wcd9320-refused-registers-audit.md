@@ -1,8 +1,9 @@
 # Why `0x30d[1]` and `0x314` refuse: a source-generation and mechanism audit
 
-**Status:** research only, 2026-08-28. **No register was written. No build was
-made. The driver source was deliberately left untouched** so the deployed r169
-artefact and the staged patch stay in agreement — see section 8.
+**Status:** sections 0–8 are the audit, 2026-08-28, research only — no register
+was written and the driver was left untouched at the time, so the deployed r169
+artefact and the staged patch stayed in agreement. **Section 9 is r170**, which
+acts on it: the address is fixed, and the build is staged at pkgrel 170.
 
 Prerequisite: [wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md)
 section 10a. **The MCLK branch is closed** and nothing here reopens it.
@@ -329,14 +330,87 @@ PMIC access, no clock-source switch, no DAC, no PA.
 
 ---
 
-## 8. What was deliberately NOT done
+## 8. What was deliberately NOT done DURING THE AUDIT
 
-**The driver source was not modified.** The `0x001` constant is wrong and known
-to be wrong, and fixing it is the first line of the next build — but changing
-it now would put the source out of step with the deployed r169 artefact and the
-staged r169 patch, and this project's build discipline treats that
-correspondence as the thing that makes a run interpretable. The fix belongs to
-r170, together with the experiment in section 7.
+The driver source was not modified while sections 0-8 were written, so the
+deployed r169 artefact and the staged r169 patch kept corresponding -- this
+project's build discipline treats that correspondence as what makes a run
+interpretable. No register was written, no build was made, and no PMIC or MCLK
+change was considered.
 
-No register was written. No build was made. No PMIC or MCLK change was
-considered.
+The fix moved to r170, which is section 9.
+
+---
+
+## 9. r170 AS BUILT
+
+**Status: STAGED, NOT YET BUILT.** pkgrel 170, `chipctl-rc1`. **RCO only** — no
+PMIC, no gpio15, no MCLK selection, no DAC, no PA.
+
+### The fix, made permanent
+
+```c
+#define WCD9320_A_CHIP_CTL      0x000   /* the rate declaration */
+#define WCD9320_A_CHIP_STATUS   0x001   /* READ ONLY, never written */
+```
+
+The artefact gate now **asserts both addresses in source**, so the
+transcription cannot recur silently, and pins the write sites:
+
+| register | direct | table | meaning |
+|---|---|---|---|
+| `0x000` CHIP_CTL | **1** | 0 | one site, `wcd9320_chip_ctl_probe()`, used to set and to restore |
+| `0x001` CHIP_STATUS | **0** | 0 | a status register; read in the state readers, never written |
+| `0x1ab` PA | 0 | 0 | unchanged |
+| `0x108` clock source | 0 | 7 | unchanged |
+
+### The chain the run tests
+
+Downstream's own order, reproduced for the first time:
+
+```
+1. read    0x000                baseline, must have rate bits clear
+2. write   0x000 mask 06 <- 02  the 9.6 MHz declaration, chip-verified
+3. write   0x314 <- 03          immediately, as taiko_reg_defaults[] does
+4. write   0x30d[1]             under the FULL C2b prerequisite state
+5. teardown in dependency order: 0x30d, then 0x314, then 0x000 last
+```
+
+**The prediction is `0x0a`, not `0x02`.** This part reads `0x08` at CHIP_CTL
+against a POR of `0x00`, so bit 3 is set by something no header we hold
+describes. The write is **masked** (`0x06 <- 0x02`) and preserves it;
+downstream's full-byte `snd_soc_write(0x02)` would clear it, and changing an
+unexplained bit in the same act as the rate field would make a positive `0x314`
+result unattributable. If the masked write proves insufficient, the full byte
+is a separate build.
+
+The expectation is **derived from the measured baseline** in both the driver
+and the gate — `(baseline & ~0x06) | 0x02` — and the two are cross-checked
+against each other, rather than either hardcoding `0x0a`. A part presenting a
+different bit 3 is then still verified correctly instead of failing a constant.
+
+### Why step 4 is not a naked probe
+
+r164's negative on `0x30d[1]` was obtained with RX1, the compander, the DSM
+mux, RX bias and class-H all established. A refusal measured in any other state
+would not be comparable with it. So r170 re-establishes that state and retries
+there — using a new `prereq-on` verb that runs C2b stages 3 to 6 and **stops**,
+leaving `0x1b1` untouched. The DAC is a separate milestone.
+
+Step 4 runs only if `0x314` latched: the C2b path already refuses up front when
+`0x314` does not read `0x03`, which is the correct behaviour and makes the
+dependency explicit rather than implicit.
+
+### Four outcomes, and the exit code for each
+
+| exit | finding | meaning |
+|---|---|---|
+| 4 | **R1** | CHIP_CTL refuses at the correct address — a real result about the top-level control register, and the first one this project has had. Stop. |
+| 1 | **R2** | CHIP_CTL latches, `0x314` still refuses — downstream's adjacency is not sufficient; `0x314` has another prerequisite, and it is neither the clock (r169) nor the rate (r170). Candidate 1 refuted, candidate 3 promoted. |
+| 2 | **R3** | Both latch, `0x30d` still refuses under the full C2b state — the general clock-configuration problem is solved and the RDAC has its own condition. Candidate 2 is then the one to test. |
+| 0 | **R4** | All three latch — the blocker that stopped C2b at stage 6 of 7 is very probably gone, and its cause was a single incorrect register constant. |
+
+### What r170 does NOT do
+
+Power `0x1b1`. Touch the PA. Touch the PMIC. Select MCLK. Reopen anything the
+r169 freeze closed.

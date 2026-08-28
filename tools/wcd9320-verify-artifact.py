@@ -84,11 +84,18 @@ EXPECT = {
     #            the open question there: wcd9320_clk_read_control did NOT
     #            inline, so its three callers share one relocation.
     # r169: 56 = 51 - 2 + 7. The +2 over r168 is wcd9320_chip_ctl_probe, which
-    #            reads 0x001 either side of its write. Same assumption as
-    #            before -- that it survives as a real function -- and the same
-    #            rule: a differing count is a compiler decision to be confirmed
-    #            by attributing the relocations, not a number to be edited.
-    "read_bypassed_calls": 56,
+    #            reads either side of its write. Confirmed on the artefact, and
+    #            wcd9320_chip_ctl_probe did not inline either.
+    # r170: 58 = 53 - 2 + 7. The +2 over r169 is one read in
+    #            chip_ctl_test_store (the baseline measurement) and one in
+    #            hphl_dac_state_show (CHIP_STATUS, now reported beside
+    #            CHIP_CTL so the pair that was transposed for five builds is
+    #            visible side by side).
+    #
+    # The offset of 2 between source call sites and artefact relocations has
+    # now held across r167, r168 and r169. It is stable and still unexplained;
+    # a delta computed from the source alone will be two out.
+    "read_bypassed_calls": 58,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -492,20 +499,46 @@ def main():
         return [ln for ln in added
                 if re.match(r"\s*\{\s*%s\s*," % re.escape(symbol), ln)]
 
+    # ------------------------------------------------------------------
+    # THE ADDRESSES THEMSELVES, ASSERTED IN SOURCE.
+    #
+    # r165 to r169 defined WCD9320_A_CHIP_CTL as 0x001. 0x001 is CHIP_STATUS;
+    # the real CHIP_CTL is 0x000. Five builds wrote a status register and
+    # reported its refusal as a silicon finding, and the whole "three refusing
+    # registers" grouping rested partly on that.
+    #
+    # The two are only ever separated in the COMMON wcd9xxx header --
+    # wcd9320_registers.h just aliases TAIKO_A_CHIP_CTL to WCD9XXX_A_CHIP_CTL
+    # -- which is how they were transposed. Three independent downstream
+    # generations agree on 0x00 / 0x01, and our own low dump decodes correctly
+    # only that way.
+    #
+    # Pinned here so the transcription error cannot recur silently.
+    for sym, want in (("WCD9320_A_CHIP_CTL", "0x000"),
+                      ("WCD9320_A_CHIP_STATUS", "0x001")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall("\n".join(added))
+        check("%s is defined as %s" % (sym, want),
+              found == [want],
+              "found %s" % (found or "no definition"))
+
     for sym, addr, ncall, ntable, why in (
             # The PA. The whole milestone is defined by it staying off, so
             # neither mechanism may name it.
             ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 0, 0, "the PA"),
 
-            # CHIP_CTL. Observe-only from r165 to r167. r168 wrote it as a
-            # prerequisite of the switch and the part REFUSED, aborting the
-            # run before the clock block was touched -- so from r169 it is a
-            # measurement rather than a step: ONE write site, inside
-            # wcd9320_chip_ctl_probe(), reached both to attempt the rate and
-            # to put it back. It stays out of every table, and nothing else
-            # in the driver may write it.
-            ("WCD9320_A_CHIP_CTL", "0x001", 1, 0,
+            # CHIP_CTL, at its real address from r170. ONE write site, inside
+            # wcd9320_chip_ctl_probe(), reached both to attempt the 9.6 MHz
+            # rate and to put it back. It stays out of every table, and
+            # nothing else in the driver may write it.
+            ("WCD9320_A_CHIP_CTL", "0x000", 1, 0,
              "the rate declaration -- probed, never a prerequisite"),
+
+            # CHIP_STATUS. A status register. It is READ in the state
+            # readers and must never be written again by anything.
+            ("WCD9320_A_CHIP_STATUS", "0x001", 0, 0,
+             "a status register -- read only, never written"),
 
             # The codec clock source. r166 and r167 supplied an external MCLK
             # and deliberately did not select it. r168 selects it, and only

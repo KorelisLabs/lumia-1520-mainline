@@ -1176,43 +1176,55 @@ but it points at `0x000`, which r168 never wrote.
 
 ### The next task, precisely
 
-**RESEARCH IS DONE; NO BUILD IS STAGED.** r170 is the first build after the
-audit, and it has exactly two jobs, in this order:
+**r170 `chipctl-rc1` is STAGED at pkgrel 170, NOT YET BUILT.** RCO only: no
+PMIC, no gpio15, no MCLK selection, no DAC, no PA.
 
-1. **Fix the constant.** `WCD9320_A_CHIP_CTL` `0x001` -> `0x000`. Nothing else
-   in the driver is affected: the generated regmap tables already carry `0x000`
-   correctly, because `wcd9320-regmap-derive.py` parses the numeric
-   `WCD9XXX_A_*` defines rather than the Taiko aliases.
-2. **Run the section 7 experiment** from the audit -- two reversible writes on
-   the RC oscillator:
+It fixes the address defect permanently -- `CHIP_CTL 0x000`,
+`CHIP_STATUS 0x001`, both now **asserted in source by the artefact gate** so
+the transcription cannot recur -- and then reproduces downstream's own
+initialisation order for the first time:
 
 ```
-read   0x000                 expect 08 (not 00 -- bit 3 is set, and unexplained)
-write  0x000 [2:1] <- 0x2    the 9.6 MHz declaration, chip-verified, MASKED
-retry  0x314 <- 0x03
-retry  0x30d[1] <- 1
-restore 0x314, 0x30d, then 0x000 to its measured value
+read    0x000                baseline; rate bits must be clear
+write   0x000 mask 06 <- 02  the 9.6 MHz declaration, chip-verified
+write   0x314 <- 03          immediately, as taiko_reg_defaults[] does
+write   0x30d[1]             under the FULL C2b prerequisite state
+teardown in dependency order: 0x30d, then 0x314, then 0x000 last
 ```
 
-Falsifies candidate 1 if `0x314` still refuses with `0x000[2:1]` verified at
-`0x2` on the chip. Confirms it if `0x314` latches. If `0x314` latches and
-`0x30d[1]` does not, candidate 2 is promoted for `0x30d` alone.
+**Expect `0x0a`, not `0x02`.** This part reads `0x08` at CHIP_CTL against a POR
+of `0x00`; bit 3 is set by something no header we hold describes. The write is
+masked and preserves it. The expectation is derived from the measured baseline
+in both the driver and the gate, and the two are cross-checked, so a part with
+a different bit 3 is still verified correctly. Downstream's full-byte `0x02`
+would clear bit 3 and is deliberately NOT used -- if the masked write proves
+insufficient, that is a separate build.
 
-**Use the masked write first.** Downstream issues a full-byte
-`snd_soc_write(CHIP_CTL, 0x02)`, which would clear the bit 3 our part currently
-has set. Bit 3 is not described in any header we hold, so clearing it is an
-unknown and must not be bundled into the same measurement. Try the full write
-only if the masked one fails, and as a separate step.
+Step 4 is not a naked probe: r164's negative on `0x30d[1]` was obtained with
+RX1, the compander, the DSM mux, RX bias and class-H established, so r170
+re-establishes that state via a new `prereq-on` verb that runs C2b stages 3-6
+and **stops**, leaving `0x1b1` untouched.
 
-No PMIC, no clock-source switch, no DAC, no PA. The PA guard and the positive
-control apply unchanged.
-
-The r169 harness stays installed and is proven reversible, so a later
-experiment can be run *with the codec on MCLK* without re-establishing it:
+To build and run:
 
 ```
-sudo sh ~/wcd9320-tools/wcd9320-clk-source-evidence.sh
+tools/build-wcd9320-kernel.sh --pkgrel 170 --version chipctl-rc1     --expect-asoc --expect-dais 1 --stage ~/r170     --extra-module sound/soc/qcom/qdsp6/q6core.ko     --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
 ```
+
+```
+sudo sh ~/wcd9320-tools/wcd9320-chip-ctl-evidence.sh
+```
+
+- **R4**, exit 0: all three latch. The C2b blocker is very probably gone, and
+  its cause was one incorrect register constant. The next milestone returns to
+  stage 7, `0x1b1 <- 0xc0`.
+- **R3**, exit 2: CHIP_CTL and `0x314` latch, `0x30d` still refuses under the
+  full C2b state. The clock-configuration problem is solved; the RDAC has its
+  own condition, and audit candidate 2 is next.
+- **R2**, exit 1: CHIP_CTL latches, `0x314` still refuses. Downstream adjacency
+  is not sufficient; candidate 1 refuted, candidate 3 promoted.
+- **R1**, exit 4: CHIP_CTL refuses at the correct address. A real result about
+  the top-level control register, and the first one this project has had. Stop.
 
 **Redeploy every gate script before every run and checksum the phone's copy.**
 The r169 driver was first run against the *r168* script because that step was
@@ -1241,9 +1253,9 @@ skipped, producing a spurious FAIL and hiding a probe result.
 
 ### Build/deploy state
 
-- **r169 `clksrc-rc2`** is built (artefact 75/0), installed and run; result
-  M2', 25/0. The phone is up on it, RAM-booted, with the module in
-  `/lib/modules`. r168 `clksrc-rc1` is superseded.
+- **r170 `chipctl-rc1`** is staged at pkgrel 170 and not yet built. r169
+  `clksrc-rc2` is built, installed and run (M2', 25/0) and the phone is
+  currently up on it, RAM-booted.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.
