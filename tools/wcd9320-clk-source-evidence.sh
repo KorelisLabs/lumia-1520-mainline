@@ -19,13 +19,26 @@
 # CONFIG_SPMI_PMIC_CLKDIV, nothing writes 0x5b43 that did not write it in
 # r167.
 #
-# Moves: the codec's clock source, CLK_BUFF_EN1 -- and, in the same step,
-# CHIP_CTL[2:1] from 0x0 (12.288 MHz) to 0x2 (9.6 MHz). Those are TWO changes
-# and this script does not pretend otherwise. A rate declaration of 12.288 MHz
-# against a 9.6 MHz input is not a configuration worth testing, so the rate is
-# declared; the cost is that a POSITIVE result here cannot say which of the two
-# unlocked the registers, and separating them is a further build. Recorded in
-# the finding, not buried.
+# Moves: the codec's clock source, CLK_BUFF_EN1. That is the only change.
+#
+# WHY CHIP_CTL IS NO LONGER PART OF THE SWITCH (r169)
+#
+# r168 wrote CHIP_CTL[2:1] = 0x2 as step 2, before the switch, to declare the
+# 9.6 MHz rate. THE PART REFUSED THE WRITE -- 0x001 read back 00 -- and the run
+# aborted before the clock block was touched, returning no conclusion.
+#
+# That refusal is itself the finding. 0x001 joins 0x314 and 0x30d[1], and the
+# three of them share exactly one property: they are MCLK-domain registers on a
+# codec that has never had an MCLK. Downstream corroborates the grouping --
+# taiko_reg_defaults[] opens with CHIP_CTL = 0x02 and CDC_CLK_POWER_CTL = 0x03,
+# adjacent, under one "set MCLk to 9.6" comment, on a board where the MCLK is
+# already running when that executes.
+#
+# So the order inverts: switch first, then attempt the rate declaration against
+# a codec running from the external clock. The write is a MEASUREMENT that
+# never gates anything. This also means the codec is switched while declaring
+# 12.288 MHz against a 9.6 MHz input -- not a choice any more, but the only
+# configuration the hardware permits.
 #
 # WHY THERE IS A POSITIVE CONTROL, AND WHY THE RUN IS VOID WITHOUT IT
 #
@@ -178,9 +191,10 @@ pa_driven "$P_DIR"    || PATH_OK=0
 [ "$MCLK_RC" = "0" ]  || PATH_OK=0
 
 # ------------------------------------------------- THE SWITCH, and the test --
-SW_RC="n/a"; S_SOURCE="n/a"; S_ALIVE="n/a"; S_CHIP="n/a"
+SW_RC="n/a"; S_SOURCE="n/a"; S_ALIVE="n/a"; S_CHIP="n/a"; S_CHIPLAT="n/a"
 A_RDAC="n/a"; A_314="n/a"
 S_C1="n/a"; S_C2="n/a"; S_C3="n/a"
+SWITCH_OK=0
 
 if [ "$PATH_OK" = "1" ]; then
 	echo mclk > "$CSRCT" 2>/dev/null; SW_RC=$?
@@ -188,19 +202,34 @@ if [ "$PATH_OK" = "1" ]; then
 	S_SOURCE=$(rv "$SWITCHED" source)
 	S_ALIVE=$(rv "$SWITCHED" cdc_alive)
 	S_CHIP=$(rv "$SWITCHED" chip_ctl_0x001)
+	S_CHIPLAT=$(rv "$SWITCHED" chip_ctl_latched)
 	S_C1=$(rv "$SWITCHED" ctl_0x2b4)
 	S_C2=$(rv "$SWITCHED" ctl_0x370)
 	S_C3=$(rv "$SWITCHED" ctl_0x373)
 
-	# STEP 6 IS CONDITIONAL ON STEP 5. Probing a dark CDC block would
-	# produce two 00 reads that mean nothing and look like a result.
-	if [ "$S_ALIVE" = "1" ]; then
-		echo try > "$PROBE" 2>/dev/null
-		A_RDAC=$(rv "$(dst)" rdac_latched)
-		echo on > "$PREREQ" 2>/dev/null
-		A_314=$(rv "$(dst)" clk_power_0x314)
-		[ "$A_314" = "03" ] && echo off > "$PREREQ" 2>/dev/null
-	fi
+	[ "$SW_RC" = "0" ] && [ "$S_SOURCE" = "EXTERNAL" ] && SWITCH_OK=1
+fi
+
+#
+# THE RETRY NEEDS BOTH CONDITIONS, AND r168 PROVED IT.
+#
+# This used to be gated on cdc_alive alone. In the r168 run the switch aborted
+# at its first write and never touched the clock block, so the codec was still
+# on RCO -- and because cdc_alive is computed live from three registers that
+# were therefore untouched, it read 1 and the retry ran anyway. It reproduced
+# the ordinary RCO-baseline refusal, and the evidence file filed it under "the
+# retry, run only against a responding CDC block", which is exactly the kind of
+# label that gets read later as an MCLK result.
+#
+# So the retry now requires that the switch ACTUALLY HAPPENED as well as that
+# the block is responding. A retry on RCO is the baseline, not the experiment.
+#
+if [ "$SWITCH_OK" = "1" ] && [ "$S_ALIVE" = "1" ]; then
+	echo try > "$PROBE" 2>/dev/null
+	A_RDAC=$(rv "$(dst)" rdac_latched)
+	echo on > "$PREREQ" 2>/dev/null
+	A_314=$(rv "$(dst)" clk_power_0x314)
+	[ "$A_314" = "03" ] && echo off > "$PREREQ" 2>/dev/null
 fi
 
 # ------------------------------------------------------------- restore ------
@@ -236,11 +265,15 @@ UNLOCKED=0
 	say "DIV_CTL1 factor $P_FACTOR   gpio15 dir $P_DIR function $P_FUNC   enabled $P_EN"
 
 	hdr "after the switch to MCLK"
-	say "codec source : $S_SOURCE   chip_ctl : $S_CHIP"
+	say "codec source : $S_SOURCE"
 	say "positive control 0x2b4=$S_C1 0x370=$S_C2 0x373=$S_C3"
 	say "CDC block    : $([ "$S_ALIVE" = "1" ] && echo RESPONDING || echo DARK)"
 
-	hdr "the retry, run only against a responding CDC block"
+	hdr "CHIP_CTL retried ON MCLK -- the register r168 could not write"
+	say "0x001 reads $S_CHIP, rate bits $([ "$S_CHIPLAT" = "1" ] && echo LATCHED || echo REFUSED)"
+	say "(on RCO, before the switch, it read $(rv "$CPRE" chip_ctl_0x001) and r168 could not write it at all)"
+
+	hdr "the retry, run only after a completed switch AND a responding block"
 	say "0x30d[1] : $([ "$A_RDAC" = "1" ] && echo LATCHED || echo "$A_RDAC")"
 	say "0x314    : $A_314"
 
@@ -265,9 +298,14 @@ UNLOCKED=0
 	say "-- the switch itself --"
 	check "switch to MCLK returned 0" "$SW_RC" "0"
 	check "codec selects EXTERNAL" "$S_SOURCE" "EXTERNAL"
-	check "rate declared 9.6 MHz (CHIP_CTL[2:1] = 2)" "$S_CHIP" "02"
 	check_sequence_complete "clk-src block-off"
 	check_sequence_complete "clk-src mclk-tail"
+	#
+	# CHIP_CTL is NOT checked for a value. Whether it latches is the
+	# measurement, and a gate that required 02 would fail the run for
+	# reporting its own result -- which is what r168 did.
+	#
+	note "CHIP_CTL on MCLK" "0x001=$S_CHIP latched=$S_CHIPLAT (measured, not required)"
 
 	say ""
 	say "-- the restore, which is the recovery guarantee --"
@@ -334,21 +372,35 @@ UNLOCKED=0
 		say "THE CLAIM, STATED AS NARROWLY AS THE EVIDENCE ALLOWS:"
 		say ""
 		say "  With the PM8941 DIV_CLK1 /2 path configured and gpio15 routed"
-		say "  as DIV_CLK, switching the WCD9320 onto that clock -- and"
-		say "  declaring the 9.6 MHz rate in CHIP_CTL -- caused the previously"
-		say "  refused clock-domain register(s) to become writable."
+		say "  as DIV_CLK, switching the WCD9320 onto that clock caused the"
+		say "  previously refused clock-domain register(s) to become writable."
+		say ""
+		say "  The clock source is the ONLY thing this run changed on the"
+		say "  codec. CHIP_CTL was not written before the switch -- r168"
+		say "  proved the part refuses that -- so there is no second variable"
+		say "  to attribute the unlock to."
 		say ""
 		say "  The CDC block kept running across the switch, which is"
 		say "  independent corroboration that a clock is physically arriving:"
 		say "  the positive control held its POR values with the RC oscillator"
 		say "  disabled."
 		say ""
-		say "WHAT IT DOES NOT CLAIM. r168 changed TWO things -- the clock"
-		say "source and the CHIP_CTL rate declaration -- so this run cannot"
-		say "attribute the unlock to one of them. Splitting them is a further"
-		say "build, and it is now worth doing because there is something to"
-		say "split. Nor is 9.6 MHz measured at the pin; nothing here observes"
-		say "the pad."
+		if [ "$S_CHIPLAT" = "1" ]; then
+			say "CHIP_CTL ALSO BECAME WRITABLE (0x001 = $S_CHIP). Three"
+			say "registers that refused on RCO -- 0x001, 0x314, 0x30d[1] --"
+			say "all accept once the codec runs from the external clock."
+			say "That is the MCLK-domain hypothesis confirmed on all three,"
+			say "and it explains every refusal this branch has hit."
+		else
+			say "CHIP_CTL still refuses (0x001 = $S_CHIP) even on MCLK, while"
+			say "0x314/0x30d do not. So 0x001 is NOT in the same class after"
+			say "all, and the codec is running at a declared 12.288 MHz"
+			say "against a 9.6 MHz input. Anything rate-dependent from here"
+			say "is suspect until that is understood."
+		fi
+		say ""
+		say "WHAT IT DOES NOT CLAIM. Not that 9.6 MHz was measured at the"
+		say "codec's MCLK pin; nothing here observes the pad."
 		say ""
 		say "C2b may resume, but only with the codec on MCLK."
 	else
@@ -363,9 +415,20 @@ UNLOCKED=0
 		say "That is a genuine negative, and a strong one. It also establishes"
 		say "something r167 could not: a clock really is arriving at the codec,"
 		say "because the digital core kept running on it with the RC oscillator"
-		say "off. The external MCLK is therefore present, routed, selected, and"
-		say "declared at the right rate -- and 0x314 and 0x30d[1] still will"
-		say "not take."
+		say "off. The external MCLK is therefore present, routed and selected"
+		say "-- and 0x314 and 0x30d[1] still will not take."
+		say ""
+		if [ "$S_CHIPLAT" = "1" ]; then
+			say "NOTE THE SPLIT. CHIP_CTL DID latch on MCLK (0x001 = $S_CHIP)"
+			say "having refused on RCO. So being on MCLK genuinely does unlock"
+			say "an MCLK-domain register -- just not these two. That separates"
+			say "0x314 and 0x30d[1] from 0x001 and makes the remaining refusal"
+			say "much narrower than 'the clock'."
+		else
+			say "CHIP_CTL also still refuses (0x001 = $S_CHIP), so all three"
+			say "registers refuse even with the codec running on the external"
+			say "clock. Being on MCLK is not the unlock for any of them."
+		fi
 		say ""
 		say "The MCLK hypothesis for these two registers is now exhausted. The"
 		say "next question is not the clock. Do NOT reach for the DAC or the"

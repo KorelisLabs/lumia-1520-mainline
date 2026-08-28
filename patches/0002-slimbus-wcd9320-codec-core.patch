@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-27 21:07:02.446970348 -0400
-@@ -0,0 +1,7667 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 06:13:59.759872708 -0400
+@@ -0,0 +1,7744 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1898,6 +1898,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool clk_src_mclk;             /* the codec is selecting the external MCLK */
 +	bool chip_ctl_pre_valid;
 +	u8 chip_ctl_pre;               /* 0x001 as measured before any write */
++	u8 chip_ctl_after;             /* 0x001 as read back after the probe */
++	int chip_ctl_latched;          /* -1 never probed, 0 refused, 1 latched */
 +	/*
 +	 * The positive control: three CDC-block registers with known non-zero
 +	 * contents, so a 00 read can be told apart from a refused write. Kept
@@ -6160,6 +6162,64 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +/*
++ * CHIP_CTL as a MEASUREMENT, not an operation.
++ *
++ * r168 tried to write this as a prerequisite and the part refused it,
++ * which aborted the run before the clock block was touched. That refusal
++ * is the reason this exists in its present form: 0x001 is the third
++ * MCLK-domain register to refuse on a codec with no MCLK, after 0x314 and
++ * 0x30d[1], and downstream writes 0x001 and 0x314 as the first two entries
++ * of taiko_reg_defaults[] under one "set MCLk to 9.6" comment -- on a
++ * board where the MCLK is already running when that executes.
++ *
++ * So it is attempted AFTER the source switch and never gates anything.
++ * Returning -EIO for a refused bit would make "the experiment ran and the
++ * answer was no" indistinguishable from "the experiment failed to run",
++ * which is the distinction this whole run is about -- the same reasoning
++ * wcd9320_rdac_probe() is built on.
++ */
++static int wcd9320_chip_ctl_probe(struct wcd9320 *wcd, u8 want,
++				  const char *what)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int before = 0, after = 0;
++	int ret;
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CHIP_CTL, &before);
++
++	ret = regmap_update_bits(wcd->regmap, WCD9320_A_CHIP_CTL,
++				 WCD9320_CHIP_CTL_MCLK_RATE_MASK, want);
++	if (ret) {
++		dev_err(dev, "clk-src: 0x001 write failed: %d [%s]\n", ret, what);
++		return ret;
++	}
++	wcd->c2b_writes++;
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CHIP_CTL, &after);
++	wcd->chip_ctl_after = after & 0xff;
++	wcd->chip_ctl_latched =
++		((after & WCD9320_CHIP_CTL_MCLK_RATE_MASK) ==
++		 (want & WCD9320_CHIP_CTL_MCLK_RATE_MASK)) ? 1 : 0;
++
++	dev_info(dev, "clk-src: 0x001 mask %02x want %02x : %02x -> %02x  %s  [%s]\n",
++		 WCD9320_CHIP_CTL_MCLK_RATE_MASK, want,
++		 before & 0xff, after & 0xff,
++		 wcd->chip_ctl_latched ? "LATCHED" : "REFUSED", what);
++
++	/*
++	 * A refused write leaves the cache holding what the chip does not.
++	 * regmap skips a write whose cached value already equals the target,
++	 * so the NEXT attempt would be optimised away and silently do nothing
++	 * -- the trap r165 hit on 0x314. Drop the entry either way.
++	 */
++	if (!wcd->chip_ctl_latched)
++		regcache_drop_region(wcd->regmap, WCD9320_A_CHIP_CTL,
++				     WCD9320_A_CHIP_CTL);
++
++	return 0;
++}
++
++/*
 + * The switch itself.
 + *
 + * On the way to MCLK, EVERY failure after the first sequence write goes to the
@@ -6240,8 +6300,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +
 +		/*
-+		 * Step 2: declare the rate. Measured first, so the restore puts
-+		 * back what was there rather than an assumed POR.
++		 * Step 2: MEASURE the rate declaration. It is not written here.
++		 *
++		 * r168 wrote it at this point and the part refused, which aborted
++		 * the run before the clock block was touched. The attempt now
++		 * happens after the switch, against a codec running from the
++		 * external clock. This read is kept so the restore puts back what
++		 * was actually there rather than an assumed POR.
 +		 */
 +		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_CHIP_CTL,
 +					   &chipctl);
@@ -6249,15 +6314,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			return ret;
 +		wcd->chip_ctl_pre = chipctl & 0xff;
 +		wcd->chip_ctl_pre_valid = true;
-+		dev_info(dev, "clk-src: CHIP_CTL measured %02x before any write\n",
++		dev_info(dev,
++			 "clk-src: CHIP_CTL measured %02x before the switch (not written yet)\n",
 +			 chipctl & 0xff);
-+
-+		ret = wcd9320_c2b_write(wcd, WCD9320_A_CHIP_CTL,
-+					WCD9320_CHIP_CTL_MCLK_RATE_MASK,
-+					WCD9320_CHIP_CTL_MCLK_9P6MHZ,
-+					"CHIP_CTL[2:1] = 0x2, MCLK rate 9.6 MHz");
-+		if (ret)
-+			return ret;
 +
 +		wcd->clk_src_switches++;
 +
@@ -6319,6 +6378,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			 alive ? "RESPONDING (a clock is arriving)"
 +			       : "DARK (no clock is arriving -- this run says nothing about 0x30d/0x314)");
 +
++		/*
++		 * Step 6: NOW try the rate declaration, on a codec that is running
++		 * from the external clock. Only if the CDC block is alive -- a
++		 * probe against a dark block reads 00 for a reason that has nothing
++		 * to do with whether the write was refused, which is precisely the
++		 * ambiguity the positive control exists to remove.
++		 */
++		if (alive)
++			wcd9320_chip_ctl_probe(wcd, WCD9320_CHIP_CTL_MCLK_9P6MHZ,
++					       "rate 9.6 MHz, retried ON MCLK");
++		else
++			dev_info(dev,
++				 "clk-src: CDC dark, CHIP_CTL probe skipped -- it would read 00 either way\n");
++
 +		wcd9320_pa_guard(wcd, "after the switch to MCLK");
 +		return 0;
 +
@@ -6348,6 +6421,25 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return 0;
 +	}
 +
++	/*
++	 * CHIP_CTL goes back FIRST, before the clock is taken away.
++	 *
++	 * This is the opposite of r168's ordering and the reason is the whole
++	 * finding: if 0x001 is writable only while an MCLK is present, then a
++	 * restore attempted after the switch back to RCO would be refused, and
++	 * the codec would be left declaring a rate it is not receiving. So it
++	 * is put back in the same clock state it was changed in.
++	 *
++	 * Non-fatal: a refusal here is recorded and the clock restore still
++	 * runs. Getting the codec back onto a working clock matters more than
++	 * a rate field, and the teardown must not be blockable.
++	 */
++	if (wcd->chip_ctl_latched == 1 && wcd->chip_ctl_pre_valid)
++		wcd9320_chip_ctl_probe(wcd,
++				       wcd->chip_ctl_pre &
++						WCD9320_CHIP_CTL_MCLK_RATE_MASK,
++				       "CHIP_CTL restored, still on MCLK");
++
 +	ret = wcd9320_run_sequence(wcd, wcd9320_clk_block_off,
 +				   ARRAY_SIZE(wcd9320_clk_block_off),
 +				   "clk-src block-off (restore)");
@@ -6364,22 +6456,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	wcd->clk_src_mclk = false;
 +	wcd->clk_src_restores++;
-+
-+	/*
-+	 * CHIP_CTL goes back last, and it goes back while the codec is running
-+	 * from the RC oscillator -- the same clock state it was written under.
-+	 * Only the rate bits are touched: a whole-register write would assert
-+	 * bits nobody has characterised on this part.
-+	 */
-+	if (wcd->chip_ctl_pre_valid) {
-+		ret = wcd9320_c2b_write(wcd, WCD9320_A_CHIP_CTL,
-+					WCD9320_CHIP_CTL_MCLK_RATE_MASK,
-+					wcd->chip_ctl_pre &
-+						WCD9320_CHIP_CTL_MCLK_RATE_MASK,
-+					"CHIP_CTL restored");
-+		if (ret)
-+			goto restore_failed;
-+	}
 +
 +	/* Step 8: did the codec survive its own restore? */
 +	alive = wcd9320_clk_read_control(wcd, wcd->clk_ctrl_post,
@@ -6473,7 +6549,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  "ctl_0x2b4=%02x ctl_0x370=%02x ctl_0x373=%02x\n"
 +			  "want_0x2b4=%02x want_0x370=%02x want_0x373=%02x\n"
 +			  "buff1_0x108=%02x buff2_0x109=%02x rcosc_0x1fa=%02x rcstat_0x1fc=%02x\n"
-+			  "mclkgate_0x311=%02x chip_ctl_0x001=%02x\n"
++			  "mclkgate_0x311=%02x chip_ctl_0x001=%02x chip_ctl_latched=%d\n"
 +			  "clk_power_0x314=%02x rdac_0x30d=%02x\n",
 +			  wcd->clk_src_mclk ? 1 : 0, wcd->clk_src_switches,
 +			  wcd->clk_src_restores, wcd->clk_src_last_error,
@@ -6484,7 +6560,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  wcd9320_clk_controls[1].por,
 +			  wcd9320_clk_controls[2].por,
 +			  buff1 & 0xff, buff2 & 0xff, rcosc & 0xff, rcstat & 0xff,
-+			  mclkctl & 0xff, chipctl & 0xff,
++			  mclkctl & 0xff, chipctl & 0xff, wcd->chip_ctl_latched,
 +			  clkpow & 0xff, rdac & 0xff);
 +}
 +static DEVICE_ATTR_RO(clk_source_state);
@@ -7588,6 +7664,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 */
 +	wcd->rdac_latched = -1;
 +	wcd->cdc_alive = -1;
++	wcd->chip_ctl_latched = -1;
 +
 +	/*
 +	 * Optional: a device tree without the PM8941 clkdiv provider still
@@ -8051,7 +8128,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("clksrc-rc1");
++MODULE_VERSION("clksrc-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

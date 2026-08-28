@@ -322,9 +322,129 @@ is arriving. If it stops, one is not. That is a much stronger instrument than
 anything available before -- the codec becomes its own clock detector -- but it
 is still inference from behaviour, not a waveform.
 
-## 10. r168 AS BUILT
+## 10. r168 RAN, AND WAS BLOCKED BY A THIRD REFUSED REGISTER
 
-**Status: BUILT AND STAGED, NOT YET RUN.** pkgrel 168, `clksrc-rc1`.
+**Result: S -- no MCLK conclusion. `CHIP_CTL` (0x001) refuses writes.**
+Evidence: [wcd9320-clk-source-20260826T101629Z.txt](wcd9320-clk-source-20260826T101629Z.txt).
+Artefact verified 75/0 before the run.
+
+The switch aborted at step 2, before the clock block was touched:
+
+```
+c2b: 0x001 mask 06 want 02 -> chip 00  [CHIP_CTL[2:1] = 0x2, MCLK rate 9.6 MHz]
+c2b: 0x001 did not take on the chip
+```
+
+So r168's design was self-blocking: it made the source switch conditional on a
+write the part will not accept. Nothing else moved -- PA untouched at `80`, DAC
+never powered, `0x314` and `0x30d` back at POR, divider restored, mclk
+released, positive control `78/30/37` throughout, zero new kernel warnings. The
+frozen r167 path re-established exactly: factor 2, gpio15 function 2, dir 2,
+enabled 1.
+
+### The finding, which is worth more than the run that was blocked
+
+**`0x001` is the third MCLK-domain register to refuse**, after `0x314`
+CDC_CLK_POWER_CTL and `0x30d[1]` the HPHL RDAC clock enable. Downstream
+corroborates the grouping from the other direction --
+`taiko_reg_defaults[]` **opens** with these two entries, adjacent, under one
+comment:
+
+```c
+/* set MCLk to 9.6 */
+TAIKO_REG_VAL(TAIKO_A_CHIP_CTL, 0x02),
+TAIKO_REG_VAL(TAIKO_A_CDC_CLK_POWER_CTL, 0x03),
+```
+
+applied by `taiko_update_reg_defaults()` at probe -- on a board where the
+machine driver has the codec's external MCLK running by then.
+
+So the three registers this branch has been fighting share exactly one
+property, and it is not their function: `0x001` is a rate selector in the
+chip-ID page, `0x314` is CDC clock power, `0x30d` is a reconstruction-clock
+gate. What they have in common is that all three are **MCLK-domain on a codec
+that has never had an MCLK**. Every register that accepts writes is either
+analog-page or RCO-domain.
+
+That replaces three separate puzzles with one hypothesis.
+
+**Two things this does not establish.** It cannot separate "needs a live MCLK"
+from "read-only on this part or revision" -- both predict the refusal seen. And
+**the restore path is still unexercised**: the abort happened before the clock
+block was touched, so the recovery guarantee remains untested on hardware.
+
+### A gate defect the run exposed
+
+The retry of `0x314`/`0x30d` was gated on `cdc_alive` alone. The switch aborted
+without touching the clock block, so the codec was still on RCO -- and because
+`cdc_alive` is computed live from three registers that were therefore
+untouched, it read 1 and **the retry ran anyway**, reproducing the ordinary RCO
+baseline. The evidence file filed that under "the retry, run only against a
+responding CDC block", which is exactly the label that would later be misread
+as an MCLK result.
+
+It now requires that the switch actually completed as well. A retry on RCO is
+the baseline, not the experiment.
+
+## 10a. r169: SWITCH FIRST, THEN PROBE THE RATE
+
+**Status: STAGED, NOT YET BUILT.** pkgrel 169, `clksrc-rc2`.
+
+One change from r168, and it inverts the ordering:
+
+| | r168 | r169 |
+|---|---|---|
+| CHIP_CTL before the switch | **written**, fatal on refusal | measured only |
+| the switch | gated on that write | unconditional |
+| CHIP_CTL after the switch | never reached | **probed**, non-fatal |
+| CHIP_CTL restore | after returning to RCO | **before** leaving MCLK |
+
+`wcd9320_chip_ctl_probe()` is a measurement in the same sense as
+`wcd9320_rdac_probe()`: it always succeeds as an operation and records whether
+the bits stuck, because "the experiment ran and the answer was no" must stay
+distinguishable from "the experiment failed to run". It drops the register from
+the cache on a refusal, which `rdac_probe` gets away with not doing only
+because it always writes its bit back.
+
+**The restore order is the finding applied to itself.** If `0x001` is writable
+only while an MCLK is present, a restore attempted after switching back to RCO
+would be refused and would leave the codec declaring a rate it is not
+receiving. So it goes back in the same clock state it was changed in, and
+non-fatally -- getting the codec onto a working clock matters more than a rate
+field, and a teardown must not be blockable.
+
+This means the switch now runs with `CHIP_CTL` declaring 12.288 MHz against a
+9.6 MHz input. That is no longer a choice between two options: the part will
+not let the rate be declared beforehand, so it is the only configuration the
+hardware permits.
+
+Three outcomes, all informative:
+
+- **CHIP_CTL latches on MCLK** -- the MCLK-domain hypothesis is confirmed, a
+  clock is arriving, and the rate can then be declared properly.
+- **CHIP_CTL still refuses, positive control intact** -- the clock arrived
+  (the core kept running with the RC oscillator off) but these registers are
+  locked for some other reason. `0x001` is then not in the same class as the
+  other two after all.
+- **positive control goes dark** -- no clock at the pin. The M5 answer, which
+  is what r168 set out to get.
+
+### Gate expectations that moved
+
+| | r168 | r169 | why |
+|---|---|---|---|
+| `0x001` direct write sites | 2 | **1** | one site in `chip_ctl_probe()`, reached for both the attempt and the restore |
+| `read_bypassed_calls` | 54 | **56** | +2 for `chip_ctl_probe` reading 0x001 either side of its write |
+
+The source-to-artefact offset noted at r168 is now **corroborated at exactly
+2** in both builds: r167 had 34 source call sites against 32 counted, r168 had
+49 against 47, and 54 passed on the artefact. So the rule is
+`expectation = (source call sites in core.c) - 2 + 7`, and r168 also settled
+the question it left open -- `wcd9320_clk_read_control` did **not** inline.
+
+## 10b. r168 AS BUILT (superseded by 10a, kept for the record)
+
+pkgrel 168, `clksrc-rc1`.
 
 ### The driver
 

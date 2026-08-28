@@ -1061,12 +1061,33 @@ that clock*.
 NOT established: that the pad physically reaches the codec's MCLK input.
 Nothing in software observes it.
 
+### r168 RAN AND WAS BLOCKED: a third register refuses
+
+**Result S, no MCLK conclusion.** `CHIP_CTL` (0x001) refuses writes on this
+part, so the switch -- which r168 made conditional on declaring the 9.6 MHz
+rate -- aborted before the clock block was touched. Artefact was verified 75/0
+first, and nothing was disturbed: PA at `80`, DAC dark, `0x314`/`0x30d` at POR,
+positive control `78/30/37` throughout.
+
+**The refusal is the finding.** `0x001` joins `0x314` and `0x30d[1]`, and the
+three share exactly one property, which is not their function: all are
+**MCLK-domain registers on a codec that has never had an MCLK**. Downstream
+corroborates it -- `taiko_reg_defaults[]` opens with `CHIP_CTL = 0x02` and
+`CDC_CLK_POWER_CTL = 0x03`, adjacent, under one "set MCLk to 9.6" comment, on
+a board whose MCLK is running by then. Three puzzles become one hypothesis.
+
+Not established: whether `0x001` needs a live MCLK or is simply read-only on
+this part. And **the restore path is still unexercised** -- the abort came
+before the clock block moved.
+
 ### The next task, precisely
 
-**r168 `clksrc-rc1` is WRITTEN AND STAGED at pkgrel 168, but NOT YET BUILT OR
-RUN.** It is the codec-side RCO -> MCLK source switch, mapped in
-[wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md), whose
-section 10 describes what was built.
+**r169 `clksrc-rc2` is STAGED at pkgrel 169, NOT YET BUILT.** Same experiment,
+inverted ordering: **switch first, then probe the rate.** `CHIP_CTL` becomes a
+measurement that never gates anything, attempted against a codec already
+running from the external clock, and restored *before* the codec leaves MCLK
+rather than after. See section 10a of
+[wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md).
 
 The switch is **not a hot swap**: downstream disables the clock block entirely
 and re-enables it on MCLK, and enabling on MCLK disables the RC oscillator, so
@@ -1075,16 +1096,15 @@ codec register access rides the SLIMbus interface function and does not depend
 on the CDC clock -- and the driver's teardown runs from a failure label, not
 from the success path.
 
-It writes `CHIP_CTL[2:1] = 0x2` inside the switch, which is a **change from the
-r165-r167 rule**: a 9.6 MHz clock against a 12.288 MHz rate declaration is not
-a configuration worth testing. The cost is recorded: a positive result cannot
-be attributed to one of the two changes without a further build.
+The codec is switched while `CHIP_CTL` still declares 12.288 MHz against a
+9.6 MHz input. That is not a choice: r168 established the part will not let the
+rate be declared beforehand.
 
 To build and run:
 
 ```
-tools/build-wcd9320-kernel.sh --pkgrel 168 --version clksrc-rc1 \
-    --expect-asoc --expect-dais 1 --stage <dir> \
+tools/build-wcd9320-kernel.sh --pkgrel 169 --version clksrc-rc2 \
+    --expect-asoc --expect-dais 1 --stage ~/r169 \
     --extra-module sound/soc/qcom/qdsp6/q6core.ko \
     --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
 ```
@@ -1103,9 +1123,9 @@ and "the block has no clock and reads as zero". So `0x2b4` (`78`), `0x370`
 (`30`) and `0x373` (`37`) are read before and after the switch; the retry of
 `0x314`/`0x30d` runs **only** if they held.
 
-- **M4**, exit 0: switched, control intact, the registers accepted. C2b resumes
-  with the codec on MCLK -- and the CHIP_CTL/source attribution is then worth
-  splitting.
+- **M4**, exit 0: switched, control intact, the registers accepted. The clock
+  source is then the only thing the run changed, so the result is unambiguous.
+  C2b resumes with the codec on MCLK.
 - **M2'**, exit 1: switched, control intact, still refused. A real negative,
   and a strong one: it also proves a clock *is* arriving, because the digital
   core kept running with the RC oscillator off. The MCLK hypothesis for these
@@ -1143,9 +1163,12 @@ provider, no DAC, no PA.
 
 ### Build/deploy state
 
-- Latest build **r168 `clksrc-rc1`**, staged at pkgrel 168 (patch regenerated,
-  both APKBUILDs updated, checksums positional) but **NOT yet built or run**.
-  The phone is currently up on r167 `mclk-rc2`.
+- **r168 `clksrc-rc1`** was built (artefact 75/0), installed and run; result S,
+  see above. **r169 `clksrc-rc2`** is staged at pkgrel 169 and not yet built.
+  The phone is currently up on r168 `clksrc-rc1`, RAM-booted.
+- The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
+  pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
+  a perfectly good build.
 - `tools/wcd9320-stage-patch.sh` now does the staging half -- patch
   regeneration, pkgrel, and both APKBUILD checksum sets -- which used to
   live in whatever commands a session happened to run. `--check` verifies

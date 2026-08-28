@@ -62,32 +62,33 @@ EXPECT = {
     #            inlined at every one. 32 + 7 = 39, confirmed against
     #            readelf -rW on the r167 artefact.
     #
-    # AN OFFSET THIS COMMENT HAS BEEN CARRYING WITHOUT SAYING SO.
+    # A CONSTANT OFFSET OF 2 BETWEEN SOURCE AND ARTEFACT, NOW CORROBORATED.
     #
     # The "32" above does not match the source. wcd9320-core.c at r167 contains
     # 34 regmap_read_bypassed() call sites, not 32: the r165 enumeration omits
     # one in rx1_digital_state_show and one in hphl_dac_test_store. 39 was
     # confirmed against the artefact, so the ARTEFACT carries two fewer
-    # relocations than the source has call sites, and why is not established --
-    # most likely two of them compile to something count_relocs_to does not
-    # count. Recorded rather than quietly re-derived, because a delta computed
-    # from the source alone will be two out and will look like a defect.
+    # relocations than the source has call sites.
     #
-    # r168: 54 = 39 + 15 for the clock source switch, counted in the source:
-    #            1 in wcd9320_clk_read_control, 3 in wcd9320_clk_source_switch
-    #            (RC_OSC_FREQ twice, CHIP_CTL once), 11 in
-    #            clk_source_state_show.
+    # r168 measured the same offset independently: 49 source call sites in
+    # wcd9320-core.c, expectation 54 = 47 core + 7 experiment, and it PASSED.
+    # 49 - 47 = 2 again. So the offset is stable at exactly 2 across two
+    # builds, and WHY is still not established -- most likely two call sites
+    # compile to something count_relocs_to does not count. Recorded rather
+    # than quietly re-derived, because a delta computed from the source alone
+    # is two out and looks like a defect.
     #
-    #            WHAT THIS PREDICTION DEPENDS ON. It assumes
-    #            wcd9320_clk_read_control survives as a real function, giving
-    #            one relocation for its three callers. If the compiler inlines
-    #            it -- as it did lumia_read(), a one-liner -- the count is 56.
-    #            clk_read_control is a ~25-line loop with logging and three
-    #            call sites, so inlining is the less likely of the two; a
-    #            reported 56 is that compiler decision and NOT a defect, and
-    #            must be confirmed by attributing the relocations before this
-    #            number is changed.
-    "read_bypassed_calls": 54,
+    #   expectation = (source call sites in core.c) - 2 + 7
+    #
+    # r168: 54 = 49 - 2 + 7. Confirmed on the artefact, and it also settled
+    #            the open question there: wcd9320_clk_read_control did NOT
+    #            inline, so its three callers share one relocation.
+    # r169: 56 = 51 - 2 + 7. The +2 over r168 is wcd9320_chip_ctl_probe, which
+    #            reads 0x001 either side of its write. Same assumption as
+    #            before -- that it survives as a real function -- and the same
+    #            rule: a differing count is a compiler decision to be confirmed
+    #            by attributing the relocations, not a number to be edited.
+    "read_bypassed_calls": 56,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -496,12 +497,15 @@ def main():
             # neither mechanism may name it.
             ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 0, 0, "the PA"),
 
-            # CHIP_CTL. Observe-only from r165 to r167; r168 declares the
-            # 9.6 MHz rate because it puts the codec on a 9.6 MHz clock, and
-            # restores it. TWO sites, both inside wcd9320_clk_source_switch,
-            # and it stays out of every table.
-            ("WCD9320_A_CHIP_CTL", "0x001", 2, 0,
-             "the MCLK rate declaration -- set and restored by the r168 switch"),
+            # CHIP_CTL. Observe-only from r165 to r167. r168 wrote it as a
+            # prerequisite of the switch and the part REFUSED, aborting the
+            # run before the clock block was touched -- so from r169 it is a
+            # measurement rather than a step: ONE write site, inside
+            # wcd9320_chip_ctl_probe(), reached both to attempt the rate and
+            # to put it back. It stays out of every table, and nothing else
+            # in the driver may write it.
+            ("WCD9320_A_CHIP_CTL", "0x001", 1, 0,
+             "the rate declaration -- probed, never a prerequisite"),
 
             # The codec clock source. r166 and r167 supplied an external MCLK
             # and deliberately did not select it. r168 selects it, and only
