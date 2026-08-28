@@ -314,7 +314,7 @@ step is reversible by software.
 - treat `clk_get_rate()` as evidence of anything
 - report "MCLK insufficient" without the positive control having passed
 
-## 9. What is still not measurable
+## 9. What is still not measurable (ANSWERED at r169, see 10a)
 
 That 9.6 MHz physically reaches the codec's MCLK pin. r168 can only produce
 *corroboration*: if the CDC core keeps running after the source switch, a clock
@@ -386,9 +386,105 @@ as an MCLK result.
 It now requires that the switch actually completed as well. A retry on RCO is
 the baseline, not the experiment.
 
-## 10a. r169: SWITCH FIRST, THEN PROBE THE RATE
+## 10a. r169 RESULT: THE CLOCK ARRIVES. THE REGISTERS STILL REFUSE.
 
-**Status: STAGED, NOT YET BUILT.** pkgrel 169, `clksrc-rc2`.
+**M2', 25/0, VERDICT PASS.** pkgrel 169, `clksrc-rc2`, artefact verified 75/0.
+Evidence: [wcd9320-clk-source-20260826T210612Z.txt](wcd9320-clk-source-20260826T210612Z.txt).
+
+### 1. A CLOCK PHYSICALLY REACHES THE CODEC'S MCLK PIN
+
+This is the finding, and it closes a question open since r166.
+
+```
+clk-src rco-shutdown step 3/3: reg 0x1fa old=c6 mask=80 want=00 -> read=46  OK
+   [RC_OSC_FREQ: RC oscillator OFF -- no warm fallback past this row]
+clk-src mclk-tail step 1/5: reg 0x108 old=00 mask=0c want=04 -> read=04  OK
+   [CLK_BUFF_EN1: source = external, reference = VBG]
+clk-src: positive control 0x2b4 = 78, 0x370 = 30, 0x373 = 37  after the switch
+clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+```
+
+The RC oscillator was **disabled and chip-verified off** -- `0x1fa` read back
+`46`, bit 7 clear -- and `CLK_BUFF_EN1` bit 3 was clear with the external source
+selected. The CDC digital block then kept answering with its POR contents.
+
+A digital core cannot run without a clock. There was no RC oscillator. So the
+external MCLK is real, and **PM8941 gpio15 does reach the WCD9320 MCLK pad on
+RM-940**. That was the one thing no amount of PMIC-side verification could
+establish, and the codec has now established it by acting as its own clock
+detector.
+
+It is still not a waveform. Nothing here measures 9.6 MHz, only that *a* usable
+clock arrives.
+
+### 2. THE MCLK-DOMAIN HYPOTHESIS IS REFUTED
+
+r168 proposed that `0x001`, `0x314` and `0x30d[1]` refuse because all three are
+MCLK-domain registers on a codec with no MCLK. **That is now disproven by
+measurement.** With the codec running from the external clock, with the RC
+oscillator off and the CDC block demonstrably alive:
+
+| register | on RCO | on MCLK |
+|---|---|---|
+| `0x314` CDC_CLK_POWER_CTL | refused | **refused** |
+| `0x30d[1]` RDAC clock enable | refused | **refused** |
+| `0x001` CHIP_CTL rate bits | refused | **refused** |
+
+```
+clk-src: 0x001 mask 06 want 02 : 00 -> 00  REFUSED  [rate 9.6 MHz, retried ON MCLK]
+```
+
+Being on MCLK is not the unlock for any of the three. The clock hypothesis for
+these registers is exhausted, and the next question is not about the clock.
+
+One constraint that survives and narrows it: **this is not a page-level lock.**
+`0x311` CDC_CLK_MCLK_CTL sits in the same neighbourhood as `0x30d` and `0x314`
+and accepts writes throughout -- it reads `01` in every run.
+
+### 3. THE RESTORE IS PROVEN ON HARDWARE
+
+r168 never reached it. r169 exercised it three times, identically:
+
+```
+clk-src block-off (restore): all 3 steps applied cleanly
+clk-src rco-restore: all 11 steps applied cleanly
+clk-src: RESTORED to RCO, CDC block RESPONDING
+```
+
+The RCO restart, the 10 ms settle, the shared tail -- the slice of
+`wcd9320_rco_wake[]` -- all behave exactly as the table does at boot. The codec
+survives losing its clock entirely and being brought back, with the positive
+control intact either side. Nothing else moved: PA at `80` throughout, DAC
+never powered, `0x314`/`0x30d` back at POR, divider restored, mclk released,
+zero new kernel warnings.
+
+### 4. TWO CHECKER FAULTS, BOTH FOUND BEFORE THEY WERE BELIEVED
+
+The hardware behaved identically in all three invocations on that boot. Only
+the checking differed, and both faults were verified by hand against dmesg
+before anything was changed.
+
+**The gate script on the phone was stale.** The r169 driver ran against the
+**r168** evidence script, because the script was edited in the repo and never
+redeployed. It reported a spurious FAIL on a check that no longer exists
+(`rate declared 9.6 MHz`) and never displayed the CHIP_CTL probe result at all.
+The deploy step now checksums the phone's copy against the repo's and refuses
+on a mismatch.
+
+**`check_sequence_complete()` double-counts across runs.** dmesg is cumulative,
+so the second run on one boot counted 6 block-off step lines against a summary
+claiming 3, 10 mclk-tail against 5, and 22 rco-restore against 11 -- three
+failures on sequences that had all applied perfectly. The shared lib already
+has `DMESG_MARKER` for exactly this; this gate simply never set one. It now
+uses the driver's `clk-src: CHIP_CTL measured` line, logged once per switch
+immediately before the first sequence, so the assertions see one run.
+
+Both are the pattern this branch has hit repeatedly: **when a checker reports
+failures, verify one by hand before acting on the batch.**
+
+## 10b. r169 AS DESIGNED
+
+pkgrel 169, `clksrc-rc2`.
 
 One change from r168, and it inverts the ordering:
 
@@ -442,7 +538,7 @@ The source-to-artefact offset noted at r168 is now **corroborated at exactly
 `expectation = (source call sites in core.c) - 2 + 7`, and r168 also settled
 the question it left open -- `wcd9320_clk_read_control` did **not** inline.
 
-## 10b. r168 AS BUILT (superseded by 10a, kept for the record)
+## 10c. r168 AS BUILT (superseded, kept for the record)
 
 pkgrel 168, `clksrc-rc1`.
 

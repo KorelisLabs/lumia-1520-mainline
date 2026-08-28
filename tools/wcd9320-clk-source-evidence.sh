@@ -80,6 +80,22 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/tmp}"
 DMESG_FILE="/tmp/.wcd9320-dmesg-r168-$$"
 
+#
+# WITHOUT THIS, A SECOND RUN ON ONE BOOT FAILS ITSELF.
+#
+# check_sequence_complete() counts step lines across the whole dmesg buffer and
+# compares them with the step count in the FIRST summary line it finds. dmesg is
+# cumulative, so on the second run of a boot it counted 6 block-off steps
+# against a summary claiming 3, 10 mclk-tail against 5, and 22 rco-restore
+# against 11 -- three failures on a run whose sequences had all applied
+# perfectly. The register work was right; only the counting was wrong.
+#
+# The driver logs this line once per switch attempt, immediately before the
+# first sequence, so its LAST occurrence is where the current run's switch
+# begins. Everything earlier is dropped and the assertions see one run.
+#
+DMESG_MARKER="${DMESG_MARKER:-clk-src: CHIP_CTL measured}"
+
 require_module_version
 find_devices
 

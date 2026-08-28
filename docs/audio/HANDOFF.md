@@ -1061,6 +1061,54 @@ that clock*.
 NOT established: that the pad physically reaches the codec's MCLK input.
 Nothing in software observes it.
 
+### r169: THE MCLK LEAD IS CLOSED. THE CLOCK ARRIVES; THE REGISTERS STILL REFUSE.
+
+**M2', 25/0, VERDICT PASS.** Artefact verified 75/0 first. Evidence:
+[wcd9320-clk-source-20260826T210612Z.txt](wcd9320-clk-source-20260826T210612Z.txt).
+
+**A clock physically reaches the codec's MCLK pin.** The RC oscillator was
+disabled and chip-verified off (`0x1fa` `c6 -> 46`, bit 7 clear),
+`CLK_BUFF_EN1` bit 3 clear with the external source selected, and the CDC
+digital block kept answering `0x2b4=78 0x370=30 0x373=37`. A digital core
+cannot run without a clock and there was no RCO, so **PM8941 gpio15 does reach
+the WCD9320 MCLK pad on RM-940** -- the one thing no amount of PMIC-side
+verification could establish, now settled by the codec acting as its own clock
+detector. Not a waveform: this shows *a* usable clock arrives, not that it is
+9.6 MHz.
+
+**And all three registers still refuse on it.**
+
+| register | on RCO | on MCLK |
+|---|---|---|
+| `0x314` CDC_CLK_POWER_CTL | refused | **refused** |
+| `0x30d[1]` RDAC clock enable | refused | **refused** |
+| `0x001` CHIP_CTL rate bits | refused | **refused** |
+
+So the r168 MCLK-domain hypothesis is **refuted by measurement**. Being on MCLK
+is not the unlock for any of them, and the next question is not about the
+clock. One constraint that survives and narrows it: this is **not a page-level
+lock** -- `0x311` CDC_CLK_MCLK_CTL sits in the same neighbourhood as `0x30d`
+and `0x314` and accepts writes throughout.
+
+**The restore is now proven on hardware**, exercised three times identically:
+block-off 3/3, rco-restore 11/11, codec back on RCO, positive control intact.
+The codec survives losing its clock entirely and being brought back.
+
+### The next question, and what it is NOT
+
+Not the clock. Not the DAC, and not the PA -- do not reach for either to work
+around a refused register. Candidate directions, none yet tested:
+
+- **silicon revision.** Downstream branches on `TAIKO_IS_1_0(core->version)`
+  and keeps separate `taiko_1_0_reg_defaults[]` and `taiko_2_0_reg_defaults[]`
+  tables; this part's revision is recorded in
+  [taiko-revision-2026-07-30.log](taiko-revision-2026-07-30.log). Some of these
+  registers may simply not exist as writable on this revision.
+- **a write-protect or unlock we have not found.** `0x311` accepting rules out
+  a page lock, but not a per-register one.
+- **a power or reset state** the port has never established, distinct from the
+  clock and the bandgap.
+
 ### r168 RAN AND WAS BLOCKED: a third register refuses
 
 **Result S, no MCLK conclusion.** `CHIP_CTL` (0x001) refuses writes on this
@@ -1082,63 +1130,30 @@ before the clock block moved.
 
 ### The next task, precisely
 
-**r169 `clksrc-rc2` is STAGED at pkgrel 169, NOT YET BUILT.** Same experiment,
-inverted ordering: **switch first, then probe the rate.** `CHIP_CTL` becomes a
-measurement that never gates anything, attempted against a codec already
-running from the external clock, and restored *before* the codec leaves MCLK
-rather than after. See section 10a of
-[wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md).
+**There is no staged build.** r169 answered its question and the MCLK lead is
+closed; the next build should not be written until the direction above is
+narrowed by reading rather than by another hardware run.
 
-The switch is **not a hot swap**: downstream disables the clock block entirely
-and re-enables it on MCLK, and enabling on MCLK disables the RC oscillator, so
-there is no warm fallback. Recovery is nonetheless guaranteed in software --
-codec register access rides the SLIMbus interface function and does not depend
-on the CDC clock -- and the driver's teardown runs from a failure label, not
-from the success path.
-
-The codec is switched while `CHIP_CTL` still declares 12.288 MHz against a
-9.6 MHz input. That is not a choice: r168 established the part will not let the
-rate be declared beforehand.
-
-To build and run:
-
-```
-tools/build-wcd9320-kernel.sh --pkgrel 169 --version clksrc-rc2 \
-    --expect-asoc --expect-dais 1 --stage ~/r169 \
-    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
-    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
-```
-
-then install the module FIRST (a `fastboot boot` never updates `/lib/modules`,
-and a stale module fails the version gate), power cycle, `fastboot boot` the
-image, and
+The r169 harness stays useful and is installed: `clk_source_test` /
+`clk_source_state` switch the codec to the external MCLK and back, proven
+reversible, so any future experiment can be run *with the codec on MCLK* rather
+than having to establish that first.
 
 ```
 sudo sh ~/wcd9320-tools/wcd9320-clk-source-evidence.sh
 ```
 
-**The run turns on a positive control**, and this is the part not to skip. A
-CDC-block register reading `00` is ambiguous between "the write was refused"
-and "the block has no clock and reads as zero". So `0x2b4` (`78`), `0x370`
-(`30`) and `0x373` (`37`) are read before and after the switch; the retry of
-`0x314`/`0x30d` runs **only** if they held.
+- **M4**, exit 0: the registers accepted. Would mean something else in the run
+  changed them; investigate before believing it.
+- **M2'**, exit 1: switched, control intact, still refused. **This is the
+  current result.**
+- **M5**, exit 2: the control read `00` -- the CDC block went dark. Would now
+  be a regression, since r169 established the clock arrives.
+- **S**, exit 3: the path or the switch did not complete. Not a codec result.
 
-- **M4**, exit 0: switched, control intact, the registers accepted. The clock
-  source is then the only thing the run changed, so the result is unambiguous.
-  C2b resumes with the codec on MCLK.
-- **M2'**, exit 1: switched, control intact, still refused. A real negative,
-  and a strong one: it also proves a clock *is* arriving, because the digital
-  core kept running with the RC oscillator off. The MCLK hypothesis for these
-  two registers would then be exhausted.
-- **M5**, exit 2: the control read `00`. The CDC core stopped when taken off
-  RCO, so no clock is arriving at the pin. **This says nothing about `0x30d` or
-  `0x314`**, and the next question is the physical route from PM8941 gpio15 to
-  the codec on RM-940 -- measurement, not more register work.
-- **S**, exit 3: the frozen path or the switch itself did not complete. Not a
-  result about the codec.
-
-Frozen in r168: no PMIC changes, no `CONFIG_SPMI_PMIC_CLKDIV`, no second clock
-provider, no DAC, no PA.
+**Redeploy the gate script before every run and checksum the phone's copy.**
+The r169 driver was first run against the *r168* script because that step was
+skipped, producing a spurious FAIL and hiding the CHIP_CTL probe result.
 
 ### Rules this branch has been run under
 
@@ -1163,12 +1178,16 @@ provider, no DAC, no PA.
 
 ### Build/deploy state
 
-- **r168 `clksrc-rc1`** was built (artefact 75/0), installed and run; result S,
-  see above. **r169 `clksrc-rc2`** is staged at pkgrel 169 and not yet built.
-  The phone is currently up on r168 `clksrc-rc1`, RAM-booted.
+- **r169 `clksrc-rc2`** is built (artefact 75/0), installed and run; result
+  M2', 25/0. The phone is up on it, RAM-booted, with the module in
+  `/lib/modules`. r168 `clksrc-rc1` is superseded.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.
+- `check_sequence_complete()` counts step lines across the whole of dmesg, so a
+  SECOND run on one boot double-counts and fails itself. Every gate that
+  asserts on sequences must set `DMESG_MARKER` to a line the driver logs once
+  per run; the clock-source gate uses `clk-src: CHIP_CTL measured`.
 - `tools/wcd9320-stage-patch.sh` now does the staging half -- patch
   regeneration, pkgrel, and both APKBUILD checksum sets -- which used to
   live in whatever commands a session happened to run. `--check` verifies
