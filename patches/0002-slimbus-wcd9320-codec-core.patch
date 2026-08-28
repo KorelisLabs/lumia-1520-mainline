@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 19:13:29.170223479 -0400
-@@ -0,0 +1,8329 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 19:54:36.047011970 -0400
+@@ -0,0 +1,8476 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1911,6 +1911,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool clk_ctrl_pre_valid;
 +	bool clk_ctrl_post_valid;
 +	int cdc_alive;                 /* -1 never measured, 0 dark, 1 responding */
++	/* ---- write-effect-unverifiable registers (r174) ---- */
++	u8 unver_read[2];              /* last bypassed read: 0x314, 0x30d */
++	unsigned int unver_writes;     /* forced writes issued */
++	unsigned int unver_clears;     /* mandatory inverse writes issued */
++
 +	/* ---- HPH status observable (r172) ---- */
 +	/*
 +	 * [cycle][channel][phase][reg]: 2 cycles, L then R, three phases
@@ -6629,6 +6634,110 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(clk_source_state);
 +
++/* ------- write-effect-unverifiable, inverse-write-mandatory (r174) -- */
++
++/*
++ * A REGISTER CLASS OF EXACTLY TWO, AND A TEARDOWN HAZARD THAT MUST BE FIXED
++ * BEFORE THE DAC IS POWERED.
++ *
++ * By r173 every prerequisite this project can construct has been constructed
++ * and 0x314 and 0x30d refuse in all of them. What was never settled is whether
++ * they are REFUSING or merely READ-AS-ZERO, because downstream cannot tell
++ * either -- taiko_read() returns the ASoC cache for both.
++ *
++ * If they are read-as-zero, the ordinary path is actively dangerous:
++ *
++ *   1. the enable write physically lands;
++ *   2. the bypassed read still returns 00;
++ *   3. wcd9320_c2b_write() calls that a refusal and drops the cache entry;
++ *   4. on teardown, regmap_update_bits() reads the chip, gets 00, computes a
++ *      new value of 00, finds it equal, and SKIPS THE BUS WRITE ENTIRELY;
++ *   5. so the inverse never reaches the codec, and an invisible enabled clock
++ *      or power bit survives the teardown.
++ *
++ * That is why this class exists, and why it is not simply c2b_write() with the
++ * check removed. Two properties:
++ *
++ *   write-effect-unverifiable  the bypassed readback is EVIDENCE ONLY. It is
++ *                              logged and published, and it never decides
++ *                              control flow. A 00 is neither success nor
++ *                              refusal, because this part cannot distinguish
++ *                              them.
++ *
++ *   inverse-write-mandatory    the clear MUST reach the bus whatever any read
++ *                              or cache says. Full-byte regmap_write() for
++ *                              0x314; regmap_write_bits() for 0x30d, which
++ *                              passes force_write and therefore emits even
++ *                              when the computed value equals the current one.
++ *
++ * THE ALLOWLIST IS ENFORCED HERE, not by convention. Any other register
++ * reaching this function is a bug: it would silently lose the verification
++ * every other write in this driver depends on. The artefact gate additionally
++ * proves no other register is passed to it.
++ */
++static int wcd9320_forced_write(struct wcd9320 *wcd, unsigned int reg, u8 mask,
++				u8 val, const char *what)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int got = 0;
++	int ret, slot;
++
++	/* The class is exactly two registers, and nothing widens it. */
++	if (reg == WCD9320_CDC_CLK_POWER_CTL)
++		slot = 0;
++	else if (reg == WCD9320_CDC_CLK_RDAC_CLK_EN_CTL)
++		slot = 1;
++	else {
++		dev_err(dev,
++			"forced: 0x%03x is NOT in the write-effect-unverifiable class -- refusing [%s]\n",
++			reg, what);
++		WARN_ON_ONCE(1);
++		return -EINVAL;
++	}
++
++	if (mask == 0xff)
++		/*
++		 * Full byte, which is what downstream does for 0x314:
++		 * taiko_update_reg_defaults() applies it with snd_soc_write().
++		 * regmap_write() always reaches the bus.
++		 */
++		ret = regmap_write(wcd->regmap, reg, val);
++	else
++		/*
++		 * force_write, so the transaction is emitted even when a read
++		 * or the cache says the value already matches. This is the
++		 * whole point: regmap_update_bits() would skip it.
++		 */
++		ret = regmap_write_bits(wcd->regmap, reg, mask, val);
++	if (ret) {
++		dev_err(dev, "forced: 0x%03x write failed: %d [%s]\n",
++			reg, ret, what);
++		return ret;
++	}
++	wcd->c2b_writes++;
++	if (val & mask)
++		wcd->unver_writes++;
++	else
++		wcd->unver_clears++;
++
++	regmap_read_bypassed(wcd->regmap, reg, &got);
++	wcd->unver_read[slot] = got & 0xff;
++
++	dev_info(dev,
++		 "forced: 0x%03x mask %02x <- %02x, bus write ISSUED; chip reads %02x (EVIDENCE ONLY, not a verdict) [%s]\n",
++		 reg, mask, val, got & 0xff, what);
++
++	/*
++	 * The cache is dropped on every call, not only on a mismatch. If the
++	 * bit did latch invisibly the cache is wrong; if it did not, the cache
++	 * is right but dropping it costs one read. Correctness is worth more
++	 * than the read, and it keeps the next forced write from being
++	 * optimised anywhere.
++	 */
++	regcache_drop_region(wcd->regmap, reg, reg);
++	return 0;
++}
++
 +/* --------------------- the HPH status observable (r172) -- */
 +
 +/*
@@ -7107,16 +7216,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(dev, "clk-prereq: 0x314 measured %02x before any write\n",
 +			 val & 0xff);
 +
-+		ret = wcd9320_c2b_write(wcd, WCD9320_CDC_CLK_POWER_CTL,
-+					WCD9320_CLK_POWER_MASK,
-+					WCD9320_CLK_POWER_MASK,
-+					"CDC_CLK_POWER_CTL = 0x03");
++		/*
++		 * r174: full byte, exactly as downstream's snd_soc_write(0x03),
++		 * and the readback is evidence rather than a verdict.
++		 */
++		ret = wcd9320_forced_write(wcd, WCD9320_CDC_CLK_POWER_CTL,
++					   0xff, WCD9320_CLK_POWER_MASK,
++					   "CDC_CLK_POWER_CTL = 0x03");
 +		if (ret)
 +			return ret;
 +
 +		wcd->clk_prereq_on = true;
-+		dev_info(dev, "clk-prereq: APPLIED (0x314 bits %02x set, chip-verified)\n",
-+			 WCD9320_CLK_POWER_MASK);
++		dev_info(dev,
++			 "clk-prereq: ISSUED 0x314 = %02x; chip reads %02x, which this part cannot verify either way\n",
++			 WCD9320_CLK_POWER_MASK, wcd->unver_read[0]);
 +		return 0;
 +	}
 +
@@ -7130,10 +7243,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * touched them. A whole-register write would also assert bits nobody
 +	 * has characterised on this part.
 +	 */
-+	ret = wcd9320_c2b_write(wcd, WCD9320_CDC_CLK_POWER_CTL,
-+				WCD9320_CLK_POWER_MASK,
-+				wcd->clk_power_pre & WCD9320_CLK_POWER_MASK,
-+				"CDC_CLK_POWER_CTL restored");
++	/*
++	 * MANDATORY INVERSE. Full byte, unconditionally on the bus, whatever
++	 * the cache or a readback says -- if the enable landed invisibly, this
++	 * is the only thing that takes it back down.
++	 */
++	ret = wcd9320_forced_write(wcd, WCD9320_CDC_CLK_POWER_CTL, 0xff,
++				   wcd->clk_power_pre,
++				   "CDC_CLK_POWER_CTL restored (mandatory)");
 +	if (ret)
 +		return ret;
 +
@@ -7404,12 +7521,27 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "c2b: 0x314 chip read failed: %d\n", ret);
 +		return ret;
 +	}
-+	if ((clkp & WCD9320_CLK_POWER_MASK) != WCD9320_CLK_POWER_MASK) {
++	/*
++	 * r174 DEMOTES THIS FROM A GUARD TO AN OBSERVATION.
++	 *
++	 * It was added at r164, when a 00 here was believed to mean the write
++	 * had been refused. By r173 that is no longer a claim this project can
++	 * make: 0x314 reads 00 in every configuration, including the exact one
++	 * downstream writes it from, and read-as-zero is as consistent with
++	 * the evidence as refusal. Requiring 03 here would make the sequence
++	 * un-runnable on the only hypothesis still standing.
++	 *
++	 * The prerequisite is still required to have been ISSUED -- that is
++	 * what clk_prereq_on records -- just not to have been verified.
++	 */
++	if (!wcd->clk_prereq_on) {
 +		dev_err(dev,
-+			"c2b: CDC_CLK_POWER_CTL (0x314) reads %02x; the HPHL RDAC clock does not latch without bits %02x -- apply cdc_clk_prereq first\n",
-+			clkp & 0xff, WCD9320_CLK_POWER_MASK);
++			"c2b: the 0x314 prerequisite has not been issued -- run cdc_clk_prereq first\n");
 +		return -EAGAIN;
 +	}
++	dev_info(dev,
++		 "c2b: 0x314 reads %02x; issued but unverifiable on this part, continuing by design\n",
++		 clkp & 0xff);
 +
 +	dev_info(dev, "c2b: HPHL DAC enable, map stages 3-7 (0x314 = %02x)\n",
 +		 clkp & 0xff);
@@ -7472,9 +7604,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		goto unwind;
 +
 +	/* 6. HPHL DAC PRE_PMU: the RDAC clock, then the class-H PRE_DAC event */
-+	ret = wcd9320_c2b_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
-+				WCD9320_RDAC_HPHL_CLK, WCD9320_RDAC_HPHL_CLK,
-+				"HPHL RDAC clock on");
++	/*
++	 * r174: forced masked write. regmap_write_bits() emits the transaction
++	 * even if a read says the value already matches, and the readback is
++	 * evidence rather than a verdict.
++	 */
++	ret = wcd9320_forced_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++				   WCD9320_RDAC_HPHL_CLK, WCD9320_RDAC_HPHL_CLK,
++				   "HPHL RDAC clock on");
 +	if (ret)
 +		goto unwind;
 +
@@ -7548,8 +7685,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  WCD9320_HPHL_DAC_SWITCH, 0, "HPHL DAC input switch off");
 +
 +	/* 2. HPHL DAC POST_PMD: the RDAC clock */
-+	wcd9320_c2b_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
-+			  WCD9320_RDAC_HPHL_CLK, 0, "HPHL RDAC clock off");
++	/*
++	 * MANDATORY INVERSE, and the reason the whole class exists: if the
++	 * enable latched invisibly, regmap_update_bits() would read 00, compute
++	 * 00, decide nothing had changed and never put the clear on the bus --
++	 * leaving an enabled RDAC clock behind a teardown that looked clean.
++	 */
++	wcd9320_forced_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++			     WCD9320_RDAC_HPHL_CLK, 0,
++			     "HPHL RDAC clock off (mandatory)");
 +
 +	/* 3. the class-H teardown, C2a, proven on hardware */
 +	if (wcd->clsh_on)
@@ -7668,6 +7812,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  "prereq_on=%u clk_power_0x314=%02x chip_ctl_0x000=%02x\n"
 +			  "rdac_probes=%u rdac_latched=%d\n"
 +			  "chip_status_0x001=%02x chip_ctl_latched=%d chip_ctl_expected=%02x\n"
++			  "unver_writes=%u unver_clears=%u unver_314=%02x unver_30d=%02x\n"
 +			  "dsm_0x3b0=%02x dac_0x1b1=%02x rdac_0x30d=%02x bias_0x1a2=%02x\n"
 +			  "lgain_0x1ae=%02x rgain_0x1b4=%02x b4_0x373=%02x\n"
 +			  "compb2_0x371=%02x compb3_0x372=%02x compfs_0x377=%02x\n"
@@ -7680,6 +7825,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  chipctl & 0xff, wcd->rdac_probes, wcd->rdac_latched,
 +			  chipstat & 0xff, wcd->chip_ctl_latched,
 +			  wcd->chip_ctl_expected,
++			  wcd->unver_writes, wcd->unver_clears,
++			  wcd->unver_read[0], wcd->unver_read[1],
 +			  clsh & 0xff, dac & 0xff, rdac & 0xff, bias & 0xff,
 +			  lgain & 0xff, rgain & 0xff, b4 & 0xff,
 +			  b2 & 0xff, b3 & 0xff, fs & 0xff,
@@ -8713,7 +8860,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("hphstatus-rc1");
++MODULE_VERSION("dacpower-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

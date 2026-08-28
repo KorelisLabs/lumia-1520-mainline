@@ -101,10 +101,13 @@ EXPECT = {
     #            3 in wcd9320_hs_sample (0x30d, 0x1b3, 0x1b9) and 1 in
     #            wcd9320_hs_channel (the latch check).
     #
+    # r174: 71 = 66 - 2 + 7. The +1 over r172 is the readback inside
+    #            wcd9320_forced_write(), which is evidence only.
+    #
     # The offset of 2 between source call sites and artefact relocations has
-    # now held across r167 through r171. It is stable and still unexplained;
+    # now held across r167 through r172. It is stable and still unexplained;
     # a delta computed from the source alone will be two out.
-    "read_bypassed_calls": 70,
+    "read_bypassed_calls": 71,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -531,6 +534,42 @@ def main():
         check("%s is defined as %s" % (sym, want),
               found == [want],
               "found %s" % (found or "no definition"))
+
+    # ------------------------------------------------------------------
+    # r174: THE WRITE-EFFECT-UNVERIFIABLE EXCEPTION MUST NOT SPREAD.
+    #
+    # 0x314 and 0x30d are the only registers whose readback is treated as
+    # evidence rather than as a verdict, and the only ones written with a
+    # FORCED transaction so the mandatory inverse cannot be optimised away.
+    # That exception costs the verification every other write depends on, so
+    # it is confined three ways: the helper rejects any other register at
+    # runtime, and these two checks prove the confinement in the source.
+    ALLOWED_FORCED = {"WCD9320_CDC_CLK_POWER_CTL",
+                      "WCD9320_CDC_CLK_RDAC_CLK_EN_CTL"}
+    forced = re.findall(r"wcd9320_forced_write\(wcd,\s*([A-Za-z0-9_]+)",
+                        "\n".join(added))
+    out_of_class = sorted(set(forced) - ALLOWED_FORCED)
+    check("forced writes are confined to 0x314 and 0x30d",
+          forced and not out_of_class,
+          "%d call site(s), out of class: %s"
+          % (len(forced), out_of_class or "none"))
+
+    # regmap_write_bits() is the forcing primitive. It must appear exactly
+    # once, as a statement, inside the helper -- never scattered. Comment
+    # lines mentioning it by name are excluded by requiring a statement start.
+    wb = [ln for ln in added
+          if re.match(r"\s*(?:\w+\s*=\s*)?regmap_write_bits\(", ln)]
+    check("regmap_write_bits used from exactly one site", len(wb) == 1,
+          "%d call site(s) -- the forced-write helper only" % len(wb))
+
+    # And the ordinary path must NOT have been weakened to get here.
+    ptext_all = "\n".join(added)
+    if "static int wcd9320_c2b_write" in ptext_all:
+        body = ptext_all[ptext_all.index("static int wcd9320_c2b_write"):]
+        body = body[:body.index("\n}")] if "\n}" in body else body
+        check("wcd9320_c2b_write still refuses on mismatch",
+              "return -EIO;" in body,
+              "the verifying path is intact for every other register")
 
     for sym, addr, ncall, ntable, why in (
             # The PA. The whole milestone is defined by it staying off, so

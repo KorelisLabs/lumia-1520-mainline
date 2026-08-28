@@ -1022,3 +1022,96 @@ decision this result forces.
 Nothing else moved: PA `80` throughout, DAC never powered, `0x30d` and `0x314`
 back at POR, `CHIP_CTL` restored to `08`, divider restored, mclk released,
 codec back on RCO with the positive control intact, no new kernel warnings.
+
+---
+
+## 18. r174: THE WRITE-EFFECT-UNVERIFIABLE CLASS, AND C2b THROUGH STAGE 7
+
+**Status: driver STAGED at pkgrel 174, `dacpower-rc1`. NOT YET BUILT.** The
+gate is not yet written — see the note at the end.
+
+### The teardown hazard, which had to be fixed before powering anything
+
+If `0x314` and `0x30d` are read-as-zero rather than refusing, the ordinary path
+is actively dangerous:
+
+1. the enable write physically lands;
+2. the bypassed read still returns `00`;
+3. `wcd9320_c2b_write()` calls that a refusal and drops the cache entry;
+4. on teardown `regmap_update_bits()` reads the chip, gets `00`, computes a new
+   value of `00`, finds them equal and **skips the bus write entirely**;
+5. the inverse never reaches the codec, and **an invisible enabled clock or
+   power bit survives a teardown that looked clean**.
+
+Step 4 is the part that matters: `regmap_update_bits()` is documented to elide
+a write when the value is unchanged. That is exactly the wrong behaviour for a
+register whose readback cannot be trusted.
+
+### The class, and why it is not just "c2b_write with the check removed"
+
+Two properties, applied to exactly two registers:
+
+| property | meaning |
+|---|---|
+| **write-effect-unverifiable** | the bypassed readback is **evidence only**. It is logged and published and never decides control flow. `00` is neither success nor refusal, because this part cannot distinguish them. |
+| **inverse-write-mandatory** | the clear **must** reach the bus whatever any read or cache says. |
+
+`wcd9320_forced_write()` implements both. For `0x314` it issues a **full-byte
+`regmap_write()`**, which is what downstream does (`snd_soc_write(0x03)` from
+`taiko_update_reg_defaults()`) and which always reaches the bus. For `0x30d` it
+issues **`regmap_write_bits()`**, whose `force_write` argument makes regmap emit
+the transaction even when the computed value equals the current one — the
+precise defect in step 4 above.
+
+It drops the cache entry on **every** call, not only on a mismatch: if the bit
+latched invisibly the cache is wrong, and correctness is worth one read.
+
+### The exception is confined three ways
+
+1. **At runtime** — the helper resolves the register to a slot and rejects
+   anything else with `WARN_ON_ONCE` and `-EINVAL`.
+2. **In the artefact gate** — every `wcd9320_forced_write(wcd, X)` call site is
+   checked against the allowlist, and `regmap_write_bits()` must appear as a
+   statement exactly once, inside the helper.
+3. **By leaving the ordinary path alone** — the gate asserts
+   `wcd9320_c2b_write()` still returns `-EIO` on a mismatch. Every other
+   register in the driver keeps full verification.
+
+Verified against the staged patch: 4 forced call sites, 0 out of class; 1
+`regmap_write_bits` statement; `c2b_write` intact.
+
+### The r164 guard is demoted, not deleted
+
+`wcd9320_hphl_dac_path()` used to refuse unless `0x314` read `0x03`. By r173
+that is not a claim this project can make — `0x314` reads `00` in every
+configuration including the one downstream writes it from. Requiring `03` would
+make the sequence un-runnable on the only hypothesis still standing. It now
+requires the prerequisite to have been **issued** (`clk_prereq_on`) and records
+what `0x314` reads without demanding a value.
+
+### THE EVIDENCE BOUNDARY FOR THE RUN
+
+A clean r174 **may** prove: the full mapped C2b control sequence reaches and
+powers the HPHL DAC widget; `0x1b1` physically latches `0xC0`; the path is
+repeatable and reversibly controllable; QDSP6/SLIMbus stay healthy underneath;
+the PA stays off.
+
+It does **not** prove: that `0x314` or `0x30d[1]` read back as enabled; that
+DAC conversion occurred; that analog samples reached the headphone output; or
+anything audible.
+
+> **`wcd9320-hphl-dac-path-proven` must NOT be awarded from `0x1b1 = 0xC0`
+> alone while the RDAC clock remains unobservable.**
+
+Whether those read-as-zero writes have functional effect needs the analog
+output or an electrical measurement, and that is a **separate milestone**.
+
+### r171, r172 and r173 stand exactly as recorded
+
+- **r171 W0** — every documented bit of both registers reads back zero.
+- **r172 S0** — inconclusive; the observable was one downstream never uses that
+  way.
+- **r173 C2** — the MCLK/rate matrix is exhausted.
+
+**None of them establishes that the bus writes had no effect.** That is the
+whole reason r174 exists.
