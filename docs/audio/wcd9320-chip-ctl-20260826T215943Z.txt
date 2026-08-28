@@ -1,0 +1,146 @@
+
+=== baseline, on the RC oscillator ===
+chip_ctl   0x000 = 08   (rate bits clear = 12.288 MHz declared)
+chip_status 0x001 = 00   (a STATUS register -- never written)
+0x314 = 00    0x30d[1] REFUSED
+
+=== step 1 -- the rate declaration, at the real address ===
+0x000 mask 06 <- 02 : 08 -> 0a   predicted 0a (driver derived 0a)
+result: LATCHED
+
+=== step 2 -- CDC_CLK_POWER_CTL, in downstream's order ===
+0x314 = 00
+
+=== step 3 -- the RDAC clock, under the full C2b prerequisite state ===
+stages 3-6 rc=n/a   0x30d = n/a
+the DAC was NOT powered: 0x1b1 = 00
+
+=== checks ===
+  PASS  module version                   chipctl-rc1
+  PASS  chip_ctl prediction agrees with the driver 0a
+
+-- the rate declaration --
+  PASS  chip_ctl_test returned 0         0
+  PASS  0x000 physically changed         08 -> 0a
+  PASS  0x000 reads the derived expectation 0a
+  PASS  CHIP_STATUS never written        00
+
+-- nothing else disturbed --
+  PASS  PA still off                     80
+  PASS  PA guard never tripped           0
+  PASS  no PA guard message              0
+  PASS  DAC never powered                00
+  PASS  0x314 restored                   00
+  PASS  0x30d restored                   00
+  PASS  CHIP_CTL restored                08
+  PASS  chip_ctl_test off returned 0     0
+  PASS  no NEW kernel WARNING/BUG        0
+  ....  dmesg warnings                   0 before, 0 after -- delta only
+
+=== finding ===
+R2 -- CHIP_CTL LATCHES, 0x314 STILL REFUSES.
+
+The rate declaration took: 0x000 went 08 -> 0a, chip-verified,
+with the unexplained bit 3 preserved. Immediately afterwards
+0x314 <- 03 read back 00.
+
+So downstream's adjacency and ordering are NOT sufficient. The two
+registers are written together in taiko_reg_defaults[] because
+they belong to one initialisation step, not because the first
+unlocks the second. 0x314 has another prerequisite, and it is not
+the clock (r169) and not the rate declaration (this run).
+
+Candidate 1 from the audit is refuted. Candidate 3 -- that 0x314
+is write-only on this silicon and downstream cannot tell, because
+taiko_read() returns the ASoC cache for it -- is now the strongest
+remaining, and needs an observable rather than a readback.
+
+=== run identity ===
+mode              : wcd9320-chip-ctl
+date              : 2026-08-26T21:59:44Z (UTC)
+module version    : chipctl-rc1   (expected chipctl-rc1)
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #171-postmarketos-qcom-msm8974 SMP PREEMPT Fri Aug 28 21:37:45 U
+uptime            : 103.75 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 7 lines (from marker, dropped 68 earlier line(s))
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=82 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[  103.311209] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, on the RC oscillator]
+[  103.381300] wcd9320 217:a0:1:0: clk-prereq: 0x314 measured 00 before any write
+[  103.382356] wcd9320 217:a0:1:0: c2b: 0x314 mask 03 want 03 -> chip 00  [CDC_CLK_POWER_CTL = 0x03]
+[  103.382763] wcd9320 217:a0:1:0: c2b: 0x314 did not take on the chip [CDC_CLK_POWER_CTL = 0x03]
+[  103.383156] wcd9320 217:a0:1:0: c2b: 0x314 dropped from the cache after the refused write
+[  103.420846] wcd9320 217:a0:1:0: clk-prereq: not applied, nothing to restore
+[  103.422268] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored]
+
+=== verdict ===
+mode   : wcd9320-chip-ctl
+checks : 15 passed, 0 failed
+VERDICT: PASS (wcd9320-chip-ctl)
+REPORT_COMPLETE

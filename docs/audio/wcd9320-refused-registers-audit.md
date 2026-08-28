@@ -414,3 +414,100 @@ dependency explicit rather than implicit.
 
 Power `0x1b1`. Touch the PA. Touch the PMIC. Select MCLK. Reopen anything the
 r169 freeze closed.
+
+---
+
+## 10. r170 RESULT: CHIP_CTL WRITES. `0x314` STILL REFUSES.
+
+**R2, 15/0, VERDICT PASS.** Artefact verified 79/0 first. Evidence:
+[wcd9320-chip-ctl-20260826T215943Z.txt](wcd9320-chip-ctl-20260826T215943Z.txt).
+
+```
+chip-ctl: 0x000 measured 08 before any write (rate field 00)
+chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED
+c2b:      0x314 mask 03 want 03 -> chip 00
+c2b:      0x314 did not take on the chip
+chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [restored]
+```
+
+### 1. The top-level control register is writable
+
+`0x000` went `08 -> 0a` and back, chip-verified both ways, with the unexplained
+bit 3 preserved exactly as the masked write was designed to. The driver and the
+gate derived the prediction `0a` independently and agreed.
+
+So **there is no access problem at CHIP_CTL**, and the 9.6 MHz rate can be
+declared. That outcome — R1, "CHIP_CTL refuses at the correct address" — is
+eliminated, and with it the possibility that the top-level register was itself
+gated. Five builds of "CHIP_CTL refuses" were entirely an artefact of writing
+`0x001`.
+
+### 2. And it changes nothing for `0x314`
+
+`0x314 <- 03` read back `00` immediately after the declaration, exactly as it
+did immediately before it in the same run. The register was retried under
+identical conditions either side of the only variable, which is as clean as
+this harness gets.
+
+Because `0x314` never latched, step 3 did not run: the C2b path refuses when
+`0x314` does not read `0x03`, so `0x30d` was not retried and **r170 says
+nothing new about the RDAC clock**.
+
+### 3. What is refuted, stated more precisely than the gate did
+
+The gate's finding text says "candidate 1 is refuted". That is right as far as
+it goes, but the precise claim is narrower and the difference matters:
+
+> **Refuted:** the rate declaration *alone*, with the codec on its RC
+> oscillator, unlocks `0x314`.
+
+Downstream's adjacency and ordering are therefore not a sufficient explanation.
+The two registers sit together in `taiko_reg_defaults[]` because they belong to
+one initialisation step, not because the first unlocks the second.
+
+### 4. THE GAP THIS OPENS, which is the honest headline
+
+| run | MCLK present | MCLK selected | rate declared | `0x314` |
+|---|---|---|---|---|
+| r165 | no | no | no | refused |
+| r167 | yes, at the pad | no | no | refused |
+| r169 | yes | **yes** | no | refused |
+| r170 | no | no | **yes** | refused |
+| — | yes | **yes** | **yes** | **NEVER TESTED** |
+
+Every run so far has moved one of the two halves. **The conjunction is
+untested, and it is exactly the state downstream is in**: MCLK running at
+9.6 MHz *and* `CHIP_CTL` declaring 9.6 MHz, before `taiko_reg_defaults[]`
+writes `0x314`.
+
+There is a physical reading that makes the conjunction more than bookkeeping.
+Declaring 9.6 MHz while the codec runs from its RC oscillator is an
+*inconsistent* configuration — the RCO is not that clock. A register that
+powers a clock tree may reasonably refuse when the declared rate and the actual
+source disagree. r169 supplied the source without the declaration; r170 the
+declaration without the source.
+
+This is **not** grounds to reopen the MCLK investigation. The MCLK questions
+are answered and stay answered. It is a proposal to *use* the MCLK switch —
+built, proven, and reversible three times over — as a precondition for a
+different question.
+
+### 5. Candidate 3 is now the strongest single-register hypothesis
+
+That `0x314` and `0x30d` are write-only or read-as-zero on this silicon, and
+downstream cannot tell because `taiko_read()` returns the ASoC cache for both
+(section 2). If true, C2b has been stopping on a verification artefact rather
+than a hardware failure.
+
+It needs an **observable**, not a readback. One cheap discriminator has not
+been tried: every write this project has made to these two registers used a
+narrow mask — `0x03` for `0x314`, bit 1 for `0x30d`. Nobody has established
+whether *any* bit of either register is writable. A bit-walk would separate
+"the register does not accept writes at all" from "these specific bits are
+gated", which are very different findings and currently indistinguishable.
+
+### 6. Nothing else moved
+
+PA `80` throughout, guard never tripped, DAC never powered (`0x1b1 = 00`),
+`0x30d` at POR, `0x314` at POR, `CHIP_CTL` restored to `08`, no new kernel
+warnings, 15 checks passed and 0 failed.
