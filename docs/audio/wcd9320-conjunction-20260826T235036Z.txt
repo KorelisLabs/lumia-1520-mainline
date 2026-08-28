@@ -1,0 +1,206 @@
+
+=== the control: neither half established ===
+chip_ctl 0x000 = 08 (rate bits clear)   0x314 <- 03 gave 00
+
+=== half 1: the frozen r167 path, after the RPM vote ===
+DIV_CTL1 factor 2   gpio15 dir 2 function 2   enabled 1
+
+=== half 2: the switch, and the rate declared ON MCLK ===
+codec source : EXTERNAL     CDC block: RESPONDING
+chip_ctl     : 0a (predicted 0a)   latched=1
+CONJUNCTION FORMED: YES
+
+=== the test ===
+0x314 <- 03 : 00
+0x30d[1] under the full C2b prerequisite state : rc=n/a  0x30d=n/a
+the DAC was NOT powered: 0x1b1 = 00
+
+=== checks ===
+  PASS  module version                   hphstatus-rc1
+  PASS  divider configured               0
+  PASS  RPM vote taken                   0
+  PASS  divide factor still 2            2
+  PASS  gpio15 still func1               2
+  PASS  divider still enabled            1
+
+-- the conjunction --
+  PASS  switch returned 0                0
+  PASS  codec selects EXTERNAL           EXTERNAL
+  PASS  CDC block responding on MCLK     1
+  PASS  rate declared on MCLK            1
+  PASS  chip_ctl reads the prediction    0a
+
+-- the restore --
+  PASS  restore returned 0               0
+  PASS  codec back on RCO                RCO
+  PASS  CDC responding after restore     1
+  PASS  CHIP_CTL restored                08
+  PASS  0x314 back at POR                00
+  PASS  0x30d back at POR                00
+  PASS  divider restored                 0
+  PASS  mclk released                    0
+
+-- nothing else disturbed --
+  PASS  PA still off                     80
+  PASS  PA guard never tripped           0
+  PASS  no PA guard message              0
+  PASS  DAC never powered                00
+  PASS  no NEW kernel WARNING/BUG        0
+  ....  dmesg warnings                   0 before, 0 after -- delta only
+
+=== finding ===
+C2 -- BOTH HALVES ESTABLISHED. 0x314 STILL REFUSES.
+
+The codec was running from the external MCLK with the RC
+oscillator off, the CDC block was responding, and CHIP_CTL was
+chip-verified at 0a declaring 9.6 MHz. In that state -- the
+one downstream is in when taiko_reg_defaults[] writes it --
+0x314 <- 03 read back 00.
+
+THE MATRIX IS NOW EXHAUSTED. Clock absent, clock present, clock
+selected, rate declared, and both together: all refuse. The cause
+is none of them, in any combination.
+
+What survives, from r171 and r172: it is a whole-register
+condition on both 0x314 and 0x30d, identical across every
+documented bit and both channels; it is not an address-block
+condition, since 0x311 in the same block accepts; and write-only
+versus refused was never settled, because the only observable
+tried was one downstream never uses that way.
+
+The next question is no longer which prerequisite is missing. It
+is whether the bypassed readback is a valid success criterion for
+these two registers at all -- and answering that needs an
+observable that depends on them WORKING, which means the DAC.
+
+=== run identity ===
+mode              : wcd9320-conjunction
+date              : 2026-08-26T23:50:38Z (UTC)
+module version    : hphstatus-rc1   (expected hphstatus-rc1)
+expect_version_source : manifest
+expect_sha_source     : manifest
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #173-postmarketos-qcom-msm8974 SMP PREEMPT Fri Aug 28 23:22:30 U
+uptime            : 367.67 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 49 lines (from marker, dropped 87 earlier line(s))
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=83 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[  366.938872] wcd9320 217:a0:1:0: clk-src block-off step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  366.940323] wcd9320 217:a0:1:0: clk-src block-off step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  366.941604] wcd9320 217:a0:1:0: clk-src block-off step  3/3: reg 0x108 (VE 0x0908) old=0d mask=05 want=00 -> read=08  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  366.941756] wcd9320 217:a0:1:0: clk-src block-off: all 3 steps applied cleanly
+[  366.943049] wcd9320 217:a0:1:0: clk-src mclk-desel step  1/1: reg 0x108 (VE 0x0908) old=08 mask=08 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN1: stop selecting the RC oscillator]
+[  366.943202] wcd9320 217:a0:1:0: clk-src mclk-desel: all 1 steps applied cleanly
+[  366.944105] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  366.945086] wcd9320 217:a0:1:0: clk-src rco-shutdown step  1/3: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2 = 0x02 (a full write downstream, not a masked one)]
+[  366.946305] wcd9320 217:a0:1:0: clk-src rco-shutdown step  2/3: reg 0x105 (VE 0x0905) old=17 mask=01 want=00 -> read=16  delay=0us  OK  [BIAS_OSC_BG_CTL: clear bit 0]
+[  366.947520] wcd9320 217:a0:1:0: clk-src rco-shutdown step  3/3: reg 0x1fa (VE 0x09fa) old=c6 mask=80 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: RC oscillator OFF -- no warm fallback past this row]
+[  366.947683] wcd9320 217:a0:1:0: clk-src rco-shutdown: all 3 steps applied cleanly
+[  366.948986] wcd9320 217:a0:1:0: clk-src mclk-tail step  1/5: reg 0x108 (VE 0x0908) old=00 mask=0c want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN1: source = external, reference = VBG]
+[  366.951215] wcd9320 217:a0:1:0: clk-src mclk-tail step  2/5: reg 0x108 (VE 0x0908) old=04 mask=01 want=01 -> read=05  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  366.952475] wcd9320 217:a0:1:0: clk-src mclk-tail step  3/5: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  366.953714] wcd9320 217:a0:1:0: clk-src mclk-tail step  4/5: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  366.954913] wcd9320 217:a0:1:0: clk-src mclk-tail step  5/5: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  366.955081] wcd9320 217:a0:1:0: clk-src mclk-tail: all 5 steps applied cleanly
+[  366.956002] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  366.956367] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  366.956722] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  366.956822] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  366.958557] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  367.097285] wcd9320 217:a0:1:0: clk-prereq: 0x314 measured 00 before any write
+[  367.098249] wcd9320 217:a0:1:0: c2b: 0x314 mask 03 want 03 -> chip 00  [CDC_CLK_POWER_CTL = 0x03]
+[  367.098654] wcd9320 217:a0:1:0: c2b: 0x314 did not take on the chip [CDC_CLK_POWER_CTL = 0x03]
+[  367.099052] wcd9320 217:a0:1:0: c2b: 0x314 dropped from the cache after the refused write
+[  367.136907] wcd9320 217:a0:1:0: clk-prereq: not applied, nothing to restore
+[  367.138585] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  367.144897] wcd9320 217:a0:1:0: clk-src block-off (restore) step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  367.146166] wcd9320 217:a0:1:0: clk-src block-off (restore) step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  367.147614] wcd9320 217:a0:1:0: clk-src block-off (restore) step  3/3: reg 0x108 (VE 0x0908) old=05 mask=05 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  367.148295] wcd9320 217:a0:1:0: clk-src block-off (restore): all 3 steps applied cleanly
+[  367.149112] wcd9320 217:a0:1:0: clk-src rco-restore step  1/11: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[  367.160001] wcd9320 217:a0:1:0: clk-src rco-restore step  2/11: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[  367.161186] wcd9320 217:a0:1:0: clk-src rco-restore step  3/11: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[  367.162897] wcd9320 217:a0:1:0: clk-src rco-restore step  4/11: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[  367.176143] wcd9320 217:a0:1:0: clk-src rco-restore step  5/11: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[  367.177375] wcd9320 217:a0:1:0: clk-src rco-restore step  6/11: reg 0x108 (VE 0x0908) old=00 mask=08 want=08 -> read=08  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[  367.179814] wcd9320 217:a0:1:0: clk-src rco-restore step  7/11: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[  367.182512] wcd9320 217:a0:1:0: clk-src rco-restore step  8/11: reg 0x108 (VE 0x0908) old=08 mask=01 want=01 -> read=09  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  367.183729] wcd9320 217:a0:1:0: clk-src rco-restore step  9/11: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  367.184931] wcd9320 217:a0:1:0: clk-src rco-restore step 10/11: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  367.186075] wcd9320 217:a0:1:0: clk-src rco-restore step 11/11: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  367.186244] wcd9320 217:a0:1:0: clk-src rco-restore: all 11 steps applied cleanly
+[  367.187158] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  367.187771] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  367.188103] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  367.188207] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  367.189077] wcd9320 217:a0:1:0: mclk: DISABLED (refs 1 -> 0)
+
+=== verdict ===
+mode   : wcd9320-conjunction
+checks : 24 passed, 0 failed
+VERDICT: PASS (wcd9320-conjunction)
+REPORT_COMPLETE

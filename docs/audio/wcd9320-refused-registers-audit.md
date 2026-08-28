@@ -883,3 +883,142 @@ section 14.
 
 S0 is the expected outcome, for the reasons in section 14. That is stated
 before the run, not after it.
+
+---
+
+## 16. r172 RESULT: S0 — INCONCLUSIVE, AS PREDICTED
+
+**S0, 23/0, VERDICT PASS.** Artefact verified 79/0 first. Evidence:
+[wcd9320-hph-status-20260826T234608Z.txt](wcd9320-hph-status-20260826T234608Z.txt).
+
+Every sample, all four stimuli across two cycles, identical:
+
+```
+                  0x30d  L_0x1b3  R_0x1b9
+  before            00     04       04
+  DURING            00     04       04
+  after             00     04       04
+```
+
+Movement matrix, all zero: neither stimulus moved either status register, in
+either cycle, in either direction.
+
+### This is NOT evidence that the `0x30d` write failed
+
+Recorded that way deliberately, and it is the reason section 14 was written
+before the run rather than after it. The bit semantics of `0x1b3` and `0x1b9`
+are undocumented in every generation we hold, and the only functional use
+downstream makes of them is as an MBHC plug-detection comparator — read 1 ms
+after asserting `MBHC_HPH` bit 1, a stimulus this run deliberately did not
+apply.
+
+The observable was never known to be sensitive to the RDAC clock. Its silence
+says nothing either way, and **write-only versus refused remains exactly as
+open as r171 left it.**
+
+The `04` baseline in both registers is not interpreted.
+
+### What the run does establish
+
+- The two status registers are **stable** across the whole sequence — they do
+  not drift, and they return to baseline. So a *positive* would have meant
+  something; the instrument was working, it simply had nothing to say.
+- `0x30d` never latched, in agreement with r171.
+- Nothing was disturbed: PA `80` throughout, DAC never powered, `0x314`
+  untouched at `00`, still on RCO, no new kernel warnings, and every one of the
+  twelve return-to-baseline checks passed.
+
+### Next
+
+The still-untested **MCLK-selected + `CHIP_CTL` = 9.6 MHz conjunction**, which
+is the last cell of the matrix — and which, as section 17 records, needs no new
+build at all.
+
+---
+
+## 17. r173 RESULT: C2 — THE CONJUNCTION IS REFUTED. THE MATRIX IS EXHAUSTED.
+
+**C2, 24/0, VERDICT PASS.** Evidence:
+[wcd9320-conjunction-20260826T235036Z.txt](wcd9320-conjunction-20260826T235036Z.txt).
+
+### It needed no new build
+
+The r172 driver already contained both halves. `wcd9320_clk_source_switch()`
+switches to the external MCLK and then, if the CDC block is still alive, calls
+`wcd9320_chip_ctl_probe(9.6 MHz)`. Until r170 that probe wrote `0x001`, so the
+rate was never declared and **the conjunction was never actually formed** — the
+code path existed and had been exercised, but with the write going to
+`CHIP_STATUS`. With the address corrected the same path forms it. r173 is a
+gate-only experiment: no build, no reflash, no power cycle.
+
+### The conjunction was formed, and verified
+
+```
+c2b:      0x314 mask 03 want 03 -> chip 00        control, on RCO
+clk-src:  SWITCHED to MCLK, CDC block RESPONDING
+chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a  LATCHED  [rate 9.6 MHz, ON MCLK]
+c2b:      0x314 mask 03 want 03 -> chip 00        <-- STILL REFUSED
+chip-ctl: 0x000 mask 06 want 00 : 0a -> 08  LATCHED  [restored, still on MCLK]
+clk-src:  RESTORED to RCO, CDC block RESPONDING
+```
+
+Codec on the external clock with the RC oscillator off, CDC block responding,
+`CHIP_CTL` chip-verified at `0a` declaring 9.6 MHz — **the exact state
+downstream is in when `taiko_reg_defaults[]` writes `0x314`**. And `0x314 <- 03`
+read back `00`, identically to the control taken minutes earlier on RCO.
+
+### The matrix, now complete
+
+| run | MCLK selected | rate declared | `0x314` |
+|---|---|---|---|
+| r165 | no | no | refused |
+| r167 | at the pad only | no | refused |
+| r169 | **yes** | no | refused |
+| r170 | no | **yes** | refused |
+| **r173** | **yes** | **yes** | **refused** |
+
+**The cause is none of them, in any combination.** Clock absent, clock present,
+clock selected, rate declared, and both together — every cell refuses.
+
+### What survives the elimination
+
+- **Whole-register, both registers** (r171): identical across every documented
+  bit of `0x314` and both channels of `0x30d`.
+- **Not an address-block condition**: `0x311` in the same block accepts and
+  reads back, throughout every run.
+- **Not silicon revision, reset domain, write-protect, secure mode, QFUSE, or
+  aliasing** (sections 1, 3, 4).
+- **Not the clock, in any configuration** (r167, r169, r173).
+- **Not the rate declaration** (r170, r173).
+- **Write-only versus refused: still unsettled.** r172's observable was silent,
+  but it was one downstream never uses that way, so its silence carries no
+  weight.
+
+### The question has changed shape
+
+It is no longer *which prerequisite is missing*. Every prerequisite this
+project can construct has now been constructed, and the registers refuse in all
+of them. The remaining question is:
+
+> **Is a bypassed readback a valid success criterion for these two registers at
+> all?**
+
+If it is not — if they are write-only or read-as-zero — then the writes have
+been landing since r164, and what has blocked C2b at stage 6 of 7 is
+`wcd9320_c2b_write()` turning a refused readback into `-EIO` and aborting the
+sequence. **Our own verification, not the hardware.**
+
+Section 2 established that downstream could never have noticed this:
+`taiko_read()` returns the ASoC cache for both registers, so downstream has no
+idea whether they read back on any board.
+
+### What answering it requires
+
+An observable that depends on these registers **working**, and the only one
+this codec offers is the analog path itself — which means powering the DAC.
+That has been deliberately out of scope for every run so far, and it is the
+decision this result forces.
+
+Nothing else moved: PA `80` throughout, DAC never powered, `0x30d` and `0x314`
+back at POR, `CHIP_CTL` restored to `08`, divider restored, mclk released,
+codec back on RCO with the positive control intact, no new kernel warnings.

@@ -1260,59 +1260,75 @@ explain any other way.
 Candidate, not conclusion: bit 2 of those status registers is undescribed in
 any header we hold and may reflect something unrelated.
 
+### r172 and r173 RESULTS: the observable was silent, the conjunction is refuted
+
+**r172 = S0, 23/0.** Neither HPH status register moved, for either stimulus, in
+either cycle. **Explicitly not evidence that the `0x30d` write failed** -- the
+observable was one downstream never uses that way, and section 14 said so
+before the run. Evidence:
+[wcd9320-hph-status-20260826T234608Z.txt](wcd9320-hph-status-20260826T234608Z.txt).
+
+**r173 = C2, 24/0, and it needed no build.** The r172 driver already contained
+both halves; until r170 the rate declaration inside the MCLK switch went to
+`0x001`, so the conjunction had never actually been formed. Gate-only run.
+Evidence:
+[wcd9320-conjunction-20260826T235036Z.txt](wcd9320-conjunction-20260826T235036Z.txt).
+
+```
+clk-src:  SWITCHED to MCLK, CDC block RESPONDING
+chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a  LATCHED  [rate 9.6 MHz, ON MCLK]
+c2b:      0x314 mask 03 want 03 -> chip 00        <-- STILL REFUSED
+```
+
+Codec on the external clock with the RC oscillator off, CDC responding,
+`CHIP_CTL` chip-verified at `0a` -- the exact state downstream is in when
+`taiko_reg_defaults[]` writes `0x314`. It still refused.
+
+### THE MATRIX IS EXHAUSTED
+
+| run | MCLK selected | rate declared | `0x314` |
+|---|---|---|---|
+| r167 | at the pad only | no | refused |
+| r169 | **yes** | no | refused |
+| r170 | no | **yes** | refused |
+| **r173** | **yes** | **yes** | **refused** |
+
+The cause is none of them, in any combination. Together with r171 (whole-
+register, both registers, every documented bit, both channels) and the audit
+(not revision, reset domain, write-protect, secure mode, QFUSE, aliasing, or
+address block -- `0x311` accepts in the same block), **every prerequisite this
+project can construct has now been constructed, and they refuse in all of
+them.**
+
+### The question has changed shape
+
+Not *which prerequisite is missing* any more, but:
+
+> **Is a bypassed readback a valid success criterion for these two registers at
+> all?**
+
+If it is not -- if they are write-only or read-as-zero -- then the writes have
+been landing since r164, and what has blocked C2b at stage 6 of 7 is
+`wcd9320_c2b_write()` turning a refused readback into `-EIO`. **Our own
+verification, not the hardware.** Section 2 of the audit shows downstream could
+never have noticed: `taiko_read()` returns the ASoC cache for both registers.
+
 ### The next task, precisely
 
-**r172 `hphstatus-rc1` is STAGED at pkgrel 172, NOT YET BUILT.** RCO only: no
-MCLK, no DAC, no PA, and `0x314` takes no part in it.
+**NO BUILD IS STAGED, and this one is a decision rather than an obvious step.**
 
-Does a `0x30d` write move a per-channel HPH status register? Per channel and
-per cycle: sample `0x30d`/`0x1b3`/`0x1b9`, write the bit, settle 1 ms, **sample
-again before restoring -- inside the driver**, restore, sample once more. Both
-channels, then the whole thing a second time.
+Answering the remaining question needs an observable that depends on these
+registers **working**, and the only one this codec offers is the analog path --
+which means **powering the DAC**. That has been deliberately out of scope for
+every run so far.
 
-**THE EVIDENCE BOUNDARY, and it is not symmetric.** The bit semantics of
-`0x1b3` and `0x1b9` are undocumented in every generation we hold. The only
-functional use downstream makes of them is as an **MBHC plug-detection
-comparator**, read 1 ms after asserting `MBHC_HPH` bit 1 -- a stimulus r172
-deliberately does not apply. So:
+The shape it would take: let C2b continue past the refusal to stage 7
+(`0x1b1 <- 0xc0`) with the readback non-fatal **for these two registers only**,
+PA still hard-guarded off, and see whether the DAC and class-H behave as a
+working path or a dead one. It is still not audible without the PA, so it
+remains a conversion-and-routing result.
 
-- a reproducible **channel-specific** response is strong positive evidence;
-- **no response is NOT evidence** that the `0x30d` write failed;
-- the existing `04` baseline is **not** interpreted, only compared against.
-
-**S0 is the expected outcome.** The run is worth making because it is cheap and
-because a positive would overturn the assumption the branch rests on. See
-sections 14 and 15 of the audit.
-
-To build and run:
-
-```
-tools/build-wcd9320-kernel.sh --pkgrel 172 --version hphstatus-rc1 \
-    --expect-asoc --expect-dais 1 --stage ~/r172 \
-    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
-    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
-```
-
-```
-sudo sh ~/wcd9320-tools/wcd9320-hph-status-evidence.sh
-```
-
-- **S1**, exit 0: channel-correlated and reproducible. **STOP** -- do not
-  proceed to the conjunction. Reassess whether a bypassed readback is a valid
-  success criterion for `0x30d` at all, because every "refused" verdict against
-  these registers would then be in question, including the C2b blocker.
-- **S0**, exit 1: no response. **Inconclusive, not a refusal.** Move to the
-  conjunction.
-- **SX**, exit 2: coupled, cross-channel or irreproducible. Observable
-  rejected. Move to the conjunction.
-- **S**, exit 3: setup failure or a failed check.
-
-### QUEUED AFTER r172: the MCLK + CHIP_CTL conjunction
-
-The last untested cell of the matrix -- MCLK selected **and** the rate declared
--- using the r169 switch and the r170 declaration, both proven and reversible,
-as preconditions. Not a reopening of the MCLK questions, which stay answered.
-Queued behind r172 and cancelled if r172 returns S1.
+Everything else is exhausted. This is the call to make.
 
 ### Rules this branch has been run under
 
@@ -1337,9 +1353,17 @@ Queued behind r172 and cancelled if r172 returns S1.
 
 ### Build/deploy state
 
-- **r172 `hphstatus-rc1`** is staged at pkgrel 172 and not yet built. r171
-  `writability-rc1` is built, installed and run (W0, 12/0) and the phone is
-  currently up on it, RAM-booted.
+- **r172 `hphstatus-rc1`** is built (artefact 79/0), installed and run
+  (S0, 23/0), and the phone is currently up on it, RAM-booted. r173 was a
+  GATE-ONLY run on that same module (C2, 24/0) and has no pkgrel of its own.
+  No newer build is staged.
+- Two cross-toolchain hazards, both hit in one session: the Bash tool's
+  `python3` is WINDOWS Python, so it defaults to cp1252 and writes CRLF.
+  Editing a repo file with it and with WSL `python3` leaves invalid UTF-8, and
+  rewriting a script with it puts a `\r` in the shebang -- which made the
+  artefact gate exit silently with `env: 'python3\r': No such file`. Repair
+  encoding per-sequence, never with a blanket cp1252 decode: the files are
+  MIXED and a blanket decode corrupts the em dashes that were already valid.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.

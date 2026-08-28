@@ -1,5 +1,25 @@
 #!/bin/sh
 #
+# ############################################################################
+# SUPERSEDED AT r170. DO NOT RUN THIS GATE.
+#
+# It reads a sysfs field named chip_ctl_0x001, which no longer exists: r170
+# established that 0x001 is CHIP_STATUS and the real CHIP_CTL is 0x000, and
+# renamed the field accordingly. Every chip_ctl reference below is therefore to
+# the WRONG REGISTER -- which is exactly the defect r170 corrected.
+#
+# It is deliberately NOT renamed in place. The old precondition asserted that
+# field read 00, which was true of CHIP_STATUS and is false of CHIP_CTL (this
+# part reads 08), so a mechanical rename would turn a stale gate into a subtly
+# wrong one. It is kept as the record of the run that produced the M2 finding,
+# and it fails closed with chip_ctl_not_at_por if anyone runs it.
+#
+# The MCLK branch is CLOSED -- see docs/audio/wcd9320-rco-mclk-switch-mapping.md.
+# For the MCLK-selected + rate-declared conjunction, which this gate could not
+# form because its rate declaration went to 0x001, use
+# wcd9320-conjunction-evidence.sh.
+# ############################################################################
+#
 # r168: with the board's 9.6 MHz MCLK established AND the codec switched onto
 # it, do the two refused clock registers accept writes?
 #
