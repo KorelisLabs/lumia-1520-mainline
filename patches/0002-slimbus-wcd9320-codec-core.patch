@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 17:30:06.044591556 -0400
-@@ -0,0 +1,7891 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 18:13:55.672956985 -0400
+@@ -0,0 +1,8112 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1911,6 +1911,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool clk_ctrl_pre_valid;
 +	bool clk_ctrl_post_valid;
 +	int cdc_alive;                 /* -1 never measured, 0 dark, 1 responding */
++	/* ---- writability characterisation (r171) ---- */
++	u8 wr_baseline[2];             /* 0x314, 0x30d as measured */
++	u8 wr_result[6];               /* 1 latched, 0 refused, per step */
++	u8 wr_readback[6];             /* what the chip showed */
++	bool wr_done;
++	unsigned int wr_runs;
++
 +	unsigned int clk_src_switches;
 +	unsigned int clk_src_restores;
 +	int clk_src_last_error;
@@ -6611,6 +6618,218 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(clk_source_state);
 +
++/* ------------------- writability characterisation (r171) -- */
++
++/*
++ * ONE MASKED WRITE, MEASURED AND PUT BACK.
++ *
++ * A generalisation of wcd9320_chip_ctl_probe() for the diagnostic: attempt the
++ * bits, read the CHIP back bypassed, record whether they stuck, drop the cache
++ * entry if they did not, and ALWAYS return 0. A refusal is the measurement
++ * here, so returning -EIO would destroy the result it is meant to report.
++ *
++ * The cache drop matters and is not decoration. regmap skips a write whose
++ * cached value already equals the target, so after a refused write the cache
++ * holds something the chip does not and the NEXT attempt at that register
++ * would be optimised away entirely -- silently doing nothing. r165 hit exactly
++ * that on 0x314.
++ */
++static int wcd9320_probe_bits(struct wcd9320 *wcd, unsigned int reg, u8 mask,
++			      u8 val, u8 *readback, const char *what)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int before = 0, after = 0;
++	int ret, latched;
++
++	regmap_read_bypassed(wcd->regmap, reg, &before);
++
++	ret = regmap_update_bits(wcd->regmap, reg, mask, val);
++	if (ret) {
++		dev_err(dev, "wr: 0x%03x write failed: %d [%s]\n", reg, ret, what);
++		return ret;
++	}
++	wcd->c2b_writes++;
++
++	regmap_read_bypassed(wcd->regmap, reg, &after);
++	if (readback)
++		*readback = after & 0xff;
++	latched = ((after & mask) == (val & mask)) ? 1 : 0;
++
++	dev_info(dev, "wr: 0x%03x mask %02x want %02x : %02x -> %02x  %s  [%s]\n",
++		 reg, mask, val, before & 0xff, after & 0xff,
++		 latched ? "LATCHED" : "REFUSED", what);
++
++	if (!latched)
++		regcache_drop_region(wcd->regmap, reg, reg);
++
++	return latched;
++}
++
++/*
++ * The characterisation itself.
++ *
++ * WHAT THIS IS FOR
++ *
++ * Every write this project has ever made to 0x314 used mask 0x03, and every
++ * write to 0x30d used bit 1 alone. So "the register refuses" has never been
++ * separated from "these particular bits are gated", and those are very
++ * different findings. This tests each documented bit independently.
++ *
++ * WHICH BITS, AND WHY ONLY THESE
++ *
++ * Enumerated from downstream across three source generations, which agree
++ * exactly:
++ *
++ *   0x314  written from ONE site, taiko_reg_defaults[], as a full-byte
++ *          snd_soc_write(0x03). Bits 0 and 1, only ever together. Our
++ *          baseline is 0x00, so a masked 0x03 <- 0x03 puts the identical byte
++ *          on the wire as that full write -- the combined step is a faithful
++ *          reproduction and needs no separate full-byte case.
++ *
++ *   0x30d  written from FOUR sites, all masked: bit 1 (0x02) is the HPHL RDAC
++ *          clock and bit 2 (0x04) is HPHR. Downstream never writes both
++ *          together; that step is diagnostic and labelled so.
++ *
++ * Bits 2-7 of 0x314 and bits 0 and 3-7 of 0x30d are written by nothing in any
++ * generation, are undefined to us, and are NOT touched. No blind bit-walk.
++ *
++ * THE TWO REGISTERS ARE INDEPENDENT. A refusal on 0x314 must not prevent the
++ * 0x30d characterisation, so nothing here aborts early; each step records its
++ * own answer and the run continues.
++ */
++struct wcd9320_wr_step {
++	u16 reg;
++	u8 mask;
++	const char *what;
++};
++
++static const struct wcd9320_wr_step wcd9320_wr_steps[] = {
++	{ WCD9320_CDC_CLK_POWER_CTL,       0x01,
++	  "0x314 bit 0 alone (diagnostic)" },
++	{ WCD9320_CDC_CLK_POWER_CTL,       0x02,
++	  "0x314 bit 1 alone (diagnostic)" },
++	{ WCD9320_CDC_CLK_POWER_CTL,       0x03,
++	  "0x314 bits 0+1 -- downstream's only write, byte-identical here" },
++	{ WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, 0x02,
++	  "0x30d bit 1, HPHL RDAC clock -- downstream's own mask" },
++	{ WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, 0x04,
++	  "0x30d bit 2, HPHR RDAC clock -- downstream's own mask, never tried here" },
++	{ WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, 0x06,
++	  "0x30d bits 1+2 together (diagnostic)" },
++};
++
++static int wcd9320_writability_run(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int val;
++	size_t i;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "wr: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	ret = wcd9320_pa_guard(wcd, "before the writability characterisation");
++	if (ret)
++		return ret;
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_POWER_CTL, &val);
++	wcd->wr_baseline[0] = val & 0xff;
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &val);
++	wcd->wr_baseline[1] = val & 0xff;
++	dev_info(dev, "wr: baseline 0x314 = %02x, 0x30d = %02x\n",
++		 wcd->wr_baseline[0], wcd->wr_baseline[1]);
++
++	for (i = 0; i < ARRAY_SIZE(wcd9320_wr_steps); i++) {
++		const struct wcd9320_wr_step *s = &wcd9320_wr_steps[i];
++		u8 back = 0;
++		int latched;
++
++		latched = wcd9320_probe_bits(wcd, s->reg, s->mask, s->mask,
++					     &back, s->what);
++		if (latched < 0) {
++			/* A BUS error, not a refusal. Record it as not latched
++			 * and carry on: the other register still has to be
++			 * characterised. */
++			wcd->wr_result[i] = 0;
++			wcd->wr_readback[i] = 0;
++		} else {
++			wcd->wr_result[i] = latched;
++			wcd->wr_readback[i] = back;
++		}
++
++		/* Put it back immediately, whatever happened, so every step
++		 * starts from the same place and no two steps compound. */
++		wcd9320_probe_bits(wcd, s->reg, s->mask, 0, NULL,
++				   "restore");
++
++		if (wcd9320_pa_guard(wcd, s->what))
++			return -EIO;
++	}
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_POWER_CTL, &val);
++	dev_info(dev, "wr: 0x314 back to %02x (baseline %02x)\n",
++		 val & 0xff, wcd->wr_baseline[0]);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &val);
++	dev_info(dev, "wr: 0x30d back to %02x (baseline %02x)\n",
++		 val & 0xff, wcd->wr_baseline[1]);
++
++	wcd->wr_done = true;
++	wcd->wr_runs++;
++	return 0;
++}
++
++static ssize_t writability_test_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!sysfs_streq(buf, "run"))
++		return -EINVAL;
++
++	ret = wcd9320_writability_run(wcd);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(writability_test);
++
++static ssize_t writability_state_show(struct device *dev,
++				      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int p = 0, r = 0;
++	int n = 0;
++	size_t i;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_POWER_CTL, &p);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &r);
++
++	n += sysfs_emit_at(buf, n, "done=%u runs=%u\n", wcd->wr_done ? 1 : 0,
++			   wcd->wr_runs);
++	n += sysfs_emit_at(buf, n, "base_0x314=%02x base_0x30d=%02x\n",
++			   wcd->wr_baseline[0], wcd->wr_baseline[1]);
++	n += sysfs_emit_at(buf, n, "now_0x314=%02x now_0x30d=%02x\n",
++			   p & 0xff, r & 0xff);
++	for (i = 0; i < ARRAY_SIZE(wcd9320_wr_steps); i++)
++		n += sysfs_emit_at(buf, n,
++				   "s%zu_reg=%03x s%zu_mask=%02x s%zu_latched=%u s%zu_read=%02x\n",
++				   i, wcd9320_wr_steps[i].reg,
++				   i, wcd9320_wr_steps[i].mask,
++				   i, wcd->wr_result[i],
++				   i, wcd->wr_readback[i]);
++	return n;
++}
++static DEVICE_ATTR_RO(writability_state);
++
 +/* ------------------------- the RDAC clock prerequisite (r165) -- */
 +
 +/*
@@ -7287,6 +7506,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_cdc_clk_prereq.attr,
 +	&dev_attr_rdac_probe.attr,
 +	&dev_attr_chip_ctl_test.attr,
++	&dev_attr_writability_test.attr,
++	&dev_attr_writability_state.attr,
 +	&dev_attr_mclk_test.attr,
 +	&dev_attr_mclk_state.attr,
 +	&dev_attr_clk_source_test.attr,
@@ -8275,7 +8496,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("chipctl-rc1");
++MODULE_VERSION("writability-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

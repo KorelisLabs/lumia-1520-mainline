@@ -511,3 +511,159 @@ gated", which are very different findings and currently indistinguishable.
 PA `80` throughout, guard never tripped, DAC never powered (`0x1b1 = 00`),
 `0x30d` at POR, `0x314` at POR, `CHIP_CTL` restored to `08`, no new kernel
 warnings, 15 checks passed and 0 failed.
+
+---
+
+## 11. THE WRITE-SITE MAPPING FOR `0x314` AND `0x30d`
+
+Recorded before r171 was designed, so the experiment tests documented bits and
+nothing else. Enumerated across **every cached downstream file and three
+independent source generations** — hammerhead `cm-11.0`, hammerhead `cm-12.1`,
+sony msm8974 `cm-14.1`. The three agree exactly; nothing about either register
+changed between generations.
+
+Files searched and found to contain **no** write site for either register:
+`wcd9xxx-common.c` (class-H), `wcd9xxx-resmgr.c`, `drivers/mfd/wcd9xxx-core.c`,
+`sound/soc/msm/msm8974.c`, the clock drivers. Both registers are written from
+the codec driver and nowhere else.
+
+### `0x314` CDC_CLK_POWER_CTL — exactly ONE write site
+
+```c
+static const struct wcd9xxx_reg_mask_val taiko_reg_defaults[] = {
+	/* set MCLk to 9.6 */
+	TAIKO_REG_VAL(TAIKO_A_CHIP_CTL, 0x02),
+	TAIKO_REG_VAL(TAIKO_A_CDC_CLK_POWER_CTL, 0x03),
+```
+
+```c
+#define TAIKO_REG_VAL(reg, val)   {reg, 0, val}     /* mask field is 0 */
+
+static void taiko_update_reg_defaults(struct snd_soc_codec *codec)
+{
+	for (i = 0; i < ARRAY_SIZE(taiko_reg_defaults); i++)
+		snd_soc_write(codec, taiko_reg_defaults[i].reg,
+			      taiko_reg_defaults[i].val);
+```
+
+| | |
+|---|---|
+| sites | **1**, in all three generations |
+| mechanism | `snd_soc_write()` — a **full-byte** write, not a masked update |
+| value | `0x03`, only ever this value |
+| bits exercised | **0 and 1**, and only ever together |
+| bits never written | 2–7. Undefined to us. |
+| when | once at probe, inside `taiko_update_reg_defaults()` |
+
+The `mask` field of the table entry is `0` and is **not used on this path** —
+`taiko_update_reg_defaults()` calls `snd_soc_write()`, which ignores it. So
+downstream never performs a masked update of `0x314` at all.
+
+**A simplification that follows, and it matters for r171.** Our baseline for
+`0x314` is `0x00`. A masked `0x03 <- 0x03` therefore computes
+`(0x00 & ~0x03) | 0x03 = 0x03` and puts **the identical byte on the wire** as
+downstream's full write of `0x03`. The two are indistinguishable at this
+baseline, so r171 needs no separate full-byte step, and the combined case is a
+faithful reproduction of the only write downstream ever makes.
+
+### `0x30d` CDC_CLK_RDAC_CLK_EN_CTL — exactly FOUR write sites
+
+All four are in the two DAC events, unconditional in both, identical across all
+three generations:
+
+```c
+taiko_hphl_dac_event()   PRE_PMU  : update_bits(0x30d, 0x02, 0x02)
+                         POST_PMD : update_bits(0x30d, 0x02, 0x00)
+taiko_hphr_dac_event()   PRE_PMU  : update_bits(0x30d, 0x04, 0x04)
+                         POST_PMD : update_bits(0x30d, 0x04, 0x00)
+```
+
+| bit | mask | meaning | our history |
+|---|---|---|---|
+| 1 | `0x02` | **HPHL** RDAC clock enable | written many times, always refused |
+| 2 | `0x04` | **HPHR** RDAC clock enable | **never written by this project** |
+| 0, 3–7 | — | never written by downstream | undefined to us |
+
+| | |
+|---|---|
+| mechanism | `snd_soc_update_bits()` — masked, always |
+| granularity | one bit at a time; downstream never writes both together |
+
+**Bit 2 is the interesting one.** It is the exact structural twin of bit 1 —
+same register, same mechanism, same event shape, different channel — and this
+project has never touched it. If bit 2 latches where bit 1 does not, that is a
+per-path result and a very sharp one. Writing both together is diagnostic only
+and is labelled as such: downstream never does it.
+
+### What r171 may therefore test
+
+| register | mask | rationale |
+|---|---|---|
+| `0x314` | `0x01` | bit 0, documented, tested alone as a diagnostic |
+| `0x314` | `0x02` | bit 1, documented, tested alone as a diagnostic |
+| `0x314` | `0x03` | the production value, byte-identical to downstream's full write |
+| `0x30d` | `0x02` | bit 1, HPHL — downstream's own mask |
+| `0x30d` | `0x04` | bit 2, HPHR — downstream's own mask, never tried here |
+| `0x30d` | `0x06` | both, diagnostic only |
+
+**Nothing else.** Bits 2–7 of `0x314` and bits 0 and 3–7 of `0x30d` are not
+written by downstream in any generation, are undefined to us, and are not
+touched. No blind bit-walk.
+
+---
+
+## 12. r171 AS BUILT
+
+**Status: STAGED, NOT YET BUILT.** pkgrel 171, `writability-rc1`.
+**Diagnostic, not the C2b production sequence.**
+
+RCO only: no PMIC divider, no gpio15, no source switch, no DAC power, no PA.
+`CHIP_CTL` stays at its baseline — this run is about writability, not rate
+configuration.
+
+### The six steps
+
+Each is a masked write, a bypassed chip readback, and an immediate restore, so
+no two steps compound. Only bits from the section 11 mapping are touched.
+
+| # | reg | mask | kind |
+|---|---|---|---|
+| 0 | `0x314` | `0x01` | bit 0 alone — diagnostic |
+| 1 | `0x314` | `0x02` | bit 1 alone — diagnostic |
+| 2 | `0x314` | `0x03` | **production**, byte-identical to downstream's full write |
+| 3 | `0x30d` | `0x02` | **production**, HPHL RDAC clock |
+| 4 | `0x30d` | `0x04` | **production**, HPHR RDAC clock — never tried here before |
+| 5 | `0x30d` | `0x06` | both — diagnostic, downstream never does this |
+
+`wcd9320_probe_bits()` generalises the CHIP_CTL probe: attempt, bypassed
+readback, record, **drop the poisoned regcache entry on a refusal**, and always
+return the measurement rather than an error. A refusal is the result here, so
+an `-EIO` would destroy what the run exists to report.
+
+**The two registers are independent.** Nothing aborts early — a refusal on
+`0x314` cannot prevent the `0x30d` characterisation. The PA guard is sampled
+after every step.
+
+### Why bit 2 of `0x30d` is the one to watch
+
+It is the exact structural twin of bit 1 — same register, same mechanism, same
+event shape, different channel — and this project has never written it. If bit
+2 latches where bit 1 does not, the condition is **per-path**, not
+per-register, and that is the sharpest result the run can produce.
+
+### Classification, with precedence
+
+| exit | | condition |
+|---|---|---|
+| 1 | **W0** | nothing latches — a register or domain-level condition, not a functional gate on any particular bit |
+| 0 | **W4** | `0x314 <- 03` and `0x30d` bit 1 both latch — writability is fine and the earlier refusals depend on surrounding sequence or state |
+| 4 | **W3** | individual bits latch, the combined value does not — a combination or in-register sequencing interaction |
+| 2 | **W1/W2** | some documented bits latch and others do not — per-bit, or for `0x30d` per-path, gating |
+| 3 | **S** | setup failure, or any failed check |
+
+### Deliberately not tested
+
+The **MCLK-selected + rate-declared conjunction**. It is preserved as the next
+experiment if this result leaves it relevant, and r170's conclusion stays
+narrow: the rate declaration *alone*, on RCO, does not unlock `0x314`. That is
+not generalised to the conjunction by this run or by any other.

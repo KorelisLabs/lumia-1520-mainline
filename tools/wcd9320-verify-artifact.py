@@ -92,10 +92,15 @@ EXPECT = {
     #            CHIP_CTL so the pair that was transposed for five builds is
     #            visible side by side).
     #
+    # r171: 66 = 61 - 2 + 7. The +8 over r170 is the writability
+    #            characterisation: 2 in wcd9320_probe_bits, 4 in
+    #            wcd9320_writability_run (two baselines and two final
+    #            re-reads), 2 in writability_state_show.
+    #
     # The offset of 2 between source call sites and artefact relocations has
-    # now held across r167, r168 and r169. It is stable and still unexplained;
-    # a delta computed from the source alone will be two out.
-    "read_bypassed_calls": 58,
+    # now held across r167, r168, r169 and r170. It is stable and still
+    # unexplained; a delta computed from the source alone will be two out.
+    "read_bypassed_calls": 66,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent

@@ -1215,25 +1215,49 @@ a decision before anything is built.
 
 ### The next task, precisely
 
-**NO BUILD IS STAGED.** Two candidates, both cheap, and the choice is open:
+**r171 `writability-rc1` is STAGED at pkgrel 171, NOT YET BUILT.** A
+constrained writability characterisation of `0x314` and `0x30d` -- diagnostic,
+not the C2b production sequence. RCO only: no PMIC, no source switch, no DAC,
+no PA, and `CHIP_CTL` stays at its baseline.
 
-1. **The conjunction** -- switch to MCLK (r169 machinery, unchanged), declare
-   the rate (r170 machinery, unchanged), retry `0x314`. Closes the last cell of
-   the matrix. Needs the MCLK switch as a precondition.
-2. **A writability bit-walk on `0x314` and `0x30d`** -- RCO only, respects the
-   freeze. Every write this project has made to these two used a narrow mask
-   (`0x03`, and bit 1), so nobody has established whether *any* bit of either
-   register is writable. Separates "the register accepts no writes at all" from
-   "these specific bits are gated", which are very different findings and are
-   currently indistinguishable. Directly attacks candidate 3.
+The write-site mapping was enumerated FIRST, across three source generations
+that agree exactly, and is recorded in section 11 of the audit. Only bits
+downstream actually writes are touched -- `0x314` bits 0 and 1, `0x30d` bits 1
+and 2. **No blind bit-walk**; bits 2-7 of `0x314` and bits 0 and 3-7 of `0x30d`
+are undefined to us and are not touched.
 
-Candidate 3 -- that both are write-only or read-as-zero, with downstream unable
-to notice because `taiko_read()` returns the ASoC cache for them -- is now the
-strongest single-register hypothesis, and needs an observable rather than a
-readback.
+Six steps, each a masked write, a bypassed readback and an immediate restore,
+with the poisoned regcache entry dropped on every refusal. The two registers
+are independent: a refusal on `0x314` cannot prevent the `0x30d`
+characterisation.
 
-**Redeploy every gate script before every run and checksum the phone's copy.**
-This is now a step inside the deploy script rather than a separate one.
+**Watch bit 2 of `0x30d`.** It is the structural twin of the bit C2b needs --
+same register, same mechanism, different channel -- and has never been written
+here. If it latches where bit 1 does not, the condition is per-PATH rather than
+per-register.
+
+To build and run:
+
+```
+tools/build-wcd9320-kernel.sh --pkgrel 171 --version writability-rc1     --expect-asoc --expect-dais 1 --stage ~/r171     --extra-module sound/soc/qcom/qdsp6/q6core.ko     --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
+```
+
+```
+sudo sh ~/wcd9320-tools/wcd9320-writability-evidence.sh
+```
+
+- **W0**, exit 1: nothing latches. A register/domain-level condition rather
+  than a functional gate on any bit.
+- **W4**, exit 0: the production bits latch in isolation, so the earlier
+  refusals depend on surrounding sequence or state.
+- **W3**, exit 4: individual bits latch, the combined value does not.
+- **W1/W2**, exit 2: per-bit, or for `0x30d` per-path, gating.
+- **S**, exit 3: setup failure or a failed check.
+
+**NOT tested in r171:** the MCLK-selected + rate-declared conjunction. It is
+preserved as the next experiment if this result leaves it relevant. r170's
+conclusion stays narrow -- the rate declaration *alone*, on RCO, does not
+unlock `0x314` -- and is not generalised to the conjunction.
 
 ### Rules this branch has been run under
 
@@ -1258,8 +1282,9 @@ This is now a step inside the deploy script rather than a separate one.
 
 ### Build/deploy state
 
-- **r170 `chipctl-rc1`** is built (artefact 79/0), installed and run; result
-  R2, 15/0. The phone is up on it, RAM-booted, module in `/lib/modules`.
+- **r171 `writability-rc1`** is staged at pkgrel 171 and not yet built. r170
+  `chipctl-rc1` is built, installed and run (R2, 15/0) and the phone is
+  currently up on it, RAM-booted.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.
