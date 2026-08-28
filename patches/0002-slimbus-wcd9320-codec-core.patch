@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 18:13:55.672956985 -0400
-@@ -0,0 +1,8112 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 19:13:29.170223479 -0400
+@@ -0,0 +1,8329 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1911,6 +1911,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool clk_ctrl_pre_valid;
 +	bool clk_ctrl_post_valid;
 +	int cdc_alive;                 /* -1 never measured, 0 dark, 1 responding */
++	/* ---- HPH status observable (r172) ---- */
++	/*
++	 * [cycle][channel][phase][reg]: 2 cycles, L then R, three phases
++	 * (before / while attempted / after restore), three registers
++	 * (0x30d, 0x1b3 L_STATUS, 0x1b9 R_STATUS).
++	 */
++	u8 hs_sample[2][2][3][3];
++	u8 hs_latched[2][2];
++	bool hs_done;
++	unsigned int hs_runs;
++
 +	/* ---- writability characterisation (r171) ---- */
 +	u8 wr_baseline[2];             /* 0x314, 0x30d as measured */
 +	u8 wr_result[6];               /* 1 latched, 0 refused, per step */
@@ -6618,6 +6629,210 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(clk_source_state);
 +
++/* --------------------- the HPH status observable (r172) -- */
++
++/*
++ * r171 returned W0: no documented bit of 0x314 or 0x30d latches, and 0x30d
++ * bit 2 (HPHR) refuses identically to bit 1 (HPHL). That eliminated per-bit,
++ * per-path and combination gating, and left exactly one thing it could not
++ * settle -- WRITE-ONLY versus REFUSED. Both produce a readback of 00.
++ *
++ * Telling them apart needs an OBSERVABLE rather than a readback, and 0x30d is
++ * unusually well suited to providing one: bit 1 is the HPHL RDAC clock and
++ * bit 2 is HPHR, so the stimulus is channel-specific and there are two
++ * independent per-channel status registers to watch.
++ *
++ * WHAT THESE STATUS REGISTERS ACTUALLY ARE -- STATED BEFORE THE RESULT
++ *
++ * Searched across every cached generation. RX_HPH_L_STATUS (0x1b3) and
++ * RX_HPH_R_STATUS (0x1b9) appear in exactly three places: taiko_volatile(),
++ * which only establishes that downstream reads them from the chip; the
++ * readable and POR tables; and wcd9xxx_hphl_status() in wcd9xxx-mbhc.c, which
++ * is the ONLY functional read anywhere and uses L_STATUS as an MBHC
++ * PLUG-DETECTION COMPARATOR output -- asserting MBHC_HPH bit 1, waiting 1 ms,
++ * then reading.
++ *
++ * So there is NO semantic interpretation of these bits as an RDAC-clock
++ * acknowledgement, in any generation. The observable is therefore weak, and
++ * that is said here rather than discovered afterwards:
++ *
++ *   - a reproducible CHANNEL-SPECIFIC response is strong positive evidence;
++ *   - NO RESPONSE IS NOT EVIDENCE that the 0x30d write failed;
++ *   - the existing 04 baseline is NOT interpreted, only compared against.
++ *
++ * S0 is the expected outcome. The run is worth making because it is cheap and
++ * because a positive would overturn the assumption the whole branch rests on.
++ *
++ * THE 1 ms SETTLE is taken from downstream, not invented:
++ * WCD9XXX_HPHL_STATUS_READY_WAIT_US is 1000, and wcd9xxx_hphl_status() waits
++ * that long between its stimulus and its read. A real but slow response would
++ * otherwise be missed.
++ *
++ * MBHC_HPH is deliberately NOT asserted. That would make the register
++ * meaningful in its own documented sense, which is a different experiment, and
++ * would disturb an MBHC path this run has no reason to touch.
++ */
++#define WCD9320_A_RX_HPH_L_STATUS	0x1b3
++#define WCD9320_A_RX_HPH_R_STATUS	0x1b9
++#define WCD9320_HPH_STATUS_SETTLE_US	1000
++
++static void wcd9320_hs_sample(struct wcd9320 *wcd, u8 *out, const char *when)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int a = 0, b = 0, c = 0;
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &a);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_STATUS, &b);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_STATUS, &c);
++	out[0] = a & 0xff;
++	out[1] = b & 0xff;
++	out[2] = c & 0xff;
++
++	dev_info(dev, "hs: %-28s 0x30d=%02x  L_0x1b3=%02x  R_0x1b9=%02x\n",
++		 when, out[0], out[1], out[2]);
++}
++
++/*
++ * One channel, one cycle: sample, attempt the bit, settle, sample AGAIN BEFORE
++ * RESTORING, restore, sample once more.
++ *
++ * The middle sample is the whole experiment, and it is taken inside the driver
++ * between the write and the restore. A shell-side read after the restore would
++ * be looking at a codec that had already been put back, which is how an
++ * observable like this gets missed.
++ */
++static int wcd9320_hs_channel(struct wcd9320 *wcd, int cyc, int ch, u8 mask,
++			      const char *name)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int after = 0;
++	int ret;
++
++	wcd9320_hs_sample(wcd, wcd->hs_sample[cyc][ch][0], "before the attempt");
++
++	ret = regmap_update_bits(wcd->regmap,
++				 WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, mask, mask);
++	if (ret) {
++		dev_err(dev, "hs: 0x30d write failed: %d [%s]\n", ret, name);
++		return ret;
++	}
++	wcd->c2b_writes++;
++
++	/* Downstream's own settle before a status read. */
++	usleep_range(WCD9320_HPH_STATUS_SETTLE_US,
++		     WCD9320_HPH_STATUS_SETTLE_US + 200);
++
++	wcd9320_hs_sample(wcd, wcd->hs_sample[cyc][ch][1], "WHILE ATTEMPTED");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++			     &after);
++	wcd->hs_latched[cyc][ch] = ((after & mask) == mask) ? 1 : 0;
++
++	/*
++	 * Poisoned-cache handling, exactly as the rest of the driver does it: a
++	 * refused write leaves the cache holding what the chip does not, and
++	 * regmap would then optimise the next attempt away entirely.
++	 */
++	if (!wcd->hs_latched[cyc][ch])
++		regcache_drop_region(wcd->regmap,
++				     WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++				     WCD9320_CDC_CLK_RDAC_CLK_EN_CTL);
++
++	regmap_update_bits(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++			   mask, 0);
++	wcd->c2b_writes++;
++	usleep_range(WCD9320_HPH_STATUS_SETTLE_US,
++		     WCD9320_HPH_STATUS_SETTLE_US + 200);
++
++	wcd9320_hs_sample(wcd, wcd->hs_sample[cyc][ch][2], "after the restore");
++
++	return wcd9320_pa_guard(wcd, name);
++}
++
++static int wcd9320_hs_run(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int cyc, ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "hs: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	ret = wcd9320_pa_guard(wcd, "before the HPH status observable");
++	if (ret)
++		return ret;
++
++	/* Two complete cycles. A response that is not reproducible is not a
++	 * response, and one cycle cannot tell the difference. */
++	for (cyc = 0; cyc < 2; cyc++) {
++		dev_info(dev, "hs: ---- cycle %d, HPHL (0x30d bit 1) ----\n", cyc);
++		ret = wcd9320_hs_channel(wcd, cyc, 0, 0x02, "HPHL bit 1");
++		if (ret)
++			return ret;
++
++		dev_info(dev, "hs: ---- cycle %d, HPHR (0x30d bit 2) ----\n", cyc);
++		ret = wcd9320_hs_channel(wcd, cyc, 1, 0x04, "HPHR bit 2");
++		if (ret)
++			return ret;
++	}
++
++	wcd->hs_done = true;
++	wcd->hs_runs++;
++	return 0;
++}
++
++static ssize_t hph_status_test_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!sysfs_streq(buf, "run"))
++		return -EINVAL;
++
++	ret = wcd9320_hs_run(wcd);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(hph_status_test);
++
++static ssize_t hph_status_state_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	static const char *const chn[2] = { "l", "r" };
++	static const char *const ph[3] = { "pre", "dur", "post" };
++	int n = 0, cyc, ch, p;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	n += sysfs_emit_at(buf, n, "done=%u runs=%u\n",
++			   wcd->hs_done ? 1 : 0, wcd->hs_runs);
++	for (cyc = 0; cyc < 2; cyc++)
++		for (ch = 0; ch < 2; ch++) {
++			n += sysfs_emit_at(buf, n, "c%d%s_latched=%u\n",
++					   cyc, chn[ch],
++					   wcd->hs_latched[cyc][ch]);
++			for (p = 0; p < 3; p++)
++				n += sysfs_emit_at(buf, n,
++						   "c%d%s_%s_30d=%02x c%d%s_%s_1b3=%02x c%d%s_%s_1b9=%02x\n",
++						   cyc, chn[ch], ph[p],
++						   wcd->hs_sample[cyc][ch][p][0],
++						   cyc, chn[ch], ph[p],
++						   wcd->hs_sample[cyc][ch][p][1],
++						   cyc, chn[ch], ph[p],
++						   wcd->hs_sample[cyc][ch][p][2]);
++		}
++	return n;
++}
++static DEVICE_ATTR_RO(hph_status_state);
++
 +/* ------------------- writability characterisation (r171) -- */
 +
 +/*
@@ -7508,6 +7723,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_chip_ctl_test.attr,
 +	&dev_attr_writability_test.attr,
 +	&dev_attr_writability_state.attr,
++	&dev_attr_hph_status_test.attr,
++	&dev_attr_hph_status_state.attr,
 +	&dev_attr_mclk_test.attr,
 +	&dev_attr_mclk_state.attr,
 +	&dev_attr_clk_source_test.attr,
@@ -8496,7 +8713,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("writability-rc1");
++MODULE_VERSION("hphstatus-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

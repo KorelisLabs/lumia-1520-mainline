@@ -97,10 +97,14 @@ EXPECT = {
     #            wcd9320_writability_run (two baselines and two final
     #            re-reads), 2 in writability_state_show.
     #
+    # r172: 70 = 65 - 2 + 7. The +4 over r171 is the HPH status observable:
+    #            3 in wcd9320_hs_sample (0x30d, 0x1b3, 0x1b9) and 1 in
+    #            wcd9320_hs_channel (the latch check).
+    #
     # The offset of 2 between source call sites and artefact relocations has
-    # now held across r167, r168, r169 and r170. It is stable and still
-    # unexplained; a delta computed from the source alone will be two out.
-    "read_bypassed_calls": 66,
+    # now held across r167 through r171. It is stable and still unexplained;
+    # a delta computed from the source alone will be two out.
+    "read_bypassed_calls": 70,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent

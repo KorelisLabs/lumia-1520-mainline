@@ -750,3 +750,136 @@ status register would be hard to explain any other way.
    candidate observable that needs neither the DAC nor the PA.
 
 Both are live. Nothing else is.
+
+---
+
+## 14. WHAT THE HPH STATUS REGISTERS ACTUALLY MEAN
+
+Searched before r172 was designed, across every cached file and every
+generation: `wcd9320.c` (cm-11.0), `gen2-wcd9320.c` (cm-12.1),
+`gen3-wcd9320.c` (sony cm-14.1), `wcd9320-tables.c`, `wcd9xxx-mbhc.c`,
+`wcd9xxx-common.c`, `wcd9xxx-resmgr.c`, `wcd9xxx-slimslave.c`, the MFD core,
+the machine driver, and all four register headers.
+
+### Addresses and PORs, identical everywhere
+
+| register | address | POR | ours reads |
+|---|---|---|---|
+| `RX_HPH_L_STATUS` | `0x1b3` | `0x00` | `0x04` |
+| `RX_HPH_R_STATUS` | `0x1b9` | `0x00` | `0x04` |
+
+### Every reference, and what it is
+
+1. **`taiko_volatile()`**, in all three codec generations, identically:
+
+   ```c
+   /* HPH status registers */
+   if (reg == TAIKO_A_RX_HPH_L_STATUS || reg == TAIKO_A_RX_HPH_R_STATUS)
+   	return 1;
+   ```
+
+   A cache-policy statement only. It establishes that downstream reads them
+   from the chip, and nothing about what the bits mean.
+
+2. **`taiko_reg_readable[]` and `taiko_reset_reg_defaults[]`** — table entries,
+   readable = 1, POR = `0x00`. No semantics.
+
+3. **`wcd9xxx_hphl_status()` in `wcd9xxx-mbhc.c` — the ONLY functional read
+   anywhere**, and it is not what we hoped:
+
+   ```c
+   hph = snd_soc_read(codec, WCD9XXX_A_MBHC_HPH);
+   snd_soc_update_bits(codec, WCD9XXX_A_MBHC_HPH, 0x12, 0x02);   /* stimulus */
+   usleep_range(WCD9XXX_HPHL_STATUS_READY_WAIT_US, ... );         /* 1 ms     */
+   status = snd_soc_read(codec, WCD9XXX_A_RX_HPH_L_STATUS);
+   snd_soc_write(codec, WCD9XXX_A_MBHC_HPH, hph);
+   ```
+
+   It is called from `wcd9xxx_find_plug_type()`. **`L_STATUS` is an MBHC
+   plug-detection comparator output**, meaningful only while `MBHC_HPH`
+   (`0x1fe`) bit 1 is asserted, and read 1 ms after that stimulus.
+
+### The conclusion, recorded as required
+
+> **No semantic interpretation of these bits as an RDAC-clock acknowledgement
+> exists in any generation.** Downstream never uses them that way, and the one
+> use it does have points somewhere else entirely — jack detection.
+
+This **weakens the observable** relative to the hope that prompted it, and it
+should be said plainly before the run rather than after: **S0 is now the
+expected outcome, not a surprise.** The evidence boundary already set for r172
+therefore holds with room to spare —
+
+- a reproducible **channel-specific** response is strong positive evidence;
+- **no response is not evidence** that the `0x30d` write failed;
+- and the existing `0x04` baseline is **not** to be interpreted.
+
+### One detail carried into the design
+
+Downstream waits **1 ms** (`WCD9XXX_HPHL_STATUS_READY_WAIT_US = 1000`) between
+the stimulus and the status read. r172 carries that settle, derived from the
+source rather than guessed, so a real but slow response is not missed.
+
+r172 deliberately does **not** apply the `MBHC_HPH` stimulus. Doing so would
+make the register meaningful in its *own* documented sense, which is a
+different experiment, and it would touch the MBHC path this run has no reason
+to disturb.
+
+---
+
+## 15. r172 AS BUILT
+
+**Status: STAGED, NOT YET BUILT.** pkgrel 172, `hphstatus-rc1`. RCO only: no
+MCLK, no DAC, no PA. **`0x314` takes no part in this run.**
+
+### The sequence, per channel and per cycle
+
+```
+sample   0x30d, 0x1b3 L_STATUS, 0x1b9 R_STATUS      before
+write    0x30d bit 1 (HPHL)  -- or bit 2 (HPHR)
+settle   1 ms                                        downstream's own
+sample   all three again      <-- BEFORE RESTORING, inside the driver
+record   whether the bit latched; drop the poisoned cache entry if not
+restore  the bit
+settle   1 ms
+sample   all three again                             after
+```
+
+Both channels, then **the whole thing again as a second cycle**. A response
+that is not reproducible is not a response, and one cycle cannot tell the
+difference.
+
+**The middle sample is the experiment**, and it is taken inside the driver
+between the write and the restore. A shell-side read after the restore would
+be looking at a codec already put back, which is exactly how an observable
+like this gets missed.
+
+### The 1 ms settle is derived, not invented
+
+`WCD9XXX_HPHL_STATUS_READY_WAIT_US` is `1000`, and `wcd9xxx_hphl_status()`
+waits that long between its stimulus and its read. A real but slow response
+would otherwise be missed. `MBHC_HPH` is deliberately **not** asserted -- see
+section 14.
+
+### Classification
+
+| exit | | condition |
+|---|---|---|
+| 0 | **S1** | the stimulus moves its **own** status register in **both** cycles and never the other channel's, while `0x30d` still reads `00` |
+| 1 | **S0** | neither status responds -- **INCONCLUSIVE, not a refusal** |
+| 2 | **SX** | movement is coupled, cross-channel, or differs between cycles -- observable rejected |
+| 3 | **S** | setup failure or a failed check |
+
+### What each outcome does next
+
+- **S1 -> STOP.** Do not proceed to the conjunction. The assumption
+  underpinning this entire branch -- that a bypassed readback is a valid
+  success criterion for `0x30d` -- would be in question, and with it every
+  "refused" verdict recorded against these registers, including the C2b stage 6
+  blocker itself. Reassess before building anything.
+- **S0 or SX -> preserve as inconclusive** and move to the still-untested
+  **MCLK-selected + `CHIP_CTL` = 9.6 MHz conjunction**, the last cell of the
+  matrix.
+
+S0 is the expected outcome, for the reasons in section 14. That is stated
+before the run, not after it.

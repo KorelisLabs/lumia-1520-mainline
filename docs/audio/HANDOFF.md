@@ -1201,7 +1201,7 @@ unlocks `0x314`. Downstream's adjacency is not a sufficient explanation.
 | r167 | no | no | refused |
 | r169 | **yes** | no | refused |
 | r170 | no | **yes** | refused |
-| — | **yes** | **yes** | **NEVER TESTED** |
+| â€” | **yes** | **yes** | **NEVER TESTED** |
 
 Every run moved one half. The conjunction is exactly downstream's state.
 Declaring 9.6 MHz while running from the RC oscillator is an *inconsistent*
@@ -1262,15 +1262,57 @@ any header we hold and may reflect something unrelated.
 
 ### The next task, precisely
 
-**NO BUILD IS STAGED.** Three options, in increasing cost:
+**r172 `hphstatus-rc1` is STAGED at pkgrel 172, NOT YET BUILT.** RCO only: no
+MCLK, no DAC, no PA, and `0x314` takes no part in it.
 
-- **the status-register observable** -- cheapest, RCO only, no DAC, no PA, no
-  MCLK. Directly attacks hypothesis 2, which r171 could not touch.
-- **the conjunction** -- MCLK selected + rate declared, retry `0x314`. Closes
-  the matrix. Uses only proven, reversible machinery.
-- **proceed past the refusal** -- let C2b continue to stage 7 treating the
-  readback as non-fatal for these two registers. Settles hypothesis 2
-  definitively, but powers the DAC and so has been out of scope until now.
+Does a `0x30d` write move a per-channel HPH status register? Per channel and
+per cycle: sample `0x30d`/`0x1b3`/`0x1b9`, write the bit, settle 1 ms, **sample
+again before restoring -- inside the driver**, restore, sample once more. Both
+channels, then the whole thing a second time.
+
+**THE EVIDENCE BOUNDARY, and it is not symmetric.** The bit semantics of
+`0x1b3` and `0x1b9` are undocumented in every generation we hold. The only
+functional use downstream makes of them is as an **MBHC plug-detection
+comparator**, read 1 ms after asserting `MBHC_HPH` bit 1 -- a stimulus r172
+deliberately does not apply. So:
+
+- a reproducible **channel-specific** response is strong positive evidence;
+- **no response is NOT evidence** that the `0x30d` write failed;
+- the existing `04` baseline is **not** interpreted, only compared against.
+
+**S0 is the expected outcome.** The run is worth making because it is cheap and
+because a positive would overturn the assumption the branch rests on. See
+sections 14 and 15 of the audit.
+
+To build and run:
+
+```
+tools/build-wcd9320-kernel.sh --pkgrel 172 --version hphstatus-rc1 \
+    --expect-asoc --expect-dais 1 --stage ~/r172 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
+```
+
+```
+sudo sh ~/wcd9320-tools/wcd9320-hph-status-evidence.sh
+```
+
+- **S1**, exit 0: channel-correlated and reproducible. **STOP** -- do not
+  proceed to the conjunction. Reassess whether a bypassed readback is a valid
+  success criterion for `0x30d` at all, because every "refused" verdict against
+  these registers would then be in question, including the C2b blocker.
+- **S0**, exit 1: no response. **Inconclusive, not a refusal.** Move to the
+  conjunction.
+- **SX**, exit 2: coupled, cross-channel or irreproducible. Observable
+  rejected. Move to the conjunction.
+- **S**, exit 3: setup failure or a failed check.
+
+### QUEUED AFTER r172: the MCLK + CHIP_CTL conjunction
+
+The last untested cell of the matrix -- MCLK selected **and** the rate declared
+-- using the r169 switch and the r170 declaration, both proven and reversible,
+as preconditions. Not a reopening of the MCLK questions, which stay answered.
+Queued behind r172 and cancelled if r172 returns S1.
 
 ### Rules this branch has been run under
 
@@ -1295,9 +1337,9 @@ any header we hold and may reflect something unrelated.
 
 ### Build/deploy state
 
-- **r171 `writability-rc1`** is built (artefact 79/0), installed and run;
-  result W0, 12/0. The phone is up on it, RAM-booted, module in
-  `/lib/modules`. No newer build is staged.
+- **r172 `hphstatus-rc1`** is staged at pkgrel 172 and not yet built. r171
+  `writability-rc1` is built, installed and run (W0, 12/0) and the phone is
+  currently up on it, RAM-booted.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.
