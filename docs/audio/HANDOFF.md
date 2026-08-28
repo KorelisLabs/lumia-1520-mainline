@@ -975,8 +975,8 @@ SLIMbus side.
 ## WHERE WORK RESUMES (Branch C, the codec RX/analog path)
 
 Branch A (QDSP6 control plane) and Branch B (data plane) are closed and
-tagged. Branch C is bringing up the WCD9320 receive path. Read these four, in
-order, before touching anything:
+tagged. Branch C is bringing up the WCD9320 receive path. Read these, in order,
+before touching anything:
 
 1. [wcd9320-rx1-digital-chain.md](wcd9320-rx1-digital-chain.md) -- TAGGED
    `wcd9320-rx1-digital-chain-proven`. Five registers, RX1 mux/interpolator/chain.
@@ -990,9 +990,12 @@ order, before touching anything:
    [wcd9320-buck-voltage.md](wcd9320-buck-voltage.md) -- C2b is MAPPED but NOT
    BUILT. This is the next code.
 5. [wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md) --
-   r168, the codec-side RCO -> MCLK switch. Section 10 is what was built.
-   **Read this first if you are picking the work up now**: C2b is blocked on
-   two registers, and r168 is the current attempt to unblock them.
+   r168/r169, the codec-side RCO -> MCLK switch. **CLOSED, frozen at r169.**
+   Read the banner at the top and section 10a; do not reopen it.
+6. [wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md) --
+   **READ THIS FIRST if you are picking the work up now.** C2b is blocked on
+   two registers, `0x30d[1]` and `0x314`; this is the live investigation, and
+   it opens with a defect correction that voids several earlier claims.
 
 ### Where C2b actually got to
 
@@ -1094,66 +1097,126 @@ and `0x314` and accepts writes throughout.
 block-off 3/3, rco-restore 11/11, codec back on RCO, positive control intact.
 The codec survives losing its clock entirely and being brought back.
 
+### MCLK IS CLOSED. Do not reopen it.
+
+**Frozen at r169.** Do not reopen the MCLK branch because `0x314` or `0x30d`
+still read zero -- that is the expected state, and it has been tested against a
+live external clock with the RC oscillator physically off. No further PMIC or
+MCLK changes.
+
+### A DEFECT FOUND IN THE AUDIT: `CHIP_CTL` is `0x000`, not `0x001`
+
+Our driver defines `WCD9320_A_CHIP_CTL` as `0x001`. **`0x001` is
+`CHIP_STATUS`.** Three downstream generations agree the real CHIP_CTL is
+`0x000`, and our own low dump decodes correctly only that way: `0x000` reads
+`08`, `0x004`-`0x007` give the chip id, `0x008` reads `20` = CHIP_VERSION POR.
+
+So r168's "CHIP_CTL refuses" and r169's "still refuses on MCLK" were writing a
+status register. **Every CHIP_CTL claim is void, there are two refusing
+registers rather than three, and the 9.6 MHz rate has never actually been
+declared.** The MCLK result is unaffected: `0x30d` and `0x314` were addressed
+correctly throughout.
+
+The source has deliberately **not** been changed, so the deployed r169 artefact
+and the staged r169 patch still correspond. Fixing the constant is the first
+line of r170.
+
 ### The next question, and what it is NOT
 
-Not the clock. Not the DAC, and not the PA -- do not reach for either to work
-around a refused register. Candidate directions, none yet tested:
+Full audit:
+[wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md).
+Not the clock. Not the DAC, and not the PA.
 
-- **silicon revision.** Downstream branches on `TAIKO_IS_1_0(core->version)`
-  and keeps separate `taiko_1_0_reg_defaults[]` and `taiko_2_0_reg_defaults[]`
-  tables; this part's revision is recorded in
-  [taiko-revision-2026-07-30.log](taiko-revision-2026-07-30.log). Some of these
-  registers may simply not exist as writable on this revision.
-- **a write-protect or unlock we have not found.** `0x311` accepting rules out
-  a page lock, but not a per-register one.
-- **a power or reset state** the port has never established, distinct from the
-  clock and the bandgap.
+**Eliminated, with evidence:** silicon revision (the part is Taiko 2.0 --
+id_minor `0x0001` selects the `wcd9xxx_codecs[]` row with `.version = 2`, and
+neither register is revision-conditional anywhere); reset domain (`CDC_CTL`
+measured `03` on the chip, digital core released); write-protect, secure mode,
+QFUSE, register aliasing (no such mechanism exists in any generation of the
+map); page lock (`0x311` accepts, in the same block).
 
-### r168 RAN AND WAS BLOCKED: a third register refuses
+**Established and load-bearing:** downstream marks `0x30d`/`0x314`
+non-volatile, so `taiko_read()` returns the ASoC cache and **downstream never
+reads either register back from silicon, on any board.** "It works downstream"
+is therefore not evidence that these registers read back anywhere.
 
-**Result S, no MCLK conclusion.** `CHIP_CTL` (0x001) refuses writes on this
-part, so the switch -- which r168 made conditional on declaring the 9.6 MHz
-rate -- aborted before the clock block was touched. Artefact was verified 75/0
+**Ranked candidates:**
+
+1. **`CDC_CLK_POWER_CTL` needs the rate declaration in the real `CHIP_CTL`
+   first.** Downstream writes `CHIP_CTL = 0x02` then `CDC_CLK_POWER_CTL = 0x03`
+   as the first two entries of `taiko_reg_defaults[]`, adjacent, under one
+   `/* set MCLk to 9.6 */` comment, and nowhere else in the driver. We have
+   never satisfied it, because of the address defect above. Direct source
+   support, and the cheapest to test -- on RCO, no PMIC, no DAC, no PA.
+2. **`0x30d[1]` is interlocked with the analog DAC power state.** Would explain
+   `0x30d` but not `0x314`.
+3. **Both are write-only on this silicon.** Weak -- downstream's readable table
+   marks them readable, and only `INTR_CLEAR0..3` are write-only -- but if true,
+   C2b has been stopping on a verification artefact rather than a hardware
+   failure.
+
+### r168 RAN AND WAS BLOCKED (CORRECTED -- there is no third register)
+
+> **Superseded by the audit.** The register r168 could not write was `0x001` =
+> `CHIP_STATUS`, not CHIP_CTL. Its refusal is expected and says nothing about
+> the silicon, and the "three MCLK-domain registers" grouping below is wrong.
+> There are **two**: `0x30d[1]` and `0x314`. Kept because the run's other
+> observations stand.
+
+**Result S, no MCLK conclusion.** The write r168 made conditional on declaring
+the 9.6 MHz rate was refused, so the switch aborted before the clock block was
+touched. Artefact was verified 75/0
 first, and nothing was disturbed: PA at `80`, DAC dark, `0x314`/`0x30d` at POR,
 positive control `78/30/37` throughout.
 
-**The refusal is the finding.** `0x001` joins `0x314` and `0x30d[1]`, and the
-three share exactly one property, which is not their function: all are
-**MCLK-domain registers on a codec that has never had an MCLK**. Downstream
-corroborates it -- `taiko_reg_defaults[]` opens with `CHIP_CTL = 0x02` and
-`CDC_CLK_POWER_CTL = 0x03`, adjacent, under one "set MCLk to 9.6" comment, on
-a board whose MCLK is running by then. Three puzzles become one hypothesis.
-
-Not established: whether `0x001` needs a live MCLK or is simply read-only on
-this part. And **the restore path is still unexercised** -- the abort came
-before the clock block moved.
+What survives from the run: the downstream observation that
+`taiko_reg_defaults[]` opens with `CHIP_CTL = 0x02` and
+`CDC_CLK_POWER_CTL = 0x03`, adjacent, under one "set MCLk to 9.6" comment, on a
+board whose MCLK is running by then. That pairing is now candidate 1 above --
+but it points at `0x000`, which r168 never wrote.
 
 ### The next task, precisely
 
-**There is no staged build.** r169 answered its question and the MCLK lead is
-closed; the next build should not be written until the direction above is
-narrowed by reading rather than by another hardware run.
+**RESEARCH IS DONE; NO BUILD IS STAGED.** r170 is the first build after the
+audit, and it has exactly two jobs, in this order:
 
-The r169 harness stays useful and is installed: `clk_source_test` /
-`clk_source_state` switch the codec to the external MCLK and back, proven
-reversible, so any future experiment can be run *with the codec on MCLK* rather
-than having to establish that first.
+1. **Fix the constant.** `WCD9320_A_CHIP_CTL` `0x001` -> `0x000`. Nothing else
+   in the driver is affected: the generated regmap tables already carry `0x000`
+   correctly, because `wcd9320-regmap-derive.py` parses the numeric
+   `WCD9XXX_A_*` defines rather than the Taiko aliases.
+2. **Run the section 7 experiment** from the audit -- two reversible writes on
+   the RC oscillator:
+
+```
+read   0x000                 expect 08 (not 00 -- bit 3 is set, and unexplained)
+write  0x000 [2:1] <- 0x2    the 9.6 MHz declaration, chip-verified, MASKED
+retry  0x314 <- 0x03
+retry  0x30d[1] <- 1
+restore 0x314, 0x30d, then 0x000 to its measured value
+```
+
+Falsifies candidate 1 if `0x314` still refuses with `0x000[2:1]` verified at
+`0x2` on the chip. Confirms it if `0x314` latches. If `0x314` latches and
+`0x30d[1]` does not, candidate 2 is promoted for `0x30d` alone.
+
+**Use the masked write first.** Downstream issues a full-byte
+`snd_soc_write(CHIP_CTL, 0x02)`, which would clear the bit 3 our part currently
+has set. Bit 3 is not described in any header we hold, so clearing it is an
+unknown and must not be bundled into the same measurement. Try the full write
+only if the masked one fails, and as a separate step.
+
+No PMIC, no clock-source switch, no DAC, no PA. The PA guard and the positive
+control apply unchanged.
+
+The r169 harness stays installed and is proven reversible, so a later
+experiment can be run *with the codec on MCLK* without re-establishing it:
 
 ```
 sudo sh ~/wcd9320-tools/wcd9320-clk-source-evidence.sh
 ```
 
-- **M4**, exit 0: the registers accepted. Would mean something else in the run
-  changed them; investigate before believing it.
-- **M2'**, exit 1: switched, control intact, still refused. **This is the
-  current result.**
-- **M5**, exit 2: the control read `00` -- the CDC block went dark. Would now
-  be a regression, since r169 established the clock arrives.
-- **S**, exit 3: the path or the switch did not complete. Not a codec result.
-
-**Redeploy the gate script before every run and checksum the phone's copy.**
+**Redeploy every gate script before every run and checksum the phone's copy.**
 The r169 driver was first run against the *r168* script because that step was
-skipped, producing a spurious FAIL and hiding the CHIP_CTL probe result.
+skipped, producing a spurious FAIL and hiding a probe result.
 
 ### Rules this branch has been run under
 

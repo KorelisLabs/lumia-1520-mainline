@@ -1,8 +1,40 @@
-# r168 mapping: the codec-side RCO -> MCLK source switch
+# The codec-side RCO -> MCLK source switch (r168, r169)
 
-**Status:** research only, 2026-08-27. **No code written, no register poked.**
-Prerequisite: the r167 PMIC configuration (DIV_CTL1 = 2, gpio15 func1) is now
-frozen and is not revisited here. No PMIC changes in r168.
+> # THE MCLK BRANCH IS CLOSED. FROZEN AT r169, 2026-08-28.
+>
+> **Do not reopen it because `0x314` or `0x30d` still read zero.** That is the
+> expected state and it has already been tested against a live external clock.
+> Everything below r167 is the construction record; sections 10 and 10a are the
+> result.
+>
+> **What is settled, and is not to be re-derived:**
+>
+> | | |
+> |---|---|
+> | PM8941 DIV_CLK1 `/2` | configured, chip-verified, survives the RPM vote |
+> | gpio15 | routed as DIV_CLK (`func1`), driven |
+> | RPM ownership | enable vote is RPM's, divide factor is the AP's, no clobber |
+> | codec source switch | works, RCO -> external and back |
+> | RC oscillator | verified **off** on the chip (`0x1fa` `c6 -> 46`) |
+> | CDC positive control | held exact across the switch: `0x2b4=78 0x370=30 0x373=37` |
+> | therefore | the CDC domain ran from the external source; **a clock reaches the codec** |
+> | `0x314`, `0x30d[1]` | **still refused, with the clock running** |
+> | MCLK -> RCO recovery | hardware-proven, three cycles |
+>
+> **The "MCLK unlocks these registers" hypothesis is REFUTED by measurement.**
+> No further PMIC or MCLK changes. The remaining question is not the clock, and
+> it is being pursued in
+> [wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md).
+>
+> **One correction that post-dates this document:** `CHIP_CTL` is at `0x000`,
+> not `0x001`. Everything below that treats `0x001` as CHIP_CTL is wrong, and
+> every claim that "CHIP_CTL refuses" is void — `0x001` is `CHIP_STATUS`. The
+> MCLK conclusions are unaffected, because `0x30d` and `0x314` were addressed
+> correctly throughout. See the audit, section 0.
+
+**Original status:** research only, 2026-08-27. **No code written, no register
+poked.** Prerequisite: the r167 PMIC configuration (DIV_CTL1 = 2, gpio15 func1)
+is frozen and is not revisited here. No PMIC changes in r168.
 
 ## Why this is the next single uncertainty
 
