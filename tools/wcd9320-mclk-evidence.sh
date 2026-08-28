@@ -14,9 +14,21 @@
 #
 # Supplying a clock and selecting it are two changes. r167 makes only the
 # first, so a positive result is attributable to the clock being PRESENT rather
-# than SELECTED. The artefact gate proves the driver has no write site for
-# CLK_BUFF_EN1 (0x108), so this is enforced and not merely intended. If the
-# answer is no, the source switch becomes r168 with the clock already proven.
+# than SELECTED. If the answer is no, the source switch becomes r168 with the
+# clock already proven.
+#
+# CORRECTED AT r168. This used to read "the artefact gate proves the driver has
+# no write site for CLK_BUFF_EN1 (0x108), so this is enforced and not merely
+# intended." That was an overclaim. The gate's check looked for
+# update_bits/regmap_write on the same line as the symbol and could not see a
+# wcd9320_wake_step table row, which is how 0x108 is actually written --
+# wcd9320_rco_wake[] and wcd9320_rco_sleep[] were writing it all along, to
+# SELECT RCO. The gate proved the absence of a DIRECT write, not the absence of
+# a write.
+#
+# The r167 finding is unaffected: that the codec stayed RCO-selected is MEASURED
+# on the chip after the vote transition, below, and never rested on the gate.
+# The gate now counts table rows as well as direct calls.
 #
 # THE OWNERSHIP SPLIT THIS ENCODES
 #
@@ -288,9 +300,11 @@ UNLOCKED=0
 		say ""
 		say "That is a causal result: DIV_CTL1 = 2 and gpio15 = func1 were"
 		say "the only things this run changed on the codec's behalf, both"
-		say "verified on the chip after the RPM vote transition, and"
-		say "CLK_BUFF_EN1 was never written -- the artefact gate proves the"
-		say "driver has no write site for it."
+		say "verified on the chip after the RPM vote transition, and the"
+		say "codec's source selection was READ BACK FROM THE CHIP as RCO"
+		say "after the whole sequence. (That measurement is the evidence,"
+		say "not the artefact gate: see the correction in this file's"
+		say "header for what the gate did and did not prove about 0x108.)"
 		say ""
 		say "WHAT IT DOES NOT CLAIM. Not that 9.6 MHz was measured arriving"
 		say "at the codec's MCLK pin. Nothing here observes the pad; that"

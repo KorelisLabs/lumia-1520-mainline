@@ -989,6 +989,10 @@ order, before touching anything:
 4. [wcd9320-hphl-dac-c2b-mapping.md](wcd9320-hphl-dac-c2b-mapping.md) plus
    [wcd9320-buck-voltage.md](wcd9320-buck-voltage.md) -- C2b is MAPPED but NOT
    BUILT. This is the next code.
+5. [wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md) --
+   r168, the codec-side RCO -> MCLK switch. Section 10 is what was built.
+   **Read this first if you are picking the work up now**: C2b is blocked on
+   two registers, and r168 is the current attempt to unblock them.
 
 ### Where C2b actually got to
 
@@ -1028,64 +1032,93 @@ the RX1 chain does reach silicon (`0x2b5` moved `hw=88 -> a8`), class-H being
 fully established changes nothing (`0x320 = a7`, `0x30d` still `00`), and no
 DAPM supply on the route was omitted.
 
-### The current lead, and its exact status
+### The current lead, and how far it has been taken
 
 [wcd9320-mclk-mapping.md](wcd9320-mclk-mapping.md) -- the board-level clock the
-port has never provided. **Outcome B**: the divider exists and runs, the
-physical routing is not proven.
+port has never provided. Sections **2b and later** are the live ones; everything
+before them is superseded.
 
-Established by reading the PMIC directly: three CLKDIV peripherals at SPMI
-`0x5b00`/`0x5c00`/`0x5d00` (type `06`, subtype `0b`), DIV_CLK1 and 2 enabled by
-the boot chain at divide-by-1, so 19.2 MHz where Taiko wants 9.6. The Lumia's
-ACPI power state for `\_SB.ADSP.SLM1.ADCM.AUDD` enables DIV_CLK_1 and
-configures a PMIC GPIO in the same FSTATE as the codec's 2.15 V and 1.8 V
-rails. No PMIC GPIO is currently in an alternate function, and the codec is
-selecting RCO.
+**r166 was a BOOT REGRESSION and yields no conclusion.** A
+`qcom,spmi-clkdiv` provider at `0x5b00` registers CCF clocks named
+`div_clk1..N`, and MSM8974's RPM already exports `div_clk1`; the duplicate
+registration failed `-EEXIST`, took the RPM clock controller down, and the eMMC
+lost regulator support. The architecture was right and the namespace collision
+was the defect. **Before adding any provider or resource, ask whether the
+platform already models it.**
 
-NOT established: that the pad reaches the codec's MCLK input, or which
-pmic-gpio function carries DIV_CLK. Nothing in the kernel documents the latter;
-`pmic_gpio_set_mux()` rejects func3/func4 on non-LV/MV subtypes and gpio15
-reports subtype `0x05`, so it is **func1 or func2** and no third option.
+Ownership is now settled from a shipping MSM8974 + WCD9320 board (Nexus 5): RPM
+owns the **enable vote**, AP kernel software owns the **divide factor**, and
+pinctrl owns the **routing**. `clk_get_rate()` is evidence of nothing -- it
+reports RPM's fixed nominal 19.2 MHz and never reads `DIV_CTL1`.
+
+**r167 returned M2.** The external path is established as far as the PMIC pad:
+`DIV_CTL1 = 2`, gpio15 on `func1` = DIV_CLK, the RPM enable vote held, and all
+of it re-read *after* the vote transition so RPM had not clobbered it. `0x314`
+and `0x30d[1]` still refused while the codec remained RCO-selected. So
+PMIC-side configuration alone is insufficient *while the codec is not selecting
+that clock*.
+
+NOT established: that the pad physically reaches the codec's MCLK input.
+Nothing in software observes it.
 
 ### The next task, precisely
 
-**r166 is BUILT (63/0) and staged but NOT YET RUN** -- the battery died before
-the run. `boot-1520-mclk-rc1.img` and `wcd9320.ko` are in `RegenX AE/r166`,
-module sha `a1662842...`.
+**r168 `clksrc-rc1` is WRITTEN AND STAGED at pkgrel 168, but NOT YET BUILT OR
+RUN.** It is the codec-side RCO -> MCLK source switch, mapped in
+[wcd9320-rco-mclk-switch-mapping.md](wcd9320-rco-mclk-switch-mapping.md), whose
+section 10 describes what was built.
 
-It adds `CONFIG_SPMI_PMIC_CLKDIV`, a clkdiv provider at `0x5b00` with DIV_CLK1
-at 9.6 MHz, `gpio15` on `func1` as an output at `PM8941_GPIO_S3`, and a
-refcounted `clk_prepare_enable()` in the codec. **The codec deliberately stays
-on RCO** -- the artefact gate proves zero write sites for `0x108`, so r166
-supplies the clock and cannot select it.
+The switch is **not a hot swap**: downstream disables the clock block entirely
+and re-enables it on MCLK, and enabling on MCLK disables the RC oscillator, so
+there is no warm fallback. Recovery is nonetheless guaranteed in software --
+codec register access rides the SLIMbus interface function and does not depend
+on the CDC clock -- and the driver's teardown runs from a failure label, not
+from the success path.
 
-To run it: install the module FIRST (a `fastboot boot` never updates
-`/lib/modules`, and a stale module fails the version gate), power cycle,
-`fastboot boot` the image, then
+It writes `CHIP_CTL[2:1] = 0x2` inside the switch, which is a **change from the
+r165-r167 rule**: a 9.6 MHz clock against a 12.288 MHz rate declaration is not
+a configuration worth testing. The cost is recorded: a positive result cannot
+be attributed to one of the two changes without a further build.
+
+To build and run:
 
 ```
-sudo sh ~/wcd9320-tools/wcd9320-mclk-evidence.sh
+tools/build-wcd9320-kernel.sh --pkgrel 168 --version clksrc-rc1 \
+    --expect-asoc --expect-dais 1 --stage <dir> \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
 ```
 
-Five facts must cross before the codec is asked anything -- rate, divide
-factor, enable bit, pad mux, and the codec's unchanged source, four of them
-read from the PMIC's own registers. Then it retries `0x314` and `0x30d`.
+then install the module FIRST (a `fastboot boot` never updates `/lib/modules`,
+and a stale module fails the version gate), power cycle, `fastboot boot` the
+image, and
 
-- **A** they latch: the external clock's presence was the prerequisite, and
-  that also confirms by the only means software has that gpio15 reaches this
-  codec. C2b resumes.
-- **B** they still refuse: real negative, but it only says presence is
-  insufficient *while the codec is not selecting it*. Then r167 maps and adds
-  the RCO -> MCLK switch from `wcd9xxx_enable_clock_block()` as one further
-  change -- with the hazard that if no clock is really arriving, switching away
-  from RCO stops the CDC core until it is switched back.
-- **C** the path did not configure: a board-description problem, NOT a result
-  about the codec. If gpio15 reports func2 rather than func1, that is testable
-  at runtime through the pinctrl debugfs `pinmux-select` without rebuilding.
+```
+sudo sh ~/wcd9320-tools/wcd9320-clk-source-evidence.sh
+```
 
-Do not write `CHIP_CTL` (0x001). It is observe-only and unmapped; downstream
-sets it beside `0x314` under one "set MCLk to 9.6" comment and then adjusts it
-by MCLK rate, and this board is RCO-based.
+**The run turns on a positive control**, and this is the part not to skip. A
+CDC-block register reading `00` is ambiguous between "the write was refused"
+and "the block has no clock and reads as zero". So `0x2b4` (`78`), `0x370`
+(`30`) and `0x373` (`37`) are read before and after the switch; the retry of
+`0x314`/`0x30d` runs **only** if they held.
+
+- **M4**, exit 0: switched, control intact, the registers accepted. C2b resumes
+  with the codec on MCLK -- and the CHIP_CTL/source attribution is then worth
+  splitting.
+- **M2'**, exit 1: switched, control intact, still refused. A real negative,
+  and a strong one: it also proves a clock *is* arriving, because the digital
+  core kept running with the RC oscillator off. The MCLK hypothesis for these
+  two registers would then be exhausted.
+- **M5**, exit 2: the control read `00`. The CDC core stopped when taken off
+  RCO, so no clock is arriving at the pin. **This says nothing about `0x30d` or
+  `0x314`**, and the next question is the physical route from PM8941 gpio15 to
+  the codec on RM-940 -- measurement, not more register work.
+- **S**, exit 3: the frozen path or the switch itself did not complete. Not a
+  result about the codec.
+
+Frozen in r168: no PMIC changes, no `CONFIG_SPMI_PMIC_CLKDIV`, no second clock
+provider, no DAC, no PA.
 
 ### Rules this branch has been run under
 
@@ -1099,13 +1132,20 @@ by MCLK rate, and this board is RCO-based.
   carry both.
 - Downstream GPL source is cached at `~/.cache/wcd9320-downstream/` for
   analysis and is NEVER checked in.
+- Before adding any provider or resource, ask whether the platform ALREADY
+  MODELS IT. That omission is what broke r166.
+- **When a checker reports many failures, suspect the checker.** Several gates
+  here have been wrong in the direction of failing correct builds, and each was
+  found by verifying one failure by hand before acting on the batch. r168 found
+  the opposite kind: an artefact-gate check that PASSED vacuously because it
+  could not see writes made through `wcd9320_c2b_write()` or through a
+  `wcd9320_wake_step` table. It now counts both.
 
 ### Build/deploy state
 
-- Latest build **r166 `mclk-rc1`**, verified 63/0 and staged in
-  `RegenX AE/r166`, but NOT yet installed or run -- the battery died
-  first. The phone was last running r165 `rdac-clk-rc1`. Next is r167,
-  and only if r166 comes back outcome B.
+- Latest build **r168 `clksrc-rc1`**, staged at pkgrel 168 (patch regenerated,
+  both APKBUILDs updated, checksums positional) but **NOT yet built or run**.
+  The phone is currently up on r167 `mclk-rc2`.
 - `tools/wcd9320-stage-patch.sh` now does the staging half -- patch
   regeneration, pkgrel, and both APKBUILD checksum sets -- which used to
   live in whatever commands a session happened to run. `--check` verifies

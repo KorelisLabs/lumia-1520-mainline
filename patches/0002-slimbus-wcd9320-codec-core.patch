@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-27 16:39:54.666631089 -0400
-@@ -0,0 +1,7072 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-27 21:07:02.446970348 -0400
+@@ -0,0 +1,7667 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1893,6 +1893,24 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* ---- the external MCLK (r166) ---- */
 +	struct clk *mclk;              /* NULL when the DT does not provide one */
 +	unsigned int mclk_refs;
++
++	/* ---- the codec clock source switch (r168) ---- */
++	bool clk_src_mclk;             /* the codec is selecting the external MCLK */
++	bool chip_ctl_pre_valid;
++	u8 chip_ctl_pre;               /* 0x001 as measured before any write */
++	/*
++	 * The positive control: three CDC-block registers with known non-zero
++	 * contents, so a 00 read can be told apart from a refused write. Kept
++	 * either side of the transition rather than only after it.
++	 */
++	u8 clk_ctrl_pre[3];
++	u8 clk_ctrl_post[3];
++	bool clk_ctrl_pre_valid;
++	bool clk_ctrl_post_valid;
++	int cdc_alive;                 /* -1 never measured, 0 dark, 1 responding */
++	unsigned int clk_src_switches;
++	unsigned int clk_src_restores;
++	int clk_src_last_error;
 +};
 +
 +/*
@@ -4949,15 +4967,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * this part reads 0x00, which is the single unexplained difference from
 + * downstream's state at the moment the HPHL RDAC clock is enabled.
 + *
-+ * CHIP_CTL is DELIBERATELY OBSERVE-ONLY. Downstream sets it to 0x02 in the
-+ * same defaults table, under the same "set MCLk to 9.6" comment, and then
-+ * updates mask 0x06 according to the selected MCLK rate. This board's clock
-+ * architecture is RCO-based, so that pair cannot be promoted together without
-+ * making a positive result uninterpretable -- and a rate-select register is
-+ * not something to poke because it is the next thing on the list. It is read
-+ * here so its value is on the record, and it is never written.
++ * CHIP_CTL was OBSERVE-ONLY for r165 to r167, and is not any more.
++ * Downstream sets it to 0x02 in the same defaults table, under the same
++ * "set MCLk to 9.6" comment, and then updates mask 0x06 according to the
++ * selected MCLK rate. While this board ran on its RC oscillator that pair
++ * could not be promoted together without making a positive 0x314 result
++ * uninterpretable, so those builds read it and never wrote it.
++ *
++ * r168 switches the codec onto the external 9.6 MHz clock, and a rate
++ * declaration of 12.288 MHz against a 9.6 MHz input is not a configuration
++ * worth testing. So 0x001 IS written there, from exactly one site -- see
++ * wcd9320_clk_source_switch() -- and the consequence for attribution is
++ * recorded at that site rather than glossed over.
 + */
-+#define WCD9320_A_CHIP_CTL			0x001	/* observed, never written */
++#define WCD9320_A_CHIP_CTL			0x001	/* written only by the r168 switch */
 +#define WCD9320_CDC_CLK_POWER_CTL		0x314
 +#define WCD9320_A_CLK_BUFF_EN1			0x108	/* bit 3 set = RCO selected */
 +#define WCD9320_A_CLK_BUFF_EN2			0x109
@@ -5897,6 +5920,575 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(mclk_state);
 +
++/* ------------------- the codec clock source switch (r168) -- */
++
++/*
++ * r168: switch the codec from its RC oscillator to the external MCLK.
++ *
++ * WHY THIS IS THE NEXT SINGLE VARIABLE
++ *
++ * r167 returned M2. The external path is established as far as the PMIC pad --
++ * DIV_CTL1 = 2 written and chip-verified, gpio15 on func1 = DIV_CLK, the RPM
++ * enable vote held, and all of it re-read AFTER the vote transition so RPM did
++ * not clobber it -- and CDC_CLK_POWER_CTL (0x314) and CDC_CLK_RDAC_CLK_EN_CTL
++ * (0x30d) bit 1 still refused while the codec remained RCO-selected. So the
++ * remaining variable is whether the codec has to be RUNNING FROM that clock.
++ *
++ * The PMIC configuration is a frozen prerequisite here: r168 re-establishes it
++ * and does not re-investigate it. Nothing in this file touches the PMIC.
++ *
++ * THIS IS NOT A HOT SWAP, AND THAT IS THE WHOLE RISK MODEL
++ *
++ * wcd9xxx_resmgr_get_clk_block(MCLK) from an RCO state does NOT mux between
++ * two running clocks. It calls wcd9xxx_disable_clock_block() and only then
++ * wcd9xxx_enable_clock_block(resmgr, 0), so the codec passes through a state
++ * with no clock at all. enable_clock_block()'s first act is a WARN_ON that
++ * CLK_BUFF_EN2 bit 2 is clear -- an assertion that the block really was turned
++ * off first. There is no glitchless path and none is invented here.
++ *
++ * Switching to MCLK also DISABLES the RC oscillator (RC_OSC_FREQ bit 7 clear),
++ * so after the switch there is no warm fallback. The restore has to restart
++ * the oscillator, which costs the 10 ms settle the RCO wake sequence already
++ * carries.
++ *
++ * WHY RECOVERY IS GUARANTEED IN SOFTWARE
++ *
++ * Codec register access does not depend on the CDC clock, and that is
++ * established from downstream's own ordering rather than by argument:
++ * enable_clock_block() reads CLK_BUFF_EN2 and RC_OSC_FREQ and issues eight
++ * register writes while the block is off. If register access needed the CDC
++ * clock, that code could not run on any board. Access rides the SLIMbus
++ * interface function, clocked from the ADSP-mastered bus -- which is why the
++ * IFD has its own regmap in this driver. So software can always write the
++ * codec back to RCO: no module reload, no reboot, no power cycle.
++ *
++ * THE POSITIVE CONTROL, AND WHY THE RUN IS WORTHLESS WITHOUT IT
++ *
++ * A CDC-block register reading 00 is ambiguous between "the write was refused"
++ * and "the block has no clock and reads as zero". Those are indistinguishable
++ * from 0x30d and 0x314 alone, and if this switches to an MCLK that is not
++ * physically arriving, the second is exactly what happens -- and reporting it
++ * as "MCLK still insufficient" would be a false negative that looked clean.
++ *
++ * So three CDC-block registers with KNOWN NON-ZERO contents are read before
++ * and after the switch. If they hold, the CDC block is responding and a
++ * refusal is a real refusal. If they read 00, the core is unclocked and the
++ * run says nothing at all about the RDAC question.
++ *
++ * WHAT IT STILL CANNOT DO
++ *
++ * Observe the pad. Nothing in software sees 9.6 MHz arriving at the codec's
++ * MCLK pin. What this produces is corroboration: if the CDC core keeps running
++ * after the source switch, a clock is arriving; if it stops, one is not. The
++ * codec becomes its own clock detector, which is a much stronger instrument
++ * than anything available before -- and it is still inference from behaviour,
++ * not a waveform.
++ */
++
++/*
++ * CHIP_CTL[2:1] is a RATE DECLARATION, not part of the switch.
++ *
++ * Downstream writes it ONCE in taiko_codec_probe(), from board data, and the
++ * clock switch never touches it again:
++ *
++ *   if (mclk_rate == TAIKO_MCLK_CLK_12P288MHZ) update_bits(CHIP_CTL, 0x06, 0x0)
++ *   else if (mclk_rate == TAIKO_MCLK_CLK_9P6MHZ) update_bits(CHIP_CTL, 0x06, 0x2)
++ *
++ * It is not optional for us. r167 established a 9.6 MHz clock (19.2 MHz XO
++ * with DIV_CTL1 = 2) and this part's CHIP_CTL reads 0x00, which declares
++ * 12.288 MHz. Switching to MCLK with CHIP_CTL untouched would run the codec's
++ * internal dividers against a rate the hardware is not receiving.
++ *
++ * So it is written here, chip-verified, as step 2 of the sequence -- and the
++ * consequence is stated rather than hidden: r168 changes the rate declaration
++ * AND the clock source in one run. If 0x314 and 0x30d then latch, this run
++ * cannot say which of the two did it, and separating them is a further build.
++ * That is a deliberate, recorded choice, not an oversight.
++ *
++ * The "do not write CHIP_CTL" rule was an r165-to-r167 boundary and those
++ * builds kept it; the artefact gate proved zero write sites for 0x001 in each.
++ * The gate is INVERTED for r168 rather than removed: 0x001 may now be written,
++ * and only from this switch.
++ */
++#define WCD9320_CHIP_CTL_MCLK_RATE_MASK		0x06
++#define WCD9320_CHIP_CTL_MCLK_9P6MHZ		0x02	/* 19.2 MHz XO / 2 */
++
++#define WCD9320_RC_OSC_ENABLE			0x80	/* 0x1fa bit 7 */
++#define WCD9320_CLK_BUFF_EN1_RCO_SEL		0x08	/* 0x108 bit 3 */
++
++/*
++ * The positive control: CDC-block registers whose contents are known.
++ *
++ * All three are regmap defaults in this driver -- 0x2b4 = 78, 0x370 = 30,
++ * 0x373 = 37 -- so the expected values are DERIVED from the POR table and not
++ * from anything the hardware happened to show. They are read BYPASSED, because
++ * every one of them is non-volatile in our regmap and a cached read would
++ * cheerfully report the default back from a codec that had gone dark.
++ *
++ * r168 does NOT bring up the compander or the RX1 chain. Both would move
++ * registers in this set, and the control is worth more at its documented
++ * baseline than the harness is worth carrying a prerequisite the switch does
++ * not need.
++ */
++struct wcd9320_clk_control {
++	u16 reg;
++	u8 por;
++	const char *name;
++};
++
++static const struct wcd9320_clk_control wcd9320_clk_controls[] = {
++	{ WCD9320_CDC_RX1_B5_CTL,   0x78, "CDC_RX1_B5_CTL" },
++	{ WCD9320_CDC_COMP1_B1_CTL, 0x30, "COMP1_B1_CTL" },
++	{ WCD9320_CDC_COMP1_B4_CTL, 0x37, "COMP1_B4_CTL" },
++};
++
++/*
++ * Step A -- wcd9xxx_disable_clock_block(), and it is the SAME in both
++ * directions.
++ *
++ * These three rows are the first three rows of wcd9320_rco_sleep[] verbatim.
++ * They are split out rather than copied conceptually so the switch runs the
++ * transitions this driver has already executed on hardware many times, through
++ * the same wcd9320_run_sequence() that reads the chip before and after every
++ * step and aborts on the first mismatch.
++ */
++static const struct wcd9320_wake_step wcd9320_clk_block_off[] = {
++	{ WCD9320_A_CLK_BUFF_EN2,    0x04, 0x00,    50, true,
++	  "CLK_BUFF_EN2: clock off" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x02, 0x02,     0, true,
++	  "CLK_BUFF_EN2: set bit 1" },
++	{ WCD9320_A_CLK_BUFF_EN1,    0x05, 0x00,    50, true,
++	  "CLK_BUFF_EN1: disable buffer and source select" },
++};
++
++/*
++ * Step B, first half: stop selecting the RC oscillator.
++ *
++ * Separate from the tail because downstream reads RC_OSC_FREQ between the two
++ * and branches on it, and a read-then-branch is not something a step table can
++ * express. Inventing an unconditional version would be reversing the enable
++ * path by hand, which is exactly what this branch does not do.
++ */
++static const struct wcd9320_wake_step wcd9320_clk_mclk_desel[] = {
++	{ WCD9320_A_CLK_BUFF_EN1,    0x08, 0x00,     0, true,
++	  "CLK_BUFF_EN1: stop selecting the RC oscillator" },
++};
++
++/*
++ * Step B, the conditional: wcd9xxx_resmgr_enable_config_mode(codec, 0).
++ *
++ * Taken only when RC_OSC_FREQ bit 7 says the oscillator is still running.
++ * THIS IS THE POINT OF NO WARM RETURN -- after the last row there is no RCO to
++ * fall back to, and the restore has to start one.
++ */
++static const struct wcd9320_wake_step wcd9320_clk_rco_shutdown[] = {
++	{ WCD9320_A_CLK_BUFF_EN2,    0x00, 0x02,     0, true,
++	  "CLK_BUFF_EN2 = 0x02 (a full write downstream, not a masked one)" },
++	{ WCD9320_A_BIAS_OSC_BG_CTL, 0x01, 0x00,     0, true,
++	  "BIAS_OSC_BG_CTL: clear bit 0" },
++	{ WCD9320_A_RC_OSC_FREQ,     0x80, 0x00,     0, true,
++	  "RC_OSC_FREQ: RC oscillator OFF -- no warm fallback past this row" },
++};
++
++/*
++ * Step B, the tail: select the external source and bring the buffer up.
++ *
++ * The last five rows are the same shared tail wcd9320_rco_wake[] ends with,
++ * including the 1.2 ms the codec hardware requires to enable the clock buffer
++ * and the unverifiable CDC gate. 0x311 stays verify=false for the reason it
++ * always has: it is a gate into the CDC block, and reading it back proves
++ * nothing about whether a clock crossed it.
++ */
++static const struct wcd9320_wake_step wcd9320_clk_mclk_tail[] = {
++	{ WCD9320_A_CLK_BUFF_EN1,    0x0c, 0x04,     0, true,
++	  "CLK_BUFF_EN1: source = external, reference = VBG" },
++	{ WCD9320_A_CLK_BUFF_EN1,    0x01, 0x01,  1200, true,
++	  "CLK_BUFF_EN1: enable clock buffer (hardware-required delay)" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x02, 0x00,     0, true,
++	  "CLK_BUFF_EN2: clear bit 1" },
++	{ WCD9320_A_CLK_BUFF_EN2,    0x04, 0x04,     0, true,
++	  "CLK_BUFF_EN2: clock on" },
++	{ WCD9320_A_CDC_CLK_MCLK_CTL, 0x01, 0x01,   50, false,
++	  "CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)" },
++};
++
++/*
++ * The inverse, MCLK -> RCO, is NOT a new table.
++ *
++ * wcd9xxx_resmgr_put_clk_block(MCLK) with RCO users still held does
++ * disable_clock_block() then enable_clock_block(resmgr, 1) -- and phase B of
++ * wcd9320_rco_wake[] IS enable_clock_block(1): enable_config_mode(1) followed
++ * by the same shared tail. So the restore runs a slice of the proven table
++ * rather than a hand-written copy of it, and there is no second place for the
++ * two to drift apart.
++ *
++ * Phase A of that table is the central bandgap, which this switch never turns
++ * off, so the slice starts after it.
++ */
++#define WCD9320_RCO_WAKE_PHASE_B	4
++
++static int wcd9320_clk_read_control(struct wcd9320 *wcd, u8 *out,
++				    const char *when)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int val;
++	int alive = 1;
++	size_t i;
++	int ret;
++
++	for (i = 0; i < ARRAY_SIZE(wcd9320_clk_controls); i++) {
++		const struct wcd9320_clk_control *c = &wcd9320_clk_controls[i];
++
++		ret = regmap_read_bypassed(wcd->regmap, c->reg, &val);
++		if (ret) {
++			dev_err(dev,
++				"clk-src: positive control 0x%03x read failed %s: %d\n",
++				c->reg, when, ret);
++			return ret;
++		}
++		out[i] = val & 0xff;
++
++		dev_info(dev,
++			 "clk-src: positive control 0x%03x %-14s = %02x (want %02x) %s\n",
++			 c->reg, c->name, out[i], c->por, when);
++
++		if (out[i] != c->por)
++			alive = 0;
++	}
++
++	return alive;
++}
++
++/*
++ * The switch itself.
++ *
++ * On the way to MCLK, EVERY failure after the first sequence write goes to the
++ * restore label. The teardown does not run only on success: a sequence that
++ * aborted half way is precisely the case where the codec must not be left
++ * without a clock, and an error return that skipped the restore would turn a
++ * recoverable abort into a dark core.
++ */
++static int wcd9320_clk_source_switch(struct wcd9320 *wcd, bool to_mclk)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int rcosc = 0, chipctl = 0;
++	int ret, alive, rrc;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "clk-src: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	/*
++	 * The restore slice must really be the RCO clock block and not whatever
++	 * index drift has put at that offset. Checked at runtime because the
++	 * table is not a compile-time constant expression.
++	 */
++	if (wcd9320_rco_wake[WCD9320_RCO_WAKE_PHASE_B].reg !=
++	    WCD9320_A_RC_OSC_FREQ) {
++		dev_err(dev,
++			"clk-src: the RCO phase-B slice does not start at RC_OSC_FREQ -- refusing\n");
++		return -EINVAL;
++	}
++
++	if (to_mclk) {
++		/*
++		 * The PA guard refuses on the way OUT and only observes on the
++		 * way BACK. It exists to stop this run becoming a PA run; a
++		 * guard that also refused the restore would strand the codec
++		 * without a clock over a condition the restore cannot make
++		 * worse, and recovery must not be blockable by a safety check.
++		 */
++		ret = wcd9320_pa_guard(wcd, "before the clock source switch");
++		if (ret)
++			return ret;
++
++		if (wcd->clk_src_mclk) {
++			dev_err(dev, "clk-src: already on MCLK\n");
++			return -EBUSY;
++		}
++
++		/*
++		 * downstream: WARN_ON(!(RC_OSC_FREQ & 0x80)) at the top of
++		 * get_clk_block(). A WARN there; a refusal here, because a
++		 * switch that starts from a state the source never anticipated
++		 * would produce a result nobody could interpret.
++		 */
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RC_OSC_FREQ,
++					   &rcosc);
++		if (ret)
++			return ret;
++		if (!(rcosc & WCD9320_RC_OSC_ENABLE)) {
++			dev_err(dev,
++				"clk-src: RC_OSC_FREQ = %02x, the oscillator is not running -- refusing to switch\n",
++				rcosc & 0xff);
++			return -EINVAL;
++		}
++
++		/* Step 1: the positive control, before anything moves. */
++		alive = wcd9320_clk_read_control(wcd, wcd->clk_ctrl_pre,
++						 "before the switch");
++		if (alive < 0)
++			return alive;
++		wcd->clk_ctrl_pre_valid = true;
++		if (!alive) {
++			dev_err(dev,
++				"clk-src: the positive control does not hold its POR values BEFORE the switch -- it cannot discriminate, refusing\n");
++			return -EINVAL;
++		}
++
++		/*
++		 * Step 2: declare the rate. Measured first, so the restore puts
++		 * back what was there rather than an assumed POR.
++		 */
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_CHIP_CTL,
++					   &chipctl);
++		if (ret)
++			return ret;
++		wcd->chip_ctl_pre = chipctl & 0xff;
++		wcd->chip_ctl_pre_valid = true;
++		dev_info(dev, "clk-src: CHIP_CTL measured %02x before any write\n",
++			 chipctl & 0xff);
++
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_CHIP_CTL,
++					WCD9320_CHIP_CTL_MCLK_RATE_MASK,
++					WCD9320_CHIP_CTL_MCLK_9P6MHZ,
++					"CHIP_CTL[2:1] = 0x2, MCLK rate 9.6 MHz");
++		if (ret)
++			return ret;
++
++		wcd->clk_src_switches++;
++
++		/*
++		 * Step 3: all clock off. Nothing past here returns without
++		 * attempting the restore.
++		 */
++		ret = wcd9320_run_sequence(wcd, wcd9320_clk_block_off,
++					   ARRAY_SIZE(wcd9320_clk_block_off),
++					   "clk-src block-off");
++		if (ret)
++			goto restore;
++
++		/* Step 4: bring it up on the external clock. */
++		ret = wcd9320_run_sequence(wcd, wcd9320_clk_mclk_desel,
++					   ARRAY_SIZE(wcd9320_clk_mclk_desel),
++					   "clk-src mclk-desel");
++		if (ret)
++			goto restore;
++
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RC_OSC_FREQ,
++					   &rcosc);
++		if (ret)
++			goto restore;
++		if (rcosc & WCD9320_RC_OSC_ENABLE) {
++			dev_info(dev,
++				 "clk-src: RC_OSC_FREQ = %02x, shutting the RC oscillator down (config_mode 0)\n",
++				 rcosc & 0xff);
++			ret = wcd9320_run_sequence(wcd, wcd9320_clk_rco_shutdown,
++						   ARRAY_SIZE(wcd9320_clk_rco_shutdown),
++						   "clk-src rco-shutdown");
++			if (ret)
++				goto restore;
++		} else {
++			dev_info(dev,
++				 "clk-src: RC_OSC_FREQ = %02x, oscillator already down, config_mode skipped\n",
++				 rcosc & 0xff);
++		}
++
++		ret = wcd9320_run_sequence(wcd, wcd9320_clk_mclk_tail,
++					   ARRAY_SIZE(wcd9320_clk_mclk_tail),
++					   "clk-src mclk-tail");
++		if (ret)
++			goto restore;
++
++		wcd->clk_src_mclk = true;
++
++		/* Step 5: is the CDC block alive at all? */
++		alive = wcd9320_clk_read_control(wcd, wcd->clk_ctrl_post,
++						 "after the switch to MCLK");
++		if (alive < 0) {
++			ret = alive;
++			goto restore;
++		}
++		wcd->clk_ctrl_post_valid = true;
++		wcd->cdc_alive = alive;
++
++		dev_info(dev, "clk-src: SWITCHED to MCLK, CDC block %s\n",
++			 alive ? "RESPONDING (a clock is arriving)"
++			       : "DARK (no clock is arriving -- this run says nothing about 0x30d/0x314)");
++
++		wcd9320_pa_guard(wcd, "after the switch to MCLK");
++		return 0;
++
++restore:
++		wcd->clk_src_last_error = ret;
++		dev_err(dev,
++			"clk-src: the switch to MCLK ABORTED (%d) -- restoring the RC oscillator unconditionally\n",
++			ret);
++		/* The clock block is part-way through a transition whatever the
++		 * driver believes, so the restore must actually run. */
++		wcd->clk_src_mclk = true;
++		rrc = wcd9320_clk_source_switch(wcd, false);
++		if (rrc)
++			dev_err(dev,
++				"clk-src: the restore ALSO failed (%d) -- the codec is in an unknown clock state, stop here\n",
++				rrc);
++		return ret;
++	}
++
++	/* ---- MCLK -> RCO ---- */
++
++	/* Sampled, not enforced: see the note above. */
++	wcd9320_pa_guard(wcd, "before the restore to RCO");
++
++	if (!wcd->clk_src_mclk) {
++		dev_warn(dev, "clk-src: already on RCO, nothing to restore\n");
++		return 0;
++	}
++
++	ret = wcd9320_run_sequence(wcd, wcd9320_clk_block_off,
++				   ARRAY_SIZE(wcd9320_clk_block_off),
++				   "clk-src block-off (restore)");
++	if (ret)
++		goto restore_failed;
++
++	ret = wcd9320_run_sequence(wcd,
++				   &wcd9320_rco_wake[WCD9320_RCO_WAKE_PHASE_B],
++				   ARRAY_SIZE(wcd9320_rco_wake) -
++					WCD9320_RCO_WAKE_PHASE_B,
++				   "clk-src rco-restore");
++	if (ret)
++		goto restore_failed;
++
++	wcd->clk_src_mclk = false;
++	wcd->clk_src_restores++;
++
++	/*
++	 * CHIP_CTL goes back last, and it goes back while the codec is running
++	 * from the RC oscillator -- the same clock state it was written under.
++	 * Only the rate bits are touched: a whole-register write would assert
++	 * bits nobody has characterised on this part.
++	 */
++	if (wcd->chip_ctl_pre_valid) {
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_CHIP_CTL,
++					WCD9320_CHIP_CTL_MCLK_RATE_MASK,
++					wcd->chip_ctl_pre &
++						WCD9320_CHIP_CTL_MCLK_RATE_MASK,
++					"CHIP_CTL restored");
++		if (ret)
++			goto restore_failed;
++	}
++
++	/* Step 8: did the codec survive its own restore? */
++	alive = wcd9320_clk_read_control(wcd, wcd->clk_ctrl_post,
++					 "after the restore to RCO");
++	if (alive < 0) {
++		ret = alive;
++		goto restore_failed;
++	}
++	wcd->clk_ctrl_post_valid = true;
++	wcd->cdc_alive = alive;
++
++	dev_info(dev, "clk-src: RESTORED to RCO, CDC block %s\n",
++		 alive ? "RESPONDING" : "DARK -- the codec did not come back");
++
++	wcd9320_pa_guard(wcd, "after the restore to RCO");
++	return alive ? 0 : -EIO;
++
++restore_failed:
++	wcd->clk_src_last_error = ret;
++	dev_err(dev,
++		"clk-src: the RCO restore FAILED (%d). Register access does not depend on the CDC clock, so core_reinit re-runs the whole bring-up; a power cycle is the last resort.\n",
++		ret);
++	return ret;
++}
++
++/*
++ *   echo mclk > clk_source_test
++ *   echo rco  > clk_source_test
++ */
++static ssize_t clk_source_test_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (sysfs_streq(buf, "mclk"))
++		ret = wcd9320_clk_source_switch(wcd, true);
++	else if (sysfs_streq(buf, "rco"))
++		ret = wcd9320_clk_source_switch(wcd, false);
++	else
++		return -EINVAL;
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(clk_source_test);
++
++/*
++ * Everything the gate needs to tell a refusal from a dark block, read from the
++ * chip at the instant it is asked.
++ *
++ * cdc_alive is the single fact the r168 verdict turns on. It is computed from
++ * the three control registers rather than from clk_src_mclk, because what the
++ * driver believes it did is not evidence about what the silicon is doing.
++ */
++static ssize_t clk_source_state_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int buff1 = 0, buff2 = 0, rcosc = 0, rcstat = 0, mclkctl = 0;
++	unsigned int chipctl = 0, clkpow = 0, rdac = 0;
++	unsigned int c0 = 0, c1 = 0, c2 = 0;
++	int alive;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CLK_BUFF_EN1, &buff1);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CLK_BUFF_EN2, &buff2);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RC_OSC_FREQ, &rcosc);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RC_OSC_STATUS, &rcstat);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_MCLK_CTL, &mclkctl);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CHIP_CTL, &chipctl);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_POWER_CTL, &clkpow);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &rdac);
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_RX1_B5_CTL, &c0);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_COMP1_B1_CTL, &c1);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_COMP1_B4_CTL, &c2);
++
++	alive = ((c0 & 0xff) == wcd9320_clk_controls[0].por &&
++		 (c1 & 0xff) == wcd9320_clk_controls[1].por &&
++		 (c2 & 0xff) == wcd9320_clk_controls[2].por) ? 1 : 0;
++
++	return sysfs_emit(buf,
++			  "on_mclk=%u switches=%u restores=%u last_error=%d\n"
++			  "source=%s cdc_alive=%d alive_at_last_transition=%d\n"
++			  "ctl_0x2b4=%02x ctl_0x370=%02x ctl_0x373=%02x\n"
++			  "want_0x2b4=%02x want_0x370=%02x want_0x373=%02x\n"
++			  "buff1_0x108=%02x buff2_0x109=%02x rcosc_0x1fa=%02x rcstat_0x1fc=%02x\n"
++			  "mclkgate_0x311=%02x chip_ctl_0x001=%02x\n"
++			  "clk_power_0x314=%02x rdac_0x30d=%02x\n",
++			  wcd->clk_src_mclk ? 1 : 0, wcd->clk_src_switches,
++			  wcd->clk_src_restores, wcd->clk_src_last_error,
++			  (buff1 & WCD9320_CLK_BUFF_EN1_RCO_SEL) ? "RCO" : "EXTERNAL",
++			  alive, wcd->cdc_alive,
++			  c0 & 0xff, c1 & 0xff, c2 & 0xff,
++			  wcd9320_clk_controls[0].por,
++			  wcd9320_clk_controls[1].por,
++			  wcd9320_clk_controls[2].por,
++			  buff1 & 0xff, buff2 & 0xff, rcosc & 0xff, rcstat & 0xff,
++			  mclkctl & 0xff, chipctl & 0xff,
++			  clkpow & 0xff, rdac & 0xff);
++}
++static DEVICE_ATTR_RO(clk_source_state);
++
 +/* ------------------------- the RDAC clock prerequisite (r165) -- */
 +
 +/*
@@ -6474,6 +7066,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_rdac_probe.attr,
 +	&dev_attr_mclk_test.attr,
 +	&dev_attr_mclk_state.attr,
++	&dev_attr_clk_source_test.attr,
++	&dev_attr_clk_source_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -6993,6 +7587,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * from that, or the state file would report a refusal nobody measured.
 +	 */
 +	wcd->rdac_latched = -1;
++	wcd->cdc_alive = -1;
 +
 +	/*
 +	 * Optional: a device tree without the PM8941 clkdiv provider still
@@ -7456,7 +8051,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("mclk-rc2");
++MODULE_VERSION("clksrc-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

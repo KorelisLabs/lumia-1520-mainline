@@ -61,7 +61,33 @@ EXPECT = {
     #            lumia_read has no standalone symbol in the built module, so it
     #            inlined at every one. 32 + 7 = 39, confirmed against
     #            readelf -rW on the r167 artefact.
-    "read_bypassed_calls": 39,
+    #
+    # AN OFFSET THIS COMMENT HAS BEEN CARRYING WITHOUT SAYING SO.
+    #
+    # The "32" above does not match the source. wcd9320-core.c at r167 contains
+    # 34 regmap_read_bypassed() call sites, not 32: the r165 enumeration omits
+    # one in rx1_digital_state_show and one in hphl_dac_test_store. 39 was
+    # confirmed against the artefact, so the ARTEFACT carries two fewer
+    # relocations than the source has call sites, and why is not established --
+    # most likely two of them compile to something count_relocs_to does not
+    # count. Recorded rather than quietly re-derived, because a delta computed
+    # from the source alone will be two out and will look like a defect.
+    #
+    # r168: 54 = 39 + 15 for the clock source switch, counted in the source:
+    #            1 in wcd9320_clk_read_control, 3 in wcd9320_clk_source_switch
+    #            (RC_OSC_FREQ twice, CHIP_CTL once), 11 in
+    #            clk_source_state_show.
+    #
+    #            WHAT THIS PREDICTION DEPENDS ON. It assumes
+    #            wcd9320_clk_read_control survives as a real function, giving
+    #            one relocation for its three callers. If the compiler inlines
+    #            it -- as it did lumia_read(), a one-liner -- the count is 56.
+    #            clk_read_control is a ~25-line loop with logging and three
+    #            call sites, so inlining is the less likely of the two; a
+    #            reported 56 is that compiler decision and NOT a defect, and
+    #            must be confirmed by attributing the relocations before this
+    #            number is changed.
+    "read_bypassed_calls": 54,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -431,38 +457,70 @@ def main():
               sym not in e.syms,
               "r166 registered div_clk1 twice and took the eMMC down with it")
 
-    # Two registers this branch must never write, checked the same way.
+    # Registers whose write sites are pinned by number, in both of the two ways
+    # this driver writes a register.
     #
-    #   0x1ab  the PA. The whole milestone is defined by it staying off.
-    #   0x001  CHIP_CTL. r165 tests ONE variable. Downstream sets 0x001 and
-    #          0x314 together under the same "set MCLk to 9.6" comment and then
-    #          adjusts 0x001 by MCLK rate; this board is RCO-based, so writing
-    #          both would make a positive 0x314 result uninterpretable.
+    # A DEFECT IN THIS CHECK, FOUND AT r168 AND FIXED HERE.
     #
-    # The driver may only NAME these from guards and state readers, so any
-    # write would have to appear on an added line this check can see.
+    # It used to look only for "update_bits" or "regmap_write" on the same
+    # line. That misses BOTH of the mechanisms actually used:
+    #
+    #   - wcd9320_c2b_write(reg, mask, val, why), the chip-verified helper,
+    #     which is how every C2b write is made. A c2b_write to the PA would
+    #     have passed this check silently.
+    #   - a wcd9320_wake_step table row, "{ REG, mask, val, delay, ... }",
+    #     which is how every clock-sequence write is made. So the r166/r167
+    #     assertion that 0x108 had "0 write sites" was true of direct calls and
+    #     vacuous about the tables -- wcd9320_rco_wake[] and
+    #     wcd9320_rco_sleep[] were writing 0x108 the whole time.
+    #
+    # Both forms are counted now, and separately, because the counts mean
+    # different things.
     ptext_c2b = PATCH.read_text(errors="replace") if PATCH.exists() else ""
     added = [ln[1:] for ln in ptext_c2b.splitlines()
              if ln.startswith("+") and not ln.startswith("+++")]
 
+    CALLS = ("update_bits", "regmap_write", "c2b_write", "logged_update",
+             "rx1_write", "clsh_one")
+
     def write_sites(symbol):
         return [ln for ln in added
-                if symbol in ln
-                and ("update_bits" in ln or "regmap_write" in ln)]
+                if symbol in ln and any(c in ln for c in CALLS)]
 
-    for sym, addr, why in (
-            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", "the PA"),
-            ("WCD9320_A_CHIP_CTL", "0x001", "CHIP_CTL, observed only in r165"),
-            # r166 supplies an external MCLK and leaves the codec running from
-            # its RC oscillator. If the driver wrote CLK_BUFF_EN1 it would be
-            # changing two things at once and a positive result could not be
-            # attributed to the clock being present rather than selected.
-            ("WCD9320_A_CLK_BUFF_EN1", "0x108",
-             "the codec clock source -- r166 must not switch it"),
+    def table_sites(symbol):
+        return [ln for ln in added
+                if re.match(r"\s*\{\s*%s\s*," % re.escape(symbol), ln)]
+
+    for sym, addr, ncall, ntable, why in (
+            # The PA. The whole milestone is defined by it staying off, so
+            # neither mechanism may name it.
+            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 0, 0, "the PA"),
+
+            # CHIP_CTL. Observe-only from r165 to r167; r168 declares the
+            # 9.6 MHz rate because it puts the codec on a 9.6 MHz clock, and
+            # restores it. TWO sites, both inside wcd9320_clk_source_switch,
+            # and it stays out of every table.
+            ("WCD9320_A_CHIP_CTL", "0x001", 2, 0,
+             "the MCLK rate declaration -- set and restored by the r168 switch"),
+
+            # The codec clock source. r166 and r167 supplied an external MCLK
+            # and deliberately did not select it. r168 selects it, and only
+            # through the mapped sequence tables: three rows for the RCO wake
+            # and sleep that were always there, and four for the switch
+            # (block-off, deselect, and the external source and buffer enable).
+            # A DIRECT write to 0x108 would be a clock transition outside the
+            # mapped sequences, which is the thing that must not exist.
+            ("WCD9320_A_CLK_BUFF_EN1", "0x108", 0, 7,
+             "the codec clock source -- table rows only, never a direct write"),
     ):
-        sites = write_sites(sym)
-        check("%s is never written (%s)" % (addr, why), not sites,
-              "%d write site(s)" % len(sites))
+        calls = write_sites(sym)
+        tables = table_sites(sym)
+        check("%s direct write sites (%s)" % (addr, why),
+              len(calls) == ncall,
+              "%d (want %d)" % (len(calls), ncall))
+        check("%s sequence-table rows" % addr,
+              len(tables) == ntable,
+              "%d (want %d)" % (len(tables), ntable))
 
     if args.expect_asoc:
         print()

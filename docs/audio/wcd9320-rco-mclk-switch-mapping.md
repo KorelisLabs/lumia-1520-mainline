@@ -145,7 +145,36 @@ either set `CHIP_CTL[2:1] = 0x2` as an explicit, separately-verified step, or
 state plainly that it is testing a deliberately mismatched configuration.
 
 The earlier "do not write CHIP_CTL" rule was an r167 boundary, and r167 kept
-it: the artefact gate proves the driver has zero write sites for `0x001`.
+it: the driver had zero write sites for `0x001` of any kind. (The artefact gate
+was cited for that at the time. It could not actually have seen a
+`wcd9320_c2b_write()` to `0x001` -- see section 10. The fact was true; the
+check was weaker than the claim made for it.)
+
+### RESOLVED, and what it costs
+
+**Decision: `CHIP_CTL[2:1] <- 0x2` is written inside the switch, as step 2 of
+the sequence, chip-verified, with no probe between it and the source change.**
+
+So r168 moves **two** things in one run: the rate declaration and the clock
+source. That is stated here rather than hidden, because it determines what a
+positive result can be claimed to mean:
+
+- if `0x314`/`0x30d` **still refuse**, the run is unaffected. Both changes are
+  in the direction that should help, and neither helped.
+- if they **latch**, r168 cannot say which of the two did it. Separating them
+  is a further build — and one worth doing at that point, because there would
+  finally be something to separate.
+
+The alternative that was rejected was to leave `CHIP_CTL` at `0x00` and test a
+knowingly mismatched configuration. It preserves the never-written property and
+one-variable discipline, but it makes the *negative* case weak: a refusal could
+be blamed on the deliberate rate mismatch, and that objection could not be
+answered without a second build either. Given that the negative is the outcome
+r167 makes likely, the mismatch is the worse thing to spend the run on.
+
+The restore puts `CHIP_CTL` back to the value **measured** before the write,
+while the codec is running from the RC oscillator again — the same clock state
+it was written under.
 
 ## 5. Failure and recovery model
 
@@ -292,3 +321,125 @@ That 9.6 MHz physically reaches the codec's MCLK pin. r168 can only produce
 is arriving. If it stops, one is not. That is a much stronger instrument than
 anything available before -- the codec becomes its own clock detector -- but it
 is still inference from behaviour, not a waveform.
+
+## 10. r168 AS BUILT
+
+**Status: BUILT AND STAGED, NOT YET RUN.** pkgrel 168, `clksrc-rc1`.
+
+### The driver
+
+`wcd9320_clk_source_switch(wcd, to_mclk)` in `wcd9320-core.c`, driven from two
+new sysfs files on the control function:
+
+```
+echo mclk > clk_source_test      steps 2-5
+echo rco  > clk_source_test      steps 7-8
+cat clk_source_state             the positive control and every clock register
+```
+
+Every register transition goes through `wcd9320_run_sequence()` as a
+`wcd9320_wake_step` table, which is the machinery `core_init` has always used:
+bypassed read, write, delay, bypassed readback, abort on the first mismatch,
+and a parent-IRQ check between steps. Four tables:
+
+| table | rows | what |
+|---|---|---|
+| `wcd9320_clk_block_off[]` | 3 | step A, **both** directions |
+| `wcd9320_clk_mclk_desel[]` | 1 | stop selecting RCO |
+| `wcd9320_clk_rco_shutdown[]` | 3 | `enable_config_mode(0)`, taken conditionally |
+| `wcd9320_clk_mclk_tail[]` | 5 | external source, buffer, CDC gate |
+
+Two of those are not new work, and that is deliberate:
+
+- `wcd9320_clk_block_off[]` is the first three rows of `wcd9320_rco_sleep[]`
+  verbatim.
+- **the MCLK -> RCO restore is not a table at all.** Phase B of
+  `wcd9320_rco_wake[]` *is* `enable_clock_block(1)` -- `enable_config_mode(1)`
+  plus the shared tail -- so the restore runs a slice of that proven table,
+  `&wcd9320_rco_wake[4]` onwards, rather than a hand-written copy. There is no
+  second place for the two to drift apart, and the slice's start is checked at
+  runtime against `RC_OSC_FREQ` so index drift cannot silently repoint it.
+
+The `if (RC_OSC_FREQ & 0x80)` branch is a read-then-branch in C around the
+tables, because a step table cannot express one and inventing an unconditional
+version would be reversing the enable path by hand.
+
+**The teardown runs from a failure label, not from the success path.** Any
+abort after the first sequence write re-enters the function in the restore
+direction. Two corrections were needed to make that real:
+
+- the PA guard was originally a hard precondition on **both** directions. A
+  tripped guard would then have refused the restore and stranded the codec
+  without a clock. It refuses outbound and only observes inbound: recovery must
+  not be blockable by a safety check.
+- the driver's own `clk_src_mclk` flag is forced true before the restore is
+  entered from an abort, because the clock block is part-way through a
+  transition whatever the driver believes.
+
+### The gate
+
+`tools/wcd9320-clk-source-evidence.sh`. Exit codes carry the finding:
+
+| exit | finding | meaning |
+|---|---|---|
+| 0 | **M4** | switched, control intact, `0x314`/`0x30d` accepted |
+| 1 | **M2'** | switched, control intact, still refused -- a real negative |
+| 2 | **M5** | control read `00`: the CDC block went dark, no clock arriving |
+| 3 | **S** | setup, path, or switch failure -- no conclusion |
+
+Step 6 is **conditional on step 5**: the retry does not run against a dark CDC
+block, because two `00` reads that mean nothing would otherwise be reported as
+a result. The positive control must also hold its POR values *before* the
+switch or the run aborts as INVALID -- that is the instrument's calibration,
+and an uncalibrated instrument makes the run void rather than inconclusive.
+
+The compander and the RX1 chain are deliberately **not** brought up, unlike the
+r167 harness. Both move registers in the control set, and r165 established by
+measurement that neither affects whether these two registers latch.
+
+### A DEFECT FOUND IN THE ARTEFACT GATE, AND A CLAIM IT WEAKENS
+
+`wcd9320-verify-artifact.py` asserted that `0x1ab`, `0x001` and `0x108` had
+zero write sites by looking for `update_bits` or `regmap_write` on the same
+line as the symbol. That misses **both** mechanisms this driver actually uses:
+
+- `wcd9320_c2b_write()`, the chip-verified helper through which every C2b write
+  is made. **A `c2b_write` to the PA would have passed the guard silently.**
+- a `wcd9320_wake_step` table row, `{ REG, mask, val, delay, ... }`, through
+  which every clock-sequence write is made.
+
+So the r166/r167 statement that *"the artefact gate proves the driver has zero
+write sites for `0x108`"* -- in the r167 evidence script's own header, and
+repeated in `wcd9320-mclk-mapping.md` -- was true only of direct calls and
+vacuous about the tables. `wcd9320_rco_wake[]` and `wcd9320_rco_sleep[]` were
+writing `0x108` throughout.
+
+**This does not disturb r167's M2 result.** What mattered there was that the
+codec remained RCO-selected, and that was *measured* on the chip after the vote
+transition (`source=RCO`), not inferred from the gate. The overclaim is in how
+the guarantee was described, not in the finding.
+
+The check now counts both forms, separately, and pins numbers rather than
+asserting absence:
+
+| register | direct | table rows | why |
+|---|---|---|---|
+| `0x1ab` PA | 0 | 0 | the milestone is defined by it staying off |
+| `0x001` CHIP_CTL | **2** | 0 | set and restored, both inside the switch |
+| `0x108` CLK_BUFF_EN1 | 0 | **7** | 3 pre-existing, 4 for the switch; never a direct write |
+
+### One expectation that may need a second look after the build
+
+`read_bypassed_calls` goes 39 -> 54: +15 source call sites (1 in
+`wcd9320_clk_read_control`, 3 in the switch, 11 in `clk_source_state_show`).
+That assumes `clk_read_control` survives as a real function, giving one
+relocation for its three callers; if the compiler inlines it the count is 56.
+A reported 56 is that compiler decision and **not** a defect.
+
+Separately, the existing comment's arithmetic was already carrying an
+unexplained offset: it enumerates 32 call sites in `wcd9320-core.c` where the
+file has 34 (it omits one in `rx1_digital_state_show` and one in
+`hphl_dac_test_store`), yet 39 was confirmed against the r167 artefact. So the
+artefact carries two fewer relocations than the source has call sites and why
+is not established. Recorded so the next delta is not computed from the source
+alone and found to be two out.
