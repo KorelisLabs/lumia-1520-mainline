@@ -667,3 +667,86 @@ The **MCLK-selected + rate-declared conjunction**. It is preserved as the next
 experiment if this result leaves it relevant, and r170's conclusion stays
 narrow: the rate declaration *alone*, on RCO, does not unlock `0x314`. That is
 not generalised to the conjunction by this run or by any other.
+
+---
+
+## 13. r171 RESULT: W0 — NOTHING LATCHES, IN EITHER REGISTER
+
+**W0, 12/0, VERDICT PASS.** Artefact verified 79/0 first. Evidence:
+[wcd9320-writability-20260826T231758Z.txt](wcd9320-writability-20260826T231758Z.txt).
+
+```
+baseline  0x314 = 00   0x30d = 00     CHIP_CTL 0x000 = 08 (untouched)
+
+  0x314 bit 0   mask 01  -> read 00   REFUSED   diagnostic
+  0x314 bit 1   mask 02  -> read 00   REFUSED   diagnostic
+  0x314 bits01  mask 03  -> read 00   REFUSED   PRODUCTION
+  0x30d bit 1   mask 02  -> read 00   REFUSED   PRODUCTION (HPHL)
+  0x30d bit 2   mask 04  -> read 00   REFUSED   PRODUCTION (HPHR)
+  0x30d bits12  mask 06  -> read 00   REFUSED   diagnostic
+```
+
+Six independent attempts, every one a bit downstream actually writes, and not
+one held.
+
+### What this eliminates
+
+| | |
+|---|---|
+| **per-bit gating** | eliminated — `0x314` bits 0 and 1 behave identically |
+| **per-path gating** | eliminated — `0x30d` bit 2 (HPHR), never written by this project before, refuses **identically** to bit 1 (HPHL) |
+| **combination effects** | eliminated — the combined values behave exactly as the individual ones |
+
+Whatever refuses does not distinguish between the clock-power bits and the RDAC
+clock bits, or between the left and right channels. It is a **whole-register**
+condition on both registers, and both are in the same condition.
+
+That kills W1, W2 and W3 outright, and it kills the reading that `0x30d` had
+"its own remaining condition" separate from `0x314` — audit candidate 2 as
+originally framed. The two registers behave as one phenomenon.
+
+### What it does NOT settle
+
+**Write-only versus refused.** Both produce exactly this pattern. r171 was
+always going to be blind to that distinction, and it is: telling them apart
+needs an **observable**, not a readback.
+
+### It is also not an address-block condition
+
+Within the same 21-register block, `0x309`, `0x30f`, `0x310` and `0x311` all
+accept writes and read back. So "the CDC clock block refuses" is false. It is
+these two registers specifically, entirely, regardless of which documented bits
+are attempted.
+
+### A candidate observable, found while reading around the result
+
+`TAIKO_A_RX_HPH_L_STATUS` (**`0x1b3`**) and `TAIKO_A_RX_HPH_R_STATUS`
+(**`0x1b9`**) are status registers for the two headphone paths, and downstream
+marks **both volatile** — `taiko_volatile()` names them explicitly at line
+4106 — so downstream reads them from the chip rather than from its cache.
+
+On our part both currently read **`0x04`** against a POR of `0x00`. Something
+is already asserted in them.
+
+That makes them a candidate discriminator for the write-only hypothesis, and a
+cheap one: `0x30d` bit 1 is the **HPHL** RDAC clock and bit 2 is **HPHR**, so
+the two are independently addressable against two independent status registers.
+If `0x1b3` moves when bit 1 is written while `0x30d` itself still reads `00`,
+the write is landing and the register is write-only. No DAC, no PA, no MCLK.
+
+**Stated as a candidate, not a conclusion.** Bit 2 of those status registers is
+not described in any header we hold, and it may reflect something unrelated to
+the RDAC clock — an OCP or comparator state, for instance. The asymmetry is
+what makes it worth trying: a *left*-channel write moving only the *left*
+status register would be hard to explain any other way.
+
+### Where this leaves the hypothesis space
+
+1. **The conjunction** — MCLK selected *and* rate declared. W0 makes this more
+   attractive rather than less: a whole-register condition affecting two
+   clock-related registers identically is what a clock-domain prerequisite
+   would look like. Still untested, still the only cell of the matrix left.
+2. **Write-only / read-as-zero** — undiminished by r171, and now with a
+   candidate observable that needs neither the DAC nor the PA.
+
+Both are live. Nothing else is.

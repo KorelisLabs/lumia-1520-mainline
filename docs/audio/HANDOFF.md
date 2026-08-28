@@ -1213,51 +1213,64 @@ answered and stay answered. It would be *using* the r169 switch, proven and
 reversible three times, as a precondition for a different question. That needs
 a decision before anything is built.
 
+### r171 RESULT: W0 -- nothing latches, in either register
+
+**W0, 12/0, VERDICT PASS.** Artefact 79/0. Evidence:
+[wcd9320-writability-20260826T231758Z.txt](wcd9320-writability-20260826T231758Z.txt),
+full reading in section 13 of
+[wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md).
+
+Six documented bits attempted independently, from a pristine RCO baseline, and
+not one held: `0x314` bits 0, 1 and 0+1; `0x30d` bits 1, 2 and 1+2.
+
+**Eliminated:** per-bit gating (`0x314` bits behave identically), per-path
+gating (`0x30d` bit 2 / HPHR, never written here before, refuses **identically**
+to bit 1 / HPHL), and combination effects. It is a **whole-register** condition
+on both, and both are in the same condition -- they are one phenomenon, not
+two. It is *not* an address-block condition either: `0x309`, `0x30f`, `0x310`
+and `0x311` in the same block all accept and read back.
+
+**Not settled:** write-only versus refused. Both produce exactly this pattern,
+and telling them apart needs an observable rather than a readback.
+
+### Two live hypotheses, and nothing else
+
+1. **The conjunction** -- MCLK selected AND the rate declared. W0 makes this
+   *more* attractive: a whole-register condition affecting two clock-related
+   registers identically is what a clock-domain prerequisite looks like. It is
+   the last untested cell of the matrix. Needs the r169 switch as a
+   precondition, which is a decision, not a reopening of the MCLK questions.
+2. **Write-only / read-as-zero** -- undiminished by r171. If true, C2b has been
+   stopping on a verification artefact, and our own `wcd9320_c2b_write()`
+   turning a refusal into `-EIO` is what blocks the sequence.
+
+### A candidate observable for hypothesis 2
+
+`RX_HPH_L_STATUS` (`0x1b3`) and `RX_HPH_R_STATUS` (`0x1b9`) are per-channel
+status registers that downstream marks **volatile** and therefore reads from
+the chip. On our part both read `04` against a POR of `00`.
+
+`0x30d` bit 1 is HPHL and bit 2 is HPHR, so the two are independently
+addressable against two independent status registers. If `0x1b3` moves when
+bit 1 is written while `0x30d` itself still reads `00`, the write is landing
+and the register is write-only -- with no DAC, no PA and no MCLK involved.
+A *left*-channel write moving only the *left* status register would be hard to
+explain any other way.
+
+Candidate, not conclusion: bit 2 of those status registers is undescribed in
+any header we hold and may reflect something unrelated.
+
 ### The next task, precisely
 
-**r171 `writability-rc1` is STAGED at pkgrel 171, NOT YET BUILT.** A
-constrained writability characterisation of `0x314` and `0x30d` -- diagnostic,
-not the C2b production sequence. RCO only: no PMIC, no source switch, no DAC,
-no PA, and `CHIP_CTL` stays at its baseline.
+**NO BUILD IS STAGED.** Three options, in increasing cost:
 
-The write-site mapping was enumerated FIRST, across three source generations
-that agree exactly, and is recorded in section 11 of the audit. Only bits
-downstream actually writes are touched -- `0x314` bits 0 and 1, `0x30d` bits 1
-and 2. **No blind bit-walk**; bits 2-7 of `0x314` and bits 0 and 3-7 of `0x30d`
-are undefined to us and are not touched.
-
-Six steps, each a masked write, a bypassed readback and an immediate restore,
-with the poisoned regcache entry dropped on every refusal. The two registers
-are independent: a refusal on `0x314` cannot prevent the `0x30d`
-characterisation.
-
-**Watch bit 2 of `0x30d`.** It is the structural twin of the bit C2b needs --
-same register, same mechanism, different channel -- and has never been written
-here. If it latches where bit 1 does not, the condition is per-PATH rather than
-per-register.
-
-To build and run:
-
-```
-tools/build-wcd9320-kernel.sh --pkgrel 171 --version writability-rc1     --expect-asoc --expect-dais 1 --stage ~/r171     --extra-module sound/soc/qcom/qdsp6/q6core.ko     --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko
-```
-
-```
-sudo sh ~/wcd9320-tools/wcd9320-writability-evidence.sh
-```
-
-- **W0**, exit 1: nothing latches. A register/domain-level condition rather
-  than a functional gate on any bit.
-- **W4**, exit 0: the production bits latch in isolation, so the earlier
-  refusals depend on surrounding sequence or state.
-- **W3**, exit 4: individual bits latch, the combined value does not.
-- **W1/W2**, exit 2: per-bit, or for `0x30d` per-path, gating.
-- **S**, exit 3: setup failure or a failed check.
-
-**NOT tested in r171:** the MCLK-selected + rate-declared conjunction. It is
-preserved as the next experiment if this result leaves it relevant. r170's
-conclusion stays narrow -- the rate declaration *alone*, on RCO, does not
-unlock `0x314` -- and is not generalised to the conjunction.
+- **the status-register observable** -- cheapest, RCO only, no DAC, no PA, no
+  MCLK. Directly attacks hypothesis 2, which r171 could not touch.
+- **the conjunction** -- MCLK selected + rate declared, retry `0x314`. Closes
+  the matrix. Uses only proven, reversible machinery.
+- **proceed past the refusal** -- let C2b continue to stage 7 treating the
+  readback as non-fatal for these two registers. Settles hypothesis 2
+  definitively, but powers the DAC and so has been out of scope until now.
 
 ### Rules this branch has been run under
 
@@ -1282,9 +1295,9 @@ unlock `0x314` -- and is not generalised to the conjunction.
 
 ### Build/deploy state
 
-- **r171 `writability-rc1`** is staged at pkgrel 171 and not yet built. r170
-  `chipctl-rc1` is built, installed and run (R2, 15/0) and the phone is
-  currently up on it, RAM-booted.
+- **r171 `writability-rc1`** is built (artefact 79/0), installed and run;
+  result W0, 12/0. The phone is up on it, RAM-booted, module in
+  `/lib/modules`. No newer build is staged.
 - The artefact gate defaults `--bootimg` to `./boot-1520-<version>.img`, so
   pass `--bootimg <stage>/boot-1520-<version>.img` or its last check fails on
   a perfectly good build.
