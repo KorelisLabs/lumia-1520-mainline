@@ -104,10 +104,39 @@ EXPECT = {
     # r174: 71 = 66 - 2 + 7. The +1 over r172 is the readback inside
     #            wcd9320_forced_write(), which is evidence only.
     #
-    # The offset of 2 between source call sites and artefact relocations has
-    # now held across r167 through r172. It is stable and still unexplained;
-    # a delta computed from the source alone will be two out.
-    "read_bypassed_calls": 71,
+    # r175: 90 = 83 + 7. The +19 over r174 is the C3a work: 1 in the DAC
+    #            path's register-gain precondition, 1 in the PA prep baseline
+    #            loop, 3 in wcd9320_hphl_pa_path (0x1b1 before the PA, then
+    #            0x1ab after the enable and after the teardown), 1 in
+    #            wcd9320_pa_irq_sample, and 13 in hphl_pa_state_show.
+    #
+    # THE "CONSTANT OFFSET OF 2" IS NOT A MYSTERY ANY MORE, AND THE FORMULA
+    # ABOVE WAS WRONG IN A WAY THAT HAPPENED TO CANCEL.
+    #
+    # Every derivation from r167 onwards counted source call sites with a
+    # bare `grep -c regmap_read_bypassed`, which also matches the TWO PLACES
+    # THE COMMENTS NAME THE FUNCTION IN PROSE -- "regmap_read_bypassed()
+    # rather than more regcache_cache_bypass() pairs", and the one in
+    # hphl_dac_state_show explaining why the cache is not trusted. Neither is
+    # a call, so neither emits a relocation.
+    #
+    # Counting calls instead of mentions:
+    #
+    #   grep -c 'regmap_read_bypassed([a-z]'   83    real call sites
+    #   grep -c 'regmap_read_bypassed()'        2    prose
+    #   grep -c 'regmap_read_bypassed'         85    what the old note used
+    #
+    # 85 - 2 = 83, which is why subtracting two worked. At r174 the same
+    # arithmetic was 66 - 2 = 64, and 64 + 7 = 71 -- the number that was
+    # confirmed against the artefact. So there was never an unexplained
+    # discrepancy between source and object; there was a grep that counted
+    # comments.
+    #
+    #   expectation = (real call sites in core.c) + (7 in the experiment file)
+    #
+    # The subtraction is gone. A future delta computed from a bare grep will
+    # be two out, and now the reason is written down.
+    "read_bypassed_calls": 90,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -442,6 +471,12 @@ def main():
              "refcounted RX bias"),
             ("wcd9320_hphl_dac_path", "HPHL DAC enable, map stages 3-7",
              "the DAC sequence"),
+            ("wcd9320_hphl_pa_path", "HPHL PA enable, map steps 9-11",
+             "the r175 mapped PA sequence"),
+            ("wcd9320_c3_abort", "C3 ABORT: full mapped teardown",
+             "the one idempotent emergency teardown"),
+            ("wcd9320_pa_guard_expect", "PA GUARD TRIPPED at %s",
+             "the phase-dependent PA guard"),
             ("wcd9320_cdc_clk_prereq", "CDC_CLK_POWER_CTL = 0x03",
              "the r165 prerequisite toggle"),
             ("wcd9320_rdac_probe", "rdac-probe: 0x314 = %02x",
@@ -461,6 +496,8 @@ def main():
     # Data objects are never inlined away; the symbol is the right assertion.
     for sym, why in (("dev_attr_hphl_dac_test", "sysfs trigger the gate drives"),
                      ("dev_attr_hphl_dac_state", "sysfs state the gate reads"),
+                     ("dev_attr_hphl_pa_test", "sysfs, the r175 PA trigger"),
+                     ("dev_attr_hphl_pa_state", "sysfs, the C3a register set"),
                      ("dev_attr_cdc_clk_prereq", "sysfs, 0x314 only"),
                      ("dev_attr_rdac_probe", "sysfs, the causal experiment"),
                      ("dev_attr_mclk_div_test", "sysfs, the r167 divider"),
@@ -571,10 +608,341 @@ def main():
               "return -EIO;" in body,
               "the verifying path is intact for every other register")
 
+    # ==================================================================
+    # 5d. r175: THE PA FENCE.
+    #
+    # Everything from C2a to r174 rested on one structural fact -- the driver
+    # could not write 0x1ab, so no build could enable the headphone PA even by
+    # accident. C3a removes that. What replaces it has to be at least as
+    # strong, and it cannot be "the sequence looks right", because a sequence
+    # that looks right is exactly what a wrong mask produces.
+    #
+    # So the relaxation is bounded from five directions at once:
+    #
+    #   1. exactly two write sites, checked above by the count
+    #   2. both masked to HPHL alone -- never 0x30, never the HPHR bit
+    #   3. both inside one named function
+    #   4. the guard's allowed states are exactly {00, 20} and nothing else
+    #   5. D1's own contract is byte-for-byte unchanged
+    #
+    # (5) is not decoration. D1 is a proven result, and C3a is allowed to add
+    # a second mode rather than to redefine the first. A COMP1-ON DAC run
+    # after r175 must take the same path it took at r174, or the r174 evidence
+    # stops describing the shipping driver.
+    # ==================================================================
+    print()
+    print("=== 5d. the r175 PA fence ===")
+
+    def func_body(name):
+        """The body of a C function definition, by brace matching.
+
+        Braces inside string literals are ignored -- the driver has several
+        log messages containing them, and a naive counter walks off the end of
+        the function and swallows the rest of the file, which turns every
+        containment check below into a vacuous pass.
+        """
+        m = re.search(r"^static\s+[A-Za-z_][\w \t*]*\b%s\s*\("
+                      % re.escape(name), ptext_all, re.M)
+        if not m:
+            return ""
+        i = ptext_all.find("{", m.start())
+        if i < 0:
+            return ""
+        depth, j, instr, esc = 0, i, False, False
+        while j < len(ptext_all):
+            c = ptext_all[j]
+            if instr:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    instr = False
+            elif c == '"':
+                instr = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return ptext_all[i:j + 1]
+            j += 1
+        return ""
+
+    pa_path = func_body("wcd9320_hphl_pa_path")
+    dac_path = func_body("wcd9320_hphl_dac_path")
+    guard_exp = func_body("wcd9320_pa_guard_expect")
+    guard_old = func_body("wcd9320_pa_guard")
+    abort_body = func_body("wcd9320_c3_abort")
+
+    # A missing function must fail loudly rather than making every
+    # containment check below trivially true. This is the check that stops a
+    # rename from turning the whole fence into a vacuous pass.
+    for nm, bd in (("wcd9320_hphl_pa_path", pa_path),
+                   ("wcd9320_hphl_dac_path", dac_path),
+                   ("wcd9320_pa_guard_expect", guard_exp),
+                   ("wcd9320_pa_guard", guard_old),
+                   ("wcd9320_c3_abort", abort_body)):
+        check("%s found in source" % nm, len(bd) > 0,
+              "%d bytes of body" % len(bd))
+
+    # ---- the bit names themselves ------------------------------------
+    #
+    # Pinned by value, for the same reason CHIP_CTL is: a transposed constant
+    # is invisible at every other layer. HPHL is bit 5 and HPHR is bit 4, and
+    # getting them the wrong way round would enable the channel that is NOT
+    # being measured, into a jack the operator has a probe in.
+    for sym, want in (("WCD9320_HPH_PA_HPHL", "0x20"),
+                      ("WCD9320_HPH_PA_HPHR", "0x10"),
+                      ("WCD9320_HPH_PA_MASK", "0x30")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+
+    # ---- the two writes, in full -------------------------------------
+    PA_WRITE = re.compile(
+        r"wcd9320_c2b_write\(\s*wcd,\s*WCD9320_A_RX_HPH_CNP_EN,\s*"
+        r"([A-Za-z0-9_]+),\s*([A-Za-z0-9_]+),")
+    pw = PA_WRITE.findall(ptext_all)
+    check("both PA writes go through the chip-verified helper", len(pw) == 2,
+          "%d matched wcd9320_c2b_write(0x1ab, mask, val)" % len(pw))
+    check("both PA writes are masked to HPHL alone",
+          bool(pw) and all(m == "WCD9320_HPH_PA_HPHL" for m, _ in pw),
+          "masks: %s" % ([m for m, _ in pw] or "none"))
+    check("the PA writes are exactly one enable and one disable",
+          sorted(v for _, v in pw) == ["0", "WCD9320_HPH_PA_HPHL"],
+          "values: %s" % (sorted(v for _, v in pw) or "none"))
+    check("both PA writes live in wcd9320_hphl_pa_path",
+          len(PA_WRITE.findall(pa_path)) == 2,
+          "%d of 2 inside the mapped PA sequence"
+          % len(PA_WRITE.findall(pa_path)))
+
+    # THE TWO-BIT MASK IS A GUARD MASK, NEVER A WRITE MASK.
+    #
+    # WCD9320_HPH_PA_MASK is 0x30. A write masked with it would set or clear
+    # HPHR alongside HPHL from a single statement that reads perfectly well.
+    mask_writes = [ln for ln in added
+                   if "WCD9320_HPH_PA_MASK" in ln
+                   and any(c in ln for c in CALLS)]
+    check("0x30 is never used as a write mask", not mask_writes,
+          "%d write call(s) naming WCD9320_HPH_PA_MASK" % len(mask_writes))
+    hphr_writes = [ln for ln in added
+                   if "WCD9320_HPH_PA_HPHR" in ln
+                   and any(c in ln for c in CALLS)]
+    check("the HPHR PA bit is never written", not hphr_writes,
+          "%d write call(s) naming WCD9320_HPH_PA_HPHR" % len(hphr_writes))
+
+    # ---- the guard: allowed states are exactly {00, 20} --------------
+    #
+    # The comparison must be EQUALITY against the expected value. A subset
+    # test -- "(pa & expect) == expect" -- would accept 0x30 while expecting
+    # 0x20, which is precisely the both-channels-enabled state the fence
+    # exists to catch.
+    check("the guard compares for equality, not subset",
+          "!= expect" in guard_exp,
+          "(pa & WCD9320_HPH_PA_MASK) != expect")
+    check("the guard still latches once tripped",
+          "pa_guard_tripped = true" in guard_exp
+          and "if (wcd->pa_guard_tripped)" in guard_exp,
+          "set on violation, refused on re-entry")
+    check("the guard reads the PA bypassed",
+          "regmap_read_bypassed" in guard_exp
+          and "WCD9320_A_RX_HPH_CNP_EN" in guard_exp,
+          "a cached PA register is the last thing a guard should trust")
+
+    # The legacy guard is now a wrapper, and it must still mean "expect 00" so
+    # that every D1-era call site keeps the behaviour it was proven with.
+    check("wcd9320_pa_guard() is a wrapper expecting 00",
+          re.search(r"wcd9320_pa_guard_expect\(wcd,\s*where,\s*0\)",
+                    guard_old) is not None,
+          "every pre-r175 call site is unchanged in meaning")
+
+    # Non-zero expectations: only HPHL, only from the mapped PA sequence.
+    GEXP = re.compile(
+        r"wcd9320_pa_guard_expect\(\s*wcd,[^;]*?,\s*([A-Za-z0-9_]+)\s*\)")
+    nz_all = [v for v in GEXP.findall(ptext_all) if v not in ("0", "where")]
+    nz_pa = [v for v in GEXP.findall(pa_path) if v != "0"]
+    check("the only non-zero guard expectation is HPHL",
+          nz_all and all(v == "WCD9320_HPH_PA_HPHL" for v in nz_all),
+          "expectations: %s" % (sorted(set(nz_all)) or "none"))
+    check("non-zero expectations come only from the PA sequence",
+          len(nz_all) == len(nz_pa) and len(nz_pa) > 0,
+          "%d in the driver, %d of them in wcd9320_hphl_pa_path"
+          % (len(nz_all), len(nz_pa)))
+
+    # ---- D1's contract survives --------------------------------------
+    #
+    # C3a needs register-controlled gain; D1 was proven with the compander as
+    # the gain source. Two MODES, selected explicitly by the caller. The COMP1
+    # mode must still demand comp1_on -- if the new mode had simply replaced
+    # that check, the r174 evidence would no longer describe the shipping
+    # driver, and a proven result would have been silently invalidated to make
+    # room for an unproven one.
+    for sym in ("WCD9320_GAIN_SRC_COMPANDER", "WCD9320_GAIN_SRC_REGISTER"):
+        check("%s declared" % sym, sym in ptext_all, "an explicit mode")
+    check("the COMP1 gain mode still requires comp1_on",
+          "comp1_on" in dac_path and "WCD9320_GAIN_SRC_COMPANDER" in dac_path,
+          "D1's prerequisite is intact")
+    check("the register gain mode chip-verifies 0x1ae",
+          "WCD9320_A_RX_HPH_L_GAIN" in dac_path
+          and "regmap_read_bypassed" in dac_path
+          and "WCD9320_HPHL_GAIN_C3A" in dac_path,
+          "bit 5 set and the field at 0x14, read from the chip")
+    for sym, want in (("WCD9320_HPHL_GAIN_CHECK", "0x3f"),
+                      ("WCD9320_HPHL_GAIN_C3A", "0x34")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+    # D1's own trigger must still ask for the compander mode.
+    dac_store = func_body("hphl_dac_test_store")
+    check('"dac-on" still selects the COMP1 mode',
+          re.search(r'sysfs_streq\(buf,\s*"dac-on"\)(.{0,200}?)'
+                    r"WCD9320_GAIN_SRC_COMPANDER", dac_store, re.S) is not None,
+          "the r174 trigger is unchanged in meaning")
+
+    # ---- POST_PA is PROGRAMMED state, not a reversible pair ----------
+    #
+    # Section 20 of the C3 mapping: three of the four writes are no-ops on
+    # this silicon and only NCP_STATIC visibly moves. turnoff_postpa() touches
+    # none of them, so C3a must NOT write their inverses -- inventing an
+    # inverse downstream does not have is the thing this branch does not do.
+    POSTPA = (("WCD9320_A_BUCK_MODE_5", "0x02", "0x00"),
+              ("WCD9320_A_NCP_STATIC", "0x20", "0x00"),
+              ("WCD9320_A_BUCK_MODE_3", "0x04", "0x04"),
+              ("WCD9320_A_BUCK_MODE_3", "0x08", "0x08"))
+    for reg, mask, val in POSTPA:
+        pat = re.compile(r"wcd9320_c2b_write\(\s*wcd,\s*%s,\s*%s,\s*%s,"
+                         % (re.escape(reg), mask, val))
+        check("POST_PA %s mask %s <- %s" % (reg[10:], mask, val),
+              len(pat.findall(pa_path)) == 1,
+              "%d site(s) in the PA sequence" % len(pat.findall(pa_path)))
+    # And their inverses must not exist anywhere in the PA sequence.
+    for reg, mask, bad in (("WCD9320_A_BUCK_MODE_5", "0x02", "0x02"),
+                           ("WCD9320_A_NCP_STATIC", "0x20", "0x20"),
+                           ("WCD9320_A_BUCK_MODE_3", "0x04", "0x00"),
+                           ("WCD9320_A_BUCK_MODE_3", "0x08", "0x00")):
+        pat = re.compile(r"wcd9320_c2b_write\(\s*wcd,\s*%s,\s*%s,\s*%s,"
+                         % (re.escape(reg), mask, bad))
+        check("no invented inverse for %s mask %s" % (reg[10:], mask),
+              not pat.findall(pa_path),
+              "turnoff_postpa() does not touch it, so neither do we")
+    check("the PA teardown uses the C2a class-H path",
+          "wcd9320_clsh_hphl(wcd, false)" in pa_path,
+          "the proven turnoff_postpa() equivalent, not a re-implementation")
+
+    # ---- the abort is ONE operation, ordered, and serialised ---------
+    #
+    # Volume Down must do the whole mapped teardown from wherever the run has
+    # got to, in the mapped order, best-effort. Assembling that order in ash
+    # would put the safety path in the least reliable component in the system.
+    # THE ORDER IS ASSERTED OVER CALLS, NOT OVER REGISTER SYMBOLS.
+    #
+    # Each step of the teardown already exists as a mapped function that was
+    # proven separately -- the PA sequence, the D1 DAC path, the forced 0x314
+    # inverse, the C3a gain and pop/click restore. Re-issuing their registers
+    # inside the abort would be a SECOND copy of the teardown, and the two
+    # copies would drift the first time either was corrected. So the abort is
+    # a composition, and what is checked here is that it composes them in the
+    # mapped order and reaches all four.
+    ORDER = ("wcd9320_hphl_pa_path(wcd, false)",   # PA off, settle, class-H
+             "wcd9320_hphl_dac_path(wcd, false",   # DAC, then forced 0x30d
+             "wcd9320_cdc_clk_prereq(wcd, false)", # forced 0x314 inverse
+             "wcd9320_pa_prep(wcd, false)")        # gain and pop/click back
+    pos, ordered = -1, True
+    for tok in ORDER:
+        nxt = abort_body.find(tok, pos + 1)
+        if nxt < 0:
+            ordered = False
+            break
+        pos = nxt
+    check("the abort teardown is in the mapped order", ordered,
+          "PA off, DAC + forced 0x30d, forced 0x314, gain and pop/click")
+
+    # And the register-level order lives in the step that owns it. There is no
+    # PRE_PMD on this widget: downstream drops the PA bit FIRST and only then
+    # waits, so a settle placed before the write would be an invention. The
+    # class-H POST_PA teardown comes last of the three.
+    pa_teardown = (pa_path[pa_path.index("teardown:"):]
+                   if "teardown:" in pa_path else "")
+    check("the PA teardown has a teardown label to check", bool(pa_teardown),
+          "%d bytes after the label" % len(pa_teardown))
+    pos, ordered = -1, bool(pa_teardown)
+    for tok in ("WCD9320_HPH_PA_HPHL, 0,",        # the bit drops first
+                "pa_settle_us",                    # THEN the mapped settle
+                "wcd9320_clsh_hphl(wcd, false)"):  # then the real class-H
+        nxt = pa_teardown.find(tok, pos + 1)
+        if nxt < 0:
+            ordered = False
+            break
+        pos = nxt
+    check("the PA teardown drops the bit before it settles", ordered,
+          "0x1ab bit 5 clear, settle, class-H POST_PA down")
+    # BEST-EFFORT MEANS NO EARLY EXIT. A conditional return between the PA
+    # write and the class-H teardown would leave the analog stage half torn
+    # down with nobody able to ssh in and finish the job.
+    check("the abort has no early return",
+          abort_body.count("return") <= 1,
+          "%d return statement(s) -- one tail return at most"
+          % abort_body.count("return"))
+    pa_store = func_body("hphl_pa_test_store")
+    check('hphl_pa_test accepts "abort"', '"abort"' in pa_store,
+          "one sysfs write performs the whole mapped teardown")
+    check("abort and normal teardown share one implementation",
+          "wcd9320_c3_abort" in pa_store and "wcd9320_c3_abort" in ptext_all,
+          "no second copy of the teardown order")
+
+    # SERIALISATION. A normal teardown racing an emergency abort could
+    # interleave two individually correct sequences into one incoherent one.
+    nlock = len(re.findall(r"mutex_lock\(&wcd->c3_lock\)", ptext_all))
+    nunlock = len(re.findall(r"mutex_unlock\(&wcd->c3_lock\)", ptext_all))
+    check("the C3 state lock is balanced", nlock == nunlock and nlock >= 3,
+          "%d lock / %d unlock" % (nlock, nunlock))
+    for store in ("hphl_pa_test_store", "hphl_dac_test_store",
+                  "cdc_clk_prereq_store"):
+        b = func_body(store)
+        check("%s serialises on c3_lock" % store,
+              "mutex_lock(&wcd->c3_lock)" in b,
+              "no two C3 sequences can interleave")
+
+    # ---- the IRQ observation changes nothing -------------------------
+    #
+    # INTR_STATUS2 carries HPH_L_PA_STARTUP (bit 3) and HPH_PA_OCPL_FAULT
+    # (bit 0). They are read as opportunistic evidence. The mask configuration
+    # is certified by wcd9320-irq-parent-idle-validated and r175 does not
+    # touch it -- an observation that had to change the system to be made
+    # would be a different experiment.
+    for fn, b in (("wcd9320_hphl_pa_path", pa_path),
+                  ("wcd9320_c3_abort", abort_body),
+                  ("hphl_pa_state_show", func_body("hphl_pa_state_show"))):
+        check("%s writes no interrupt mask" % fn,
+              "WCD9320_A_INTR_MASK0" not in b,
+              "the certified IRQ configuration is untouched")
+    status_writes = [ln for ln in added
+                     if "WCD9320_A_INTR_STATUS0" in ln
+                     and any(c in ln for c in CALLS)]
+    check("INTR_STATUS is read, never written", not status_writes,
+          "%d write call(s) naming INTR_STATUS0" % len(status_writes))
+
     for sym, addr, ncall, ntable, why in (
-            # The PA. The whole milestone is defined by it staying off, so
-            # neither mechanism may name it.
-            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 0, 0, "the PA"),
+            # THE PA. Zero write sites from C2a through r174 -- that milestone
+            # was defined by it staying off, and neither mechanism could name
+            # it at all.
+            #
+            # r175 RELAXES THIS TO EXACTLY TWO, AND ONLY TWO.
+            #
+            # C3a enables the left headphone PA deliberately, once, and
+            # disables it again: bit 5 set, bit 5 clear, both chip-verified.
+            # This is the most dangerous change in the branch, so the
+            # relaxation is fenced in section 5d below -- both sites masked to
+            # HPHL alone, both inside wcd9320_hphl_pa_path(), and the HPHR bit
+            # named by nothing. A THIRD write site fails here, before section
+            # 5d is even reached.
+            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 2, 0,
+             "the PA -- r175, exactly one enable and one disable"),
 
             # CHIP_CTL, at its real address from r170. ONE write site, inside
             # wcd9320_chip_ctl_probe(), reached both to attempt the 9.6 MHz

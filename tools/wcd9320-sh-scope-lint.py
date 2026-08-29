@@ -43,6 +43,11 @@ SHARED = {
     "PASS_N", "FAIL_N", "OUT", "EXPECT_VERSION", "EXPECT_SHA",
     "EXPECT_SOURCE", "EXPECT_SHA_SOURCE", "MANIFEST_PATH",
     "RUNNING_VERSION", "PGD", "PGD_NAME", "PA_SAMPLES", "STALE",
+    # C3a: run-wide state that the trap, the gates and the report all read.
+    # ABORTED in particular MUST be global -- a teardown triggered from a
+    # signal handler and one triggered from a gate have to see the same flag,
+    # or the run can tear down twice.
+    "ABORTED", "ABORT_WHY", "WATCH_PID",
     # selftest counters, deliberately accumulated by the check helpers
     "PASS", "FAIL",
 }

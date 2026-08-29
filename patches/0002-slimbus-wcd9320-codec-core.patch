@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-29 07:58:23.916907649 -0400
-@@ -0,0 +1,8543 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-29 11:48:18.069057733 -0400
+@@ -0,0 +1,9395 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1721,6 +1721,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	char irqname[32];
 +};
 +
++/*
++ * ARRAY SIZES USED BY THE STRUCT BELOW.
++ *
++ * The rest of the C3a constants live down beside the registers they describe,
++ * which is where a reader looks for them. These two cannot: the struct is
++ * declared here and its members are sized by them. Their meaning is documented
++ * at the C3a register block, not here, so there is one explanation and not two.
++ */
++#define WCD9320_PA_PREP_N		6	/* the C3a prep writes */
++#define WCD9320_PA_IRQ_SAMPLES		16	/* INTR_STATUS2 stage samples */
++
 +struct wcd9320 {
 +	struct slim_device *sdev;
 +	struct regulator_bulk_data supplies[WCD9320_NUM_SUPPLIES];
@@ -1959,6 +1970,49 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int clk_src_switches;
 +	unsigned int clk_src_restores;
 +	int clk_src_last_error;
++
++	/* ---- the left headphone PA (C3a, r175) ---- */
++	/*
++	 * ONE LOCK FOR THE WHOLE C3 STATE MACHINE.
++	 *
++	 * Until r175 the C2b sequences could only be driven one sysfs write at
++	 * a time by a cooperative gate, and nothing enforced that. C3a adds an
++	 * emergency abort a human triggers asynchronously, from a different
++	 * process, while the ordinary teardown may already be running -- and
++	 * both walk the same registers in a mapped order. Two individually
++	 * correct sequences interleaved produce an order that was never mapped
++	 * at all, on an analog stage with the PA live.
++	 *
++	 * Every sysfs entry point that sequences C3 state takes this lock. The
++	 * abort BLOCKS on it rather than trying to pre-empt: whatever is
++	 * running finishes its mapped order first, and only then does the
++	 * abort run its own in full. Blocking is safe because every sequence
++	 * it can wait behind is bounded by construction -- the longest is the
++	 * 13 ms PA settle.
++	 */
++	struct mutex c3_lock;
++	bool hphl_pa_on;		/* the mapped PA sequence has run */
++	bool pa_prep_on;		/* gain and pop/click established */
++	unsigned int hphl_pa_enables;
++	unsigned int hphl_pa_disables;
++	unsigned int c3_aborts;
++	unsigned int pa_settle_us;	/* 13000 comp-off, 3000 comp-on */
++	/*
++	 * The MEASURED baseline of every register the PA prep programs. All
++	 * six live in the fuse-loaded 0x180-0x1e4 range, where the header PORs
++	 * are not what the silicon comes up with -- 0x1ac/0x1ad/0x1a9 read
++	 * da/15/2a here against a POR table that says otherwise. A teardown
++	 * that restored the POR would be writing values this part never held.
++	 */
++	u8 pa_prep_base[WCD9320_PA_PREP_N];
++	bool pa_prep_base_valid;
++	/*
++	 * INTR_STATUS2 at each stage boundary. Opportunistic evidence only --
++	 * the boundary is stated at the register definition above.
++	 */
++	u8 pa_irq_status[WCD9320_PA_IRQ_SAMPLES];
++	unsigned int pa_irq_n;
++	bool pa_ocp_seen;
 +};
 +
 +/*
@@ -5068,6 +5122,145 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_HPH_PA_MASK			0x30
 +
 +/*
++ * r175 SPLITS THE PA MASK INTO ITS TWO BITS, AND THE SPLIT IS LOAD-BEARING.
++ *
++ * From C2a to r174 the driver never wrote 0x1ab at all, so a single two-bit
++ * mask was enough to express "both of these must be clear". C3a writes it,
++ * deliberately, once -- and a write masked 0x30 would move HPHR in the same
++ * instruction as HPHL, into a jack the operator has a scope probe in.
++ *
++ * So the mask used for the WRITE is HPHL alone, the mask used for the GUARD
++ * stays 0x30, and the artefact gate asserts that 0x30 never appears in a
++ * write call and that WCD9320_HPH_PA_HPHR appears in none at all.
++ *
++ * Bit 5 is HPHL, from the widget itself:
++ *   SND_SOC_DAPM_PGA_E("HPHL", TAIKO_A_RX_HPH_CNP_EN, 5, 0, ...)
++ * Bit 4 is HPHR and stays clear for the whole of C3a.
++ */
++#define WCD9320_HPH_PA_HPHL			0x20
++#define WCD9320_HPH_PA_HPHR			0x10
++
++/*
++ * RX_HPH_L_GAIN 0x1ae, AND THE TRAP IN IT.
++ *
++ *   SOC_SINGLE_TLV("HPHL Volume", TAIKO_A_RX_HPH_L_GAIN, 0, 20, 1, line_gain)
++ *                                                        ^shift ^max ^INVERT
++ *
++ * The control is INVERTED, so the field holds (20 - user_volume) and the POR
++ * of 0x00 is user-MAXIMUM output. Bit 5 selects where the gain comes from:
++ * clear means the compander drives the headphone stage, set means this field
++ * does.
++ *
++ * A cold-boot part is therefore in the worst of both states for C3a -- no
++ * compander running, and the field at maximum. Downstream avoids that with
++ * taiko_codec_reg_init_val[] { RX_HPH_L_GAIN, 0x20, 0x20 }, "Initialize gain
++ * registers to use register gain", a table this port has never applied. C3a
++ * applies the equivalent itself, and the DAC path refuses to run in
++ * register-gain mode until it reads 0x34 back FROM THE CHIP: bit 5 set and
++ * the field at 20 decimal, which the inversion makes the user-minimum.
++ */
++#define WCD9320_HPHL_GAIN_SRC			0x20	/* 1 = this register */
++#define WCD9320_HPHL_GAIN_FIELD			0x1f
++#define WCD9320_HPHL_GAIN_MIN			0x14	/* 20 = user-minimum */
++#define WCD9320_HPHL_GAIN_CHECK			0x3f	/* source + field */
++#define WCD9320_HPHL_GAIN_C3A			0x34	/* what C3a demands */
++
++/*
++ * POP AND CLICK SUPPRESSION, AND THE PAIRING RULE IT BELONGS TO.
++ *
++ * These are not fixed settings. taiko_set_compander() reconfigures all four
++ * WITH the compander, and taiko_codec_reg_init_val[] establishes the
++ * compander-OFF half at probe under the comment "Setup wavegen timer to
++ * 20msec and disable chopper as default. This corresponds to Compander OFF."
++ *
++ *                     COMP1 ON      COMP1 OFF
++ *   CNP_WG_CTL        0xDA          0xDB
++ *   CNP_WG_TIME       0x15 (5 ms)   0x58 (20 ms)
++ *   BIAS_WG_OCP       0x2A          0x1A
++ *   CHOP_CTL bit 7    set           clear
++ *   PA settle         3 ms          13 ms
++ *
++ * THIS PART COMES UP IN THE COMPANDER-ON SET: measured da/15/2a with CHOP_CTL
++ * bit 7 set. All four are fuse-loaded, so that is the silicon's own reset
++ * state and not something a driver did. Running C3a with COMP1 off against a
++ * compander-ON pop/click configuration would be exactly the mismatched
++ * pairing the mapping warns about, so all four are written -- and they are
++ * ordinary verifiable registers, so every one is chip-verified.
++ *
++ * RX_HPH_OCP_CTL 0x1aa is deliberately NOT in this set. Its current limit
++ * comes from board data this port does not have, so it is left at whatever
++ * the codec already holds rather than programmed from a guess.
++ */
++#define WCD9320_A_RX_HPH_CHOP_CTL		0x1a5
++#define WCD9320_A_RX_HPH_BIAS_WG_OCP		0x1a9
++#define WCD9320_A_RX_HPH_CNP_WG_CTL		0x1ac
++#define WCD9320_A_RX_HPH_CNP_WG_TIME		0x1ad
++#define WCD9320_CNP_WG_CTL_COMP_OFF		0xdb
++#define WCD9320_CNP_WG_TIME_COMP_OFF		0x58
++#define WCD9320_BIAS_WG_OCP_COMP_OFF		0x1a
++#define WCD9320_CHOP_CTL_CHOPPER		0x80
++/* WCD9320_PA_PREP_N is 6 and is defined above struct wcd9320, which needs it:
++ * 0x1ae twice (source then field), then 0x1ac, 0x1ad, 0x1a9, 0x1a5. */
++
++/*
++ * TAIKO_HPH_PA_SETTLE_COMP_ON 3000 / _COMP_OFF 13000 us, selected by
++ * taiko->comp_enabled[COMPANDER_1].
++ *
++ * Applied AFTER the enable and AFTER the disable. There is no PRE_PMD on this
++ * widget -- the events are PRE_PMU, POST_PMU and POST_PMD -- so on the way
++ * down the bit drops FIRST and only then does the codec wait. A settle placed
++ * before the write would be an inversion of the mapped order.
++ */
++#define WCD9320_HPH_PA_SETTLE_COMP_ON_US	3000
++#define WCD9320_HPH_PA_SETTLE_COMP_OFF_US	13000
++
++/*
++ * INTR_STATUS2, READ ONLY.
++ *
++ *   bit 0  HPH_PA_OCPL_FAULT   over-current on the left PA -- a hard abort
++ *   bit 3  HPH_L_PA_STARTUP    the left PA reporting that it started
++ *
++ * OPPORTUNISTIC EVIDENCE, AND THE BOUNDARY IS STATED BEFORE THE RUN rather
++ * than discovered afterwards, the way r172's was:
++ *
++ *   - a channel-specific startup indication is useful positive corroboration
++ *     that the analog block responded to the enable, rather than the control
++ *     bit merely latching;
++ *   - NO indication is NOT evidence that the PA failed to start. These
++ *     sources are masked, and whether the status bits assert while masked is
++ *     not established on this part;
++ *   - an OCP fault IS load-bearing in one direction only: it aborts.
++ *
++ * The mask configuration is NOT changed to find out. It is certified by
++ * wcd9320-irq-parent-idle-validated, and an observation that has to modify
++ * the system to be made is a different experiment.
++ */
++#define WCD9320_A_INTR_STATUS2			0x09a
++#define WCD9320_INTR2_OCPL_FAULT		0x01
++#define WCD9320_INTR2_HPHL_PA_STARTUP		0x08
++/* WCD9320_PA_IRQ_SAMPLES is 16 and is defined above struct wcd9320. */
++
++/*
++ * WHERE THE HEADPHONE GAIN COMES FROM, chosen by the caller and never
++ * inferred from driver state.
++ *
++ * D1 was proven with COMPANDER: taiko_config_gain_compander() clears 0x1ae
++ * bit 5 in the compander's PRE_PMU and the compander drives the level. C3a
++ * needs REGISTER, because a first electrical measurement has to be made at a
++ * deterministic minimum rather than at whatever level a compander settles on.
++ *
++ * TWO MODES, NOT A REPLACEMENT. r174's evidence describes the COMPANDER path.
++ * Had C3a simply swapped the prerequisite, that evidence would have stopped
++ * describing the shipping driver -- a proven result invalidated to make room
++ * for an unproven one. Each mode carries its own precondition, checked at the
++ * point of use, and neither can satisfy the other's.
++ */
++enum wcd9320_gain_src {
++	WCD9320_GAIN_SRC_COMPANDER,	/* D1: the compander is the source */
++	WCD9320_GAIN_SRC_REGISTER,	/* C3a: 0x1ae drives it, pinned min */
++};
++
++/*
 + * 0x1b1 needs TWO bits. Bit 7 is the widget's power bit
 + * (SND_SOC_DAPM_MIXER_E("HPHL DAC", ..., 7, ...)); bit 6 is the input switch,
 + * a separate kcontrol -- SOC_DAPM_SINGLE("Switch", ..., 6, ...) -- on the
@@ -5191,7 +5384,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +/*
-+ * The PA must be off, and must be seen to be off ON THE CHIP, at every stage.
++ * The PA must be in a KNOWN, DECLARED state, and must be seen to be in it ON
++ * THE CHIP, at every stage.
 + *
 + * Sampled before and after each stage rather than only at the ends: a run that
 + * enabled the PA and dropped it again between two snapshots would otherwise be
@@ -5202,8 +5396,26 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * Once tripped it stays tripped and the path refuses from then on. An
 + * unexplained PA enable is not something to continue past on a phone whose
 + * headphone jack may have something plugged into it.
++ *
++ * r175 MAKES THE EXPECTED VALUE AN ARGUMENT INSTEAD OF A CONSTANT.
++ *
++ * From C2a to r174 the only legal state was 00, because the driver could not
++ * write 0x1ab at all. C3a enables HPHL deliberately, so between the mapped
++ * enable and the mapped disable the legal state is 0x20 -- and the guard has
++ * to keep working across that window rather than being switched off for it.
++ *
++ * THE COMPARISON IS EQUALITY, NOT A SUBSET TEST, and that is the whole point.
++ * "(pa & expect) == expect" would accept 0x30 while expecting 0x20, which is
++ * exactly the both-channels-enabled state this guard exists to catch. So the
++ * allowed set is precisely {00, 20}: 0x10 and 0x30 always trip, whichever
++ * phase the run is in.
++ *
++ * wcd9320_pa_guard() below keeps its old name, signature and meaning, so
++ * every call site proven at C2a, C2b and r174 is unchanged -- it is exactly
++ * "expect 00", and the artefact gate asserts that it still is.
 + */
-+static int wcd9320_pa_guard(struct wcd9320 *wcd, const char *where)
++static int wcd9320_pa_guard_expect(struct wcd9320 *wcd, const char *where,
++				   u8 expect)
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	unsigned int pa;
@@ -5221,16 +5433,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return ret;
 +	}
 +
-+	if (pa & WCD9320_HPH_PA_MASK) {
++	if ((pa & WCD9320_HPH_PA_MASK) != expect) {
 +		wcd->pa_guard_tripped = true;
 +		dev_err(dev,
-+			"c2b: PA GUARD TRIPPED at %s -- 0x1ab = %02x, mask %02x not clear\n",
-+			where, pa & 0xff, WCD9320_HPH_PA_MASK);
++			"c2b: PA GUARD TRIPPED at %s -- 0x1ab = %02x masked %02x expected %02x\n",
++			where, pa & 0xff, pa & WCD9320_HPH_PA_MASK, expect);
 +		return -EPERM;
 +	}
 +
-+	dev_dbg(dev, "c2b: PA guard ok at %s (0x1ab = %02x)\n", where, pa & 0xff);
++	dev_dbg(dev, "c2b: PA guard ok at %s (0x1ab = %02x expected %02x)\n",
++		where, pa & 0xff, expect);
 +	return 0;
++}
++
++static int wcd9320_pa_guard(struct wcd9320 *wcd, const char *where)
++{
++	return wcd9320_pa_guard_expect(wcd, where, 0);
 +}
 +
 +/* ------------------------- compander 1, full sequence (C2b) -- */
@@ -7408,12 +7626,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (wcd->is_ifd)
 +		return -ENODEV;
 +
++	mutex_lock(&wcd->c3_lock);
 +	if (sysfs_streq(buf, "on"))
 +		ret = wcd9320_cdc_clk_prereq(wcd, true);
 +	else if (sysfs_streq(buf, "off"))
 +		ret = wcd9320_cdc_clk_prereq(wcd, false);
 +	else
-+		return -EINVAL;
++		ret = -EINVAL;
++	mutex_unlock(&wcd->c3_lock);
 +
 +	return ret ? ret : len;
 +}
@@ -7538,10 +7758,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * powering the DAC, which is a separate milestone and stays out of r170.
 + */
 +static int wcd9320_hphl_dac_path(struct wcd9320 *wcd, bool enable,
-+				 bool power_dac)
++				 bool power_dac,
++				 enum wcd9320_gain_src gain_src)
 +{
 +	struct device *dev = &wcd->sdev->dev;
-+	unsigned int sel, zoh, dac, clkp;
++	unsigned int sel, zoh, dac, clkp, lgain;
 +	int ret = 0;
 +
 +	if (wcd->is_ifd)
@@ -7558,11 +7779,63 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "c2b: HPHL DAC already enabled\n");
 +		return -EBUSY;
 +	}
-+	if (!wcd->comp1_on || !wcd->rx1_digital_on) {
-+		dev_err(dev,
-+			"c2b: needs compander 1 (on=%d) and the RX1 chain (on=%d) first\n",
-+			wcd->comp1_on, wcd->rx1_digital_on);
++	if (!wcd->rx1_digital_on) {
++		dev_err(dev, "c2b: needs the RX1 chain first (on=%d)\n",
++			wcd->rx1_digital_on);
 +		return -EAGAIN;
++	}
++
++	/*
++	 * THE GAIN SOURCE IS A PRECONDITION, AND EACH MODE HAS ITS OWN.
++	 *
++	 * D1 (COMPANDER) is unchanged and must stay that way: the compander
++	 * has to be running, because its PRE_PMU is what clears 0x1ae bit 5
++	 * and makes it the gain source in the first place. Every claim in the
++	 * r174 evidence was made through this branch.
++	 *
++	 * C3a (REGISTER) cannot use that check -- the compander is
++	 * deliberately off, so that the output level is register-controlled
++	 * and can be pinned at the mapped minimum instead of wherever a
++	 * compander settles. What it asserts instead is the thing the comp1_on
++	 * check was standing in for all along, READ BACK FROM THE CHIP: bit 5
++	 * set and the field at 0x14. That is strictly stronger than a driver
++	 * flag, because it verifies the hardware rather than the driver's
++	 * belief about the hardware.
++	 *
++	 * The two are mutually exclusive by construction. Register mode
++	 * refuses outright while the compander is on, because the compander's
++	 * PRE_PMU would take the gain source back and the minimum this run
++	 * depends on would silently stop applying.
++	 */
++	if (gain_src == WCD9320_GAIN_SRC_COMPANDER) {
++		if (!wcd->comp1_on) {
++			dev_err(dev,
++				"c2b: compander gain mode needs compander 1 first (on=%d)\n",
++				wcd->comp1_on);
++			return -EAGAIN;
++		}
++	} else {
++		if (wcd->comp1_on) {
++			dev_err(dev,
++				"c2b: register gain mode requires compander 1 OFF -- its PRE_PMU takes the gain source back\n");
++			return -EINVAL;
++		}
++		ret = regmap_read_bypassed(wcd->regmap,
++					   WCD9320_A_RX_HPH_L_GAIN, &lgain);
++		if (ret) {
++			dev_err(dev, "c2b: 0x1ae chip read failed: %d\n", ret);
++			return ret;
++		}
++		if ((lgain & WCD9320_HPHL_GAIN_CHECK) != WCD9320_HPHL_GAIN_C3A) {
++			dev_err(dev,
++				"c2b: 0x1ae reads %02x -- need %02x under mask %02x; the register gain source and the minimum mapped gain must be established first\n",
++				lgain & 0xff, WCD9320_HPHL_GAIN_C3A,
++				WCD9320_HPHL_GAIN_CHECK);
++			return -EAGAIN;
++		}
++		dev_info(dev,
++			 "c2b: register gain source verified on the chip, 0x1ae = %02x\n",
++			 lgain & 0xff);
 +	}
 +
 +	ret = wcd9320_pa_guard(wcd, "before stage 3");
@@ -7805,18 +8078,36 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (wcd->is_ifd)
 +		return -ENODEV;
 +
++	mutex_lock(&wcd->c3_lock);
 +	if (sysfs_streq(buf, "dac-on"))
-+		ret = wcd9320_hphl_dac_path(wcd, true, true);
++		ret = wcd9320_hphl_dac_path(wcd, true, true,
++					    WCD9320_GAIN_SRC_COMPANDER);
 +	else if (sysfs_streq(buf, "dac-off"))
-+		ret = wcd9320_hphl_dac_path(wcd, false, true);
++		ret = wcd9320_hphl_dac_path(wcd, false, true,
++					    WCD9320_GAIN_SRC_COMPANDER);
++	/*
++	 * r175: the same path with the gain coming from 0x1ae instead of the
++	 * compander. A SEPARATE TRIGGER, not a mode flag on the old one, so
++	 * that a C3a run and a D1 regression run are distinguishable in the
++	 * evidence by the string that was written.
++	 */
++	else if (sysfs_streq(buf, "dac-on-reggain"))
++		ret = wcd9320_hphl_dac_path(wcd, true, true,
++					    WCD9320_GAIN_SRC_REGISTER);
++	else if (sysfs_streq(buf, "dac-off-reggain"))
++		ret = wcd9320_hphl_dac_path(wcd, false, true,
++					    WCD9320_GAIN_SRC_REGISTER);
 +	else if (sysfs_streq(buf, "prereq-on"))
 +		/* stages 3-6 only: r170 retries the RDAC clock in the state it
 +		 * originally failed in, without powering the DAC. */
-+		ret = wcd9320_hphl_dac_path(wcd, true, false);
++		ret = wcd9320_hphl_dac_path(wcd, true, false,
++					    WCD9320_GAIN_SRC_COMPANDER);
 +	else if (sysfs_streq(buf, "prereq-off"))
-+		ret = wcd9320_hphl_dac_path(wcd, false, false);
++		ret = wcd9320_hphl_dac_path(wcd, false, false,
++					    WCD9320_GAIN_SRC_COMPANDER);
 +	else
-+		return -EINVAL;
++		ret = -EINVAL;
++	mutex_unlock(&wcd->c3_lock);
 +
 +	return ret ? ret : len;
 +}
@@ -7901,6 +8192,564 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RO(hphl_dac_state);
 +
++/* ------------------- the left headphone PA (C3a, r175) -- */
++
++/*
++ * The C3a preparation writes, in the order downstream establishes them.
++ *
++ * 0x1ae appears TWICE and that is deliberate rather than sloppy: the gain
++ * SOURCE and the gain FIELD are separate decisions, and issuing them as two
++ * masked writes puts both in the log as deliberate acts. A single write of
++ * 0x34 under mask 0x3f would hide which of the two mattered if one were ever
++ * wrong.
++ *
++ * All six live in the fuse-loaded 0x180-0x1e4 range, so their baselines are
++ * MEASURED and never assumed. Every one is an ordinary verifiable register,
++ * so every one is chip-verified by wcd9320_c2b_write().
++ */
++struct wcd9320_pa_prep_reg {
++	unsigned int reg;
++	u8 mask;
++	u8 val;
++	const char *what;
++};
++
++static const struct wcd9320_pa_prep_reg
++wcd9320_pa_prep_set[WCD9320_PA_PREP_N] = {
++	{ WCD9320_A_RX_HPH_L_GAIN, WCD9320_HPHL_GAIN_SRC,
++	  WCD9320_HPHL_GAIN_SRC, "HPHL gain source = this register" },
++	{ WCD9320_A_RX_HPH_L_GAIN, WCD9320_HPHL_GAIN_FIELD,
++	  WCD9320_HPHL_GAIN_MIN, "HPHL gain = minimum mapped (inverted control)" },
++	{ WCD9320_A_RX_HPH_CNP_WG_CTL, 0xff, WCD9320_CNP_WG_CTL_COMP_OFF,
++	  "wavegen control - compander OFF half" },
++	{ WCD9320_A_RX_HPH_CNP_WG_TIME, 0xff, WCD9320_CNP_WG_TIME_COMP_OFF,
++	  "wavegen timer 20 ms - compander OFF half" },
++	{ WCD9320_A_RX_HPH_BIAS_WG_OCP, 0xff, WCD9320_BIAS_WG_OCP_COMP_OFF,
++	  "wavegen and OCP bias - compander OFF half" },
++	{ WCD9320_A_RX_HPH_CHOP_CTL, WCD9320_CHOP_CTL_CHOPPER, 0,
++	  "chopper off - compander OFF half" },
++};
++
++/*
++ * INTR_STATUS2 at a stage boundary. Evidence, never a verdict -- except for
++ * the OCP bit, which is load-bearing in one direction only: it can abort a
++ * run, and it can never certify one.
++ *
++ * Returns the byte so a caller can test the OCP bit; records it so the whole
++ * sequence of boundaries appears in the evidence rather than only the samples
++ * somebody thought to look at.
++ */
++static u8 wcd9320_pa_irq_sample(struct wcd9320 *wcd, const char *when)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int st = 0;
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_INTR_STATUS2, &st);
++	if (wcd->pa_irq_n < WCD9320_PA_IRQ_SAMPLES)
++		wcd->pa_irq_status[wcd->pa_irq_n] = st & 0xff;
++	wcd->pa_irq_n++;
++
++	if (st & WCD9320_INTR2_OCPL_FAULT) {
++		wcd->pa_ocp_seen = true;
++		dev_err(dev,
++			"c3a: HPH_PA_OCPL_FAULT asserted at %s -- INTR_STATUS2 = %02x\n",
++			when, st & 0xff);
++	} else if (st & WCD9320_INTR2_HPHL_PA_STARTUP) {
++		dev_info(dev,
++			 "c3a: HPH_L_PA_STARTUP asserted at %s -- INTR_STATUS2 = %02x (corroboration only)\n",
++			 when, st & 0xff);
++	} else {
++		dev_dbg(dev, "c3a: INTR_STATUS2 = %02x at %s\n",
++			st & 0xff, when);
++	}
++	return st & 0xff;
++}
++
++/*
++ * The C3a prerequisite writes: the gain source and minimum, and the four
++ * pop/click registers that must match the compander state.
++ *
++ * SEPARATE FROM THE PA SEQUENCE ON PURPOSE. These are steps P5 to P7 of the
++ * mapping and they run BEFORE the DAC path, not with the PA -- the DAC path's
++ * register-gain mode refuses until they have landed. Keeping them apart is
++ * what lets the gate assert the gain is right before anything is powered,
++ * rather than discovering it after the PA is live.
++ *
++ * The teardown restores the MEASURED baseline, in reverse order. Restoring
++ * 0x1ae to a baseline of 0x00 puts the gain field back at what the inverted
++ * control calls maximum -- which is correct, because that is the state the
++ * part was found in, and the PA is off before this ever runs.
++ */
++static int wcd9320_pa_prep(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int cur;
++	int ret, i;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	if (!enable) {
++		if (!wcd->pa_prep_on)
++			return 0;
++		/*
++		 * Best-effort, and the PA must already be off -- this runs
++		 * after the PA teardown, never beside it.
++		 */
++		wcd9320_pa_guard(wcd, "before the C3a prep restore");
++		for (i = WCD9320_PA_PREP_N - 1; i >= 0; i--) {
++			if (!wcd->pa_prep_base_valid)
++				break;
++			wcd9320_c2b_write(wcd, wcd9320_pa_prep_set[i].reg,
++					  wcd9320_pa_prep_set[i].mask,
++					  wcd->pa_prep_base[i],
++					  "C3a prep restored to its measured baseline");
++		}
++		wcd->pa_prep_on = false;
++		dev_info(dev, "c3a: prep restored to the measured baseline\n");
++		return 0;
++	}
++
++	if (wcd->pa_prep_on) {
++		dev_err(dev, "c3a: prep already applied\n");
++		return -EBUSY;
++	}
++	if (wcd->comp1_on) {
++		dev_err(dev,
++			"c3a: prep is the compander-OFF pairing and compander 1 is on -- refusing the mismatch\n");
++		return -EINVAL;
++	}
++	ret = wcd9320_pa_guard(wcd, "before the C3a prep");
++	if (ret)
++		return ret;
++
++	for (i = 0; i < WCD9320_PA_PREP_N; i++) {
++		ret = regmap_read_bypassed(wcd->regmap,
++					   wcd9320_pa_prep_set[i].reg, &cur);
++		if (ret) {
++			dev_err(dev, "c3a: 0x%03x baseline read failed: %d\n",
++				wcd9320_pa_prep_set[i].reg, ret);
++			return ret;
++		}
++		wcd->pa_prep_base[i] = cur & 0xff;
++	}
++	wcd->pa_prep_base_valid = true;
++
++	for (i = 0; i < WCD9320_PA_PREP_N; i++) {
++		ret = wcd9320_c2b_write(wcd, wcd9320_pa_prep_set[i].reg,
++					wcd9320_pa_prep_set[i].mask,
++					wcd9320_pa_prep_set[i].val,
++					wcd9320_pa_prep_set[i].what);
++		if (ret)
++			return ret;
++	}
++
++	ret = wcd9320_pa_guard(wcd, "after the C3a prep");
++	if (ret)
++		return ret;
++
++	wcd->pa_prep_on = true;
++	dev_info(dev,
++		 "c3a: prep applied - register gain at the mapped minimum and the compander-OFF pop/click pairing\n");
++	return 0;
++}
++
++/*
++ * THE MAPPED PA SEQUENCE. Steps 9 to 11 of the C3 map on the way up, and
++ * section 8's real teardown on the way down.
++ *
++ * WHAT THIS DOES NOT PROVE, SAID FIRST
++ *
++ * Sequencing these registers correctly proves the PA CONTROL path, which is
++ * the same class of result D1 already provides one stage earlier. The
++ * milestone is a waveform at the pin that follows the digital content, and no
++ * register in this function can establish that. A clean run here earns no tag
++ * on its own.
++ *
++ * THE ORDER, FROM taiko_hph_pa_event() FOR w->shift == 5
++ *
++ *   PRE_PMU    resmgr notifier PRE_HPHL_PA_ON -- no codec register write
++ *   (widget)   0x1ab bit 5 <- 1
++ *   POST_PMU   usleep(pa_settle), then clsh_fsm(HPHL, ENABLE, POST_PA)
++ *   ...
++ *   (widget)   0x1ab bit 5 <- 0
++ *   POST_PMD   usleep(pa_settle), notifier, clsh_fsm(HPHL, DISABLE, POST_PA)
++ *
++ * There is NO PRE_PMD. The settle comes after the enable and after the
++ * disable, never before either.
++ *
++ * THE NOTIFIER IS NOT RUN, AND THAT IS SAID RATHER THAN GLOSSED. MBHC's
++ * PRE_HPHL_PA_ON handler switches the mic bias to VDDIO if micbias is off.
++ * That is jack-detection housekeeping, not a PA prerequisite, and this port
++ * has no resmgr notifier chain to run it. The cost is that MBHC state is not
++ * informed, which matters for plug detection and not for driving the pin.
++ *
++ * THE FOUR POST_PA WRITES ARE PROGRAMMED STATE, NOT A REVERSIBLE PAIR.
++ * wcd9xxx_clsh_turnoff_postpa() touches NCP_EN, BUCK_MODE_1 bit 7 and
++ * B1_CTL bit 4 -- none of these four. So they keep their post-PA values
++ * through the teardown, and no inverse is written for them. Inventing an
++ * inverse downstream does not have is the thing this branch does not do.
++ *
++ * On this silicon three of the four are no-ops anyway: BUCK_MODE_5 bit 1 is
++ * already clear at cold boot and BUCK_MODE_3 bits 2 and 3 are already set.
++ * Only NCP_STATIC actually moves, 0x28 -> 0x08. regmap_update_bits() elides a
++ * write whose value is unchanged, so three of these four transactions may
++ * never reach the bus -- correct behaviour for configuration bits, and not to
++ * be mistaken for a skipped step.
++ */
++static int wcd9320_hphl_pa_path(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int dac, pa;
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "c3a: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	/*
++	 * The settle time is PAIRED WITH THE COMPANDER STATE, like the
++	 * pop/click registers. Selected here rather than hardcoded so a
++	 * compander-on run cannot silently inherit the compander-off timing.
++	 */
++	wcd->pa_settle_us = wcd->comp1_on ? WCD9320_HPH_PA_SETTLE_COMP_ON_US
++					  : WCD9320_HPH_PA_SETTLE_COMP_OFF_US;
++
++	if (!enable)
++		goto teardown;
++
++	if (wcd->hphl_pa_on) {
++		dev_err(dev, "c3a: HPHL PA already enabled\n");
++		return -EBUSY;
++	}
++	if (!wcd->hphl_dac_on) {
++		dev_err(dev, "c3a: the HPHL DAC path must be up first\n");
++		return -EAGAIN;
++	}
++	if (!wcd->pa_prep_on) {
++		dev_err(dev,
++			"c3a: the gain and pop/click prep must be applied first\n");
++		return -EAGAIN;
++	}
++
++	/*
++	 * 0x1b1 MUST READ 0xC0 BEFORE THE PA IS TOUCHED. A stop condition from
++	 * the map, checked on the chip: enabling the output stage above a DAC
++	 * that is not powered with its input connected would drive the pin
++	 * from an unknown source.
++	 */
++	ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_DAC_CTL,
++				   &dac);
++	if (ret) {
++		dev_err(dev, "c3a: 0x1b1 chip read failed: %d\n", ret);
++		return ret;
++	}
++	if ((dac & 0xff) != (WCD9320_HPHL_DAC_PWR | WCD9320_HPHL_DAC_SWITCH)) {
++		dev_err(dev,
++			"c3a: 0x1b1 reads %02x -- the DAC must be powered with its input connected (c0) before the PA\n",
++			dac & 0xff);
++		return -EIO;
++	}
++
++	if (wcd9320_pa_irq_sample(wcd, "before the PA enable")
++	    & WCD9320_INTR2_OCPL_FAULT) {
++		dev_err(dev,
++			"c3a: an OCP fault is already latched -- refusing to enable the PA\n");
++		return -EIO;
++	}
++
++	ret = wcd9320_pa_guard_expect(wcd, "before the PA enable", 0);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "c3a: HPHL PA enable, map steps 9-11 (settle %u us)\n",
++		 wcd->pa_settle_us);
++
++	/* 9. the widget's own write: 0x1ab bit 5. HPHL ALONE. */
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
++				WCD9320_HPH_PA_HPHL, WCD9320_HPH_PA_HPHL,
++				"HPHL PA enable (bit 5)");
++	if (ret)
++		goto unwind;
++
++	/*
++	 * From here until the disable, the ONLY legal PA state is 0x20 --
++	 * bit 5 set and bit 4 clear. A mask that had enabled both channels
++	 * trips this rather than passing.
++	 */
++	ret = wcd9320_pa_guard_expect(wcd, "after the PA enable",
++				      WCD9320_HPH_PA_HPHL);
++	if (ret)
++		goto unwind;
++
++	/* 10. POST_PMU: the settle comes AFTER the enable. */
++	usleep_range(wcd->pa_settle_us, wcd->pa_settle_us + 1000);
++
++	if (wcd9320_pa_irq_sample(wcd, "after the PA settle")
++	    & WCD9320_INTR2_OCPL_FAULT) {
++		dev_err(dev, "c3a: OCP fault after the PA settle -- unwinding\n");
++		ret = -EIO;
++		goto unwind;
++	}
++
++	/*
++	 * 11. wcd9xxx_clsh_enable_post_pa(). Four masked writes, baseline
++	 * relative, values transcribed from the downstream function rather
++	 * than from whole-register predictions -- this range is fuse-loaded
++	 * and a predicted whole register is the mistake C2a was caught by.
++	 */
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_5, 0x02, 0x00,
++				"POST_PA buck mode5 bit 1");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_NCP_STATIC, 0x20, 0x00,
++				"POST_PA ncp static bit 5");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x04, 0x04,
++				"POST_PA buck mode3 bit 2");
++	if (ret)
++		goto unwind;
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x08, 0x08,
++				"POST_PA buck mode3 bit 3");
++	if (ret)
++		goto unwind;
++
++	ret = wcd9320_pa_guard_expect(wcd, "after the class-H POST_PA enable",
++				      WCD9320_HPH_PA_HPHL);
++	if (ret)
++		goto unwind;
++
++	wcd9320_pa_irq_sample(wcd, "after the class-H POST_PA enable");
++
++	wcd->hphl_pa_on = true;
++	wcd->hphl_pa_enables++;
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++	dev_info(dev,
++		 "c3a: HPHL PA ENABLED, 0x1ab = %02x (predicted a0), HPHR bit 4 clear\n",
++		 pa & 0xff);
++	return 0;
++
++unwind:
++	dev_err(dev, "c3a: PA enable failed, unwinding\n");
++teardown:
++	/*
++	 * Section 8's teardown, taken from the POST_PMD event rather than by
++	 * reversing the enable. Best-effort: every step is attempted even if
++	 * one fails, because a half-powered output stage is worse than a
++	 * failed teardown.
++	 *
++	 * THE BIT DROPS FIRST. There is no PRE_PMD, so the settle follows the
++	 * write, and only then does class-H unwind.
++	 */
++	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
++			  WCD9320_HPH_PA_HPHL, 0, "HPHL PA disable (bit 5)");
++
++	usleep_range(wcd->pa_settle_us, wcd->pa_settle_us + 1000);
++
++	/*
++	 * clsh_fsm(HPHL, DISABLE, POST_PA) computes state & ~HPHL, which with
++	 * HPHL the only active state is state_idle -- comp_req off then
++	 * turnoff_postpa(). That is precisely the transition C2a proved
++	 * reversible on hardware, 82/82, and wcd9320_clsh_hphl(false)
++	 * implements all six of its writes in downstream's order.
++	 */
++	if (wcd->clsh_on)
++		wcd9320_clsh_hphl(wcd, false);
++
++	wcd9320_pa_irq_sample(wcd, "after the PA teardown");
++
++	/*
++	 * NOW the expectation is unambiguous, so the latching guard applies
++	 * again. It is deliberately not called BEFORE the disable write: the
++	 * PA may legitimately be either 0x20 or 0x00 there depending on how
++	 * far the run got, and a guard that trips on a legal state would
++	 * disable the path for the rest of the boot over nothing.
++	 */
++	wcd9320_pa_guard_expect(wcd, "after the PA teardown", 0);
++
++	if (wcd->hphl_pa_on) {
++		wcd->hphl_pa_on = false;
++		wcd->hphl_pa_disables++;
++		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++		dev_info(dev,
++			 "c3a: HPHL PA DISABLED, 0x1ab = %02x (predicted 80)\n",
++			 pa & 0xff);
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ * THE EMERGENCY TEARDOWN. One operation, idempotent, best-effort, complete.
++ *
++ * This is what Volume Down does. It has to work from ANY point the run may
++ * have reached, with no ssh available, with a scope probe in the jack and
++ * possibly with the PA live -- so it takes no arguments, makes no decisions
++ * that could go the wrong way, and cannot return early.
++ *
++ * IT IS A COMPOSITION, NOT A COPY. Every step below is the mapped function
++ * that already owns that part of the sequence and was proven separately.
++ * Re-issuing their registers here would be a second implementation of the
++ * teardown order, and the two would drift the first time either was
++ * corrected. What this function contributes is the ORDER, and the guarantee
++ * that all of it runs.
++ *
++ *   1. the PA sequence down    bit 5 clear, mapped settle, class-H POST_PA
++ *   2. the D1 DAC path down    DAC bits, then the FORCED 0x30d inverse
++ *   3. the prerequisite off    the FORCED 0x314 inverse, unconditionally
++ *   4. the C3a prep restored   gain and pop/click back to measured baseline
++ *
++ * Steps 2 and 3 are the mandatory inverses of the write-effect-unverifiable
++ * class. They are issued whatever the visible state suggests, because once an
++ * enable has been issued to a register whose state cannot be observed, its
++ * inverse must be issued during cleanup whatever happened in between.
++ *
++ * Each step is individually a no-op if that stage was never reached, so
++ * calling this twice is safe and calling it early is safe.
++ */
++static void wcd9320_c3_abort(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++
++	wcd->c3_aborts++;
++	dev_err(dev,
++		"c3a: C3 ABORT: full mapped teardown, attempt %u -- every step is attempted regardless of failures\n",
++		wcd->c3_aborts);
++
++	wcd9320_hphl_pa_path(wcd, false);
++	wcd9320_hphl_dac_path(wcd, false, true, WCD9320_GAIN_SRC_REGISTER);
++	wcd9320_cdc_clk_prereq(wcd, false);
++	wcd9320_pa_prep(wcd, false);
++
++	wcd9320_pa_irq_sample(wcd, "after the C3 abort");
++	dev_err(dev,
++		"c3a: C3 ABORT complete -- pa_on=%d dac_on=%d prereq=%d prep=%d guard_tripped=%d\n",
++		wcd->hphl_pa_on, wcd->hphl_dac_on, wcd->clk_prereq_on,
++		wcd->pa_prep_on, wcd->pa_guard_tripped);
++}
++
++/*
++ *   echo prep    > hphl_pa_test    P5-P7: gain source, minimum, pop/click
++ *   echo pa-on   > hphl_pa_test    steps 9-11
++ *   echo pa-off  > hphl_pa_test    section 8's teardown
++ *   echo unprep  > hphl_pa_test    restore the measured baseline
++ *   echo abort   > hphl_pa_test    ALL OF THE ABOVE, from wherever it is
++ */
++static ssize_t hphl_pa_test_store(struct device *dev,
++				  struct device_attribute *attr,
++				  const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->c3_lock);
++	if (sysfs_streq(buf, "prep"))
++		ret = wcd9320_pa_prep(wcd, true);
++	else if (sysfs_streq(buf, "unprep"))
++		ret = wcd9320_pa_prep(wcd, false);
++	else if (sysfs_streq(buf, "pa-on"))
++		ret = wcd9320_hphl_pa_path(wcd, true);
++	else if (sysfs_streq(buf, "pa-off"))
++		ret = wcd9320_hphl_pa_path(wcd, false);
++	else if (sysfs_streq(buf, "abort")) {
++		/*
++		 * ALWAYS SUCCEEDS. The abort is the safety path, and a
++		 * non-zero return here would make the userspace runner think
++		 * the teardown had not happened and possibly retry into a
++		 * codec that is already being torn down. It reports what it
++		 * did through the log and through hphl_pa_state.
++		 */
++		wcd9320_c3_abort(wcd);
++		ret = 0;
++	} else
++		ret = -EINVAL;
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(hphl_pa_test);
++
++/*
++ * Everything the C3a gate reads, and every value comes from the CHIP.
++ *
++ * The same reasoning as hphl_dac_state: all of these are non-volatile in our
++ * regmap, so a plain regmap_read() would report the cache and the gate would
++ * be grading the driver's intentions rather than the hardware's state. That
++ * matters more here than anywhere else in the branch, because one of these
++ * registers is the PA.
++ */
++static ssize_t hphl_pa_state_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int pa = 0, lgain = 0, wgctl = 0, wgtime = 0, wgocp = 0;
++	unsigned int chop = 0, ocp = 0, dac = 0, clsh = 0;
++	unsigned int bm3 = 0, bm5 = 0, ncps = 0, irq2 = 0;
++	unsigned int i, n = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_GAIN, &lgain);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_WG_CTL, &wgctl);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_WG_TIME, &wgtime);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_BIAS_WG_OCP, &wgocp);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CHOP_CTL, &chop);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_OCP_CTL, &ocp);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_DAC_CTL, &dac);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &clsh);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_BUCK_MODE_3, &bm3);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_BUCK_MODE_5, &bm5);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_NCP_STATIC, &ncps);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_INTR_STATUS2, &irq2);
++
++	n += sysfs_emit_at(buf, n,
++			   "pa_on=%u prep_on=%u enables=%u disables=%u aborts=%u\n"
++			   "settle_us=%u guard_tripped=%u ocp_seen=%u\n"
++			   "pa_0x1ab=%02x lgain_0x1ae=%02x dac_0x1b1=%02x\n"
++			   "wgctl_0x1ac=%02x wgtime_0x1ad=%02x wgocp_0x1a9=%02x chop_0x1a5=%02x\n"
++			   "ocpctl_0x1aa=%02x clsh_0x320=%02x\n"
++			   "postpa buck3_0x183=%02x buck5_0x185=%02x ncps_0x194=%02x\n"
++			   "intr2_0x09a=%02x irq_samples=%u\n",
++			   wcd->hphl_pa_on ? 1 : 0, wcd->pa_prep_on ? 1 : 0,
++			   wcd->hphl_pa_enables, wcd->hphl_pa_disables,
++			   wcd->c3_aborts, wcd->pa_settle_us,
++			   wcd->pa_guard_tripped ? 1 : 0,
++			   wcd->pa_ocp_seen ? 1 : 0,
++			   pa & 0xff, lgain & 0xff, dac & 0xff,
++			   wgctl & 0xff, wgtime & 0xff, wgocp & 0xff,
++			   chop & 0xff, ocp & 0xff, clsh & 0xff,
++			   bm3 & 0xff, bm5 & 0xff, ncps & 0xff,
++			   irq2 & 0xff, wcd->pa_irq_n);
++
++	/*
++	 * The measured baselines, published so the gate can check that the
++	 * restore put back what was actually there rather than a POR this
++	 * fuse-loaded range does not honour.
++	 */
++	n += sysfs_emit_at(buf, n, "prep_base_valid=%u",
++			   wcd->pa_prep_base_valid ? 1 : 0);
++	for (i = 0; i < WCD9320_PA_PREP_N; i++)
++		n += sysfs_emit_at(buf, n, " b%u_%03x=%02x", i,
++				   wcd9320_pa_prep_set[i].reg,
++				   wcd->pa_prep_base[i]);
++	n += sysfs_emit_at(buf, n, "\n");
++
++	for (i = 0; i < wcd->pa_irq_n && i < WCD9320_PA_IRQ_SAMPLES; i++)
++		n += sysfs_emit_at(buf, n, "irq%u=%02x\n", i,
++				   wcd->pa_irq_status[i]);
++	return n;
++}
++static DEVICE_ATTR_RO(hphl_pa_state);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -7931,6 +8780,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_clsh_state.attr,
 +	&dev_attr_hphl_dac_test.attr,
 +	&dev_attr_hphl_dac_state.attr,
++	&dev_attr_hphl_pa_test.attr,
++	&dev_attr_hphl_pa_state.attr,
 +	&dev_attr_cdc_clk_prereq.attr,
 +	&dev_attr_rdac_probe.attr,
 +	&dev_attr_chip_ctl_test.attr,
@@ -8477,6 +9328,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	mutex_init(&wcd->state_lock);
 +	mutex_init(&wcd->wake_lock);
 +	mutex_init(&wcd->slim_stream_lock);
++	mutex_init(&wcd->c3_lock);
 +	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
 +	dev_set_drvdata(dev, wcd);
 +
@@ -8927,7 +9779,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("dacpower-rc1");
++MODULE_VERSION("pa-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

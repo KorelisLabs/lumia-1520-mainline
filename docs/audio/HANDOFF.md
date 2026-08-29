@@ -993,9 +993,26 @@ before touching anything:
    r168/r169, the codec-side RCO -> MCLK switch. **CLOSED, frozen at r169.**
    Read the banner at the top and section 10a; do not reopen it.
 6. [wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md) --
-   **READ THIS FIRST if you are picking the work up now.** C2b is blocked on
-   two registers, `0x30d[1]` and `0x314`; this is the live investigation, and
-   it opens with a defect correction that voids several earlier claims.
+   sections 18 and 19 are r174 and the D1 result. C2b is FROZEN there.
+7. [wcd9320-hphl-pa-c3-mapping.md](wcd9320-hphl-pa-c3-mapping.md) --
+   **READ THIS FIRST if you are picking the work up now.** The C3 mapping is
+   complete and frozen; section 26 is the harness facts, section 27 is r175 as
+   built. This is where the work is.
+
+### THE LIVE STATE, IN ONE PARAGRAPH
+
+D1 is frozen at `8239a20`: the HPHL DAC widget powers and `0x1b1` reads `0xC0`,
+chip-verified, twice, reversibly, PA off. **`wcd9320-hphl-dac-path-proven` is
+deliberately NOT awarded** -- a powered widget above two unobservable clock
+registers is a control-path result, not a conversion one. Software-only
+observability is exhausted. **r175 `pa-rc1` is STAGED and NOT BUILT**: it adds
+the left headphone PA, an autonomous button-driven runner for a run that has no
+ssh, and the fences that bound the first two writes this project has ever made
+to `0x1ab`. Everything offline passes. Nothing has touched hardware.
+
+**Do not reopen the MCLK branch** (closed at r169) and **do not reintroduce
+readback expectations for `0x314` or `0x30d`** (they are permanently
+write-effect-unverifiable, inverse-write-mandatory).
 
 ### Where C2b actually got to
 

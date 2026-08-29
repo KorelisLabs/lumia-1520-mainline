@@ -724,3 +724,225 @@ No code. The mapping is complete and the contract is frozen; what remains
 before C3a can be written is the one operational question §21 raises — how the
 run is driven with USB disconnected — and that is a harness design point, not a
 measurement or a mapping one.
+
+> **§25 is answered by §26 and §27.** The harness question is settled and r175 is
+> built. Nothing above this line changed.
+
+---
+
+## 26. THE HARNESS FACTS, ESTABLISHED ON HARDWARE
+
+Five facts, measured on the device rather than assumed, that the C3a runner is
+built on. They are written down here because code now depends on every one of
+them and none is derivable from the source.
+
+### 26.1 Detachment: `systemd-run`, not `nohup`
+
+PID 1 is systemd, and logind kills the user session cgroup on logout.
+**`nohup` and `setsid` both die with the ssh session** — tested, not assumed.
+A transient unit survives:
+
+```
+sudo systemd-run --unit=wcd9320-c3a --collect sh <runner> detached
+```
+
+Being transient it also satisfies “explicitly armed, never a boot service”: it
+exists only because someone armed it, and `--collect` makes it vanish when it
+exits. Nothing is installed on disk and nothing runs at the next boot.
+
+### 26.2 The input nodes move between boots
+
+`eventN` numbering is **not stable** — the Synaptics touchscreen has already
+re-ordered it once. Both devices are resolved **by NAME** from
+`/proc/bus/input/devices` at arm time, on every arm, and the resolution is then
+confirmed against the open descriptor with `EVIOCGNAME`. If either device is
+missing the run **refuses to arm at all**.
+
+An approve button that works alongside an abort button that does not is worse
+than neither, because it looks armed.
+
+### 26.3 Approve and abort are on DIFFERENT devices
+
+| | device | key | code |
+|---|---|---|---|
+| approve | `gpio-keys` | `KEY_VOLUMEUP` | 115 |
+| abort | `pm8941_resin` | `KEY_VOLUMEDOWN` | 114 |
+
+Confirmed by real presses. That they are separate devices is not a detail: it
+is what lets the abort watcher hold its own descriptor open for the whole run
+while the approve gates open and close theirs.
+
+### 26.4 `input_event` is 16 bytes here
+
+`sec(4) usec(4) type(2) code(2) value(4)`, little endian. Presses are
+`value == 1`; releases (0) and autorepeat (2) are ignored, so holding a button
+is one decision rather than a stream of them.
+
+> **`struct input_event` from the headers is NOT used.** On a build with a
+> 64-bit `time_t` that struct is 24 bytes, and a reader using it would find
+> `type` where `usec` is and conclude nothing was ever pressed — an interlock
+> that silently never fires. Events are parsed from a byte buffer at fixed
+> offsets, and a read that is not a whole number of 16-byte records is an error
+> rather than something to resynchronise past.
+
+### 26.5 The abort path is proven before anything arms
+
+The runner **requires a live Volume-Down press at arm time**, read through the
+same device, stride and key code the watcher will use. Until that press
+happens nothing arms and no register is written. An interlock nobody has
+pressed is an assumption, and it is the one assumption this run cannot carry.
+
+---
+
+## 27. r175 AS BUILT: `pa-rc1`
+
+**Status: STAGED at pkgrel 175, `pa-rc1`. NOT YET BUILT, NOT YET RUN.**
+
+### The order the work was done in
+
+Artefact fences first, then the driver, then the helpers and their selftests,
+then the runner. The fence for a capability has to exist before the capability
+does, or the first thing it fences is a decision already taken.
+
+### The driver
+
+| | |
+|---|---|
+| `wcd9320_pa_guard_expect()` | the guard, with the expected value as an argument |
+| `wcd9320_pa_guard()` | now a one-line wrapper passing `0` — every pre-r175 call site unchanged in meaning |
+| `wcd9320_pa_prep()` | P5–P7: gain source, minimum mapped gain, the compander-OFF pop/click pairing, with the measured baseline recorded for the restore |
+| `wcd9320_hphl_pa_path()` | steps 9–11 up, §8's real teardown down |
+| `wcd9320_c3_abort()` | the whole mapped teardown as ONE idempotent operation |
+| `enum wcd9320_gain_src` | `COMPANDER` (D1) and `REGISTER` (C3a) |
+| `wcd->c3_lock` | serialises every C3 sysfs entry point |
+| `hphl_pa_test` | `prep`, `pa-on`, `pa-off`, `unprep`, `abort` |
+| `hphl_pa_state` | the C3a register set plus `INTR_STATUS2`, all read bypassed |
+
+### D1's contract is intact, and that was a constraint not an accident
+
+The COMP1 mode still requires `comp1_on`, and `dac-on` still selects it. C3a
+adds a second mode rather than redefining the first, because r174's evidence
+describes the COMPANDER path and swapping the prerequisite would have made a
+proven result stop describing the shipping driver.
+
+> **§16 said this needed no driver surgery. That was true of downstream and
+> false of our port.** `wcd9320_hphl_dac_path()` opened with
+> `if (!wcd->comp1_on || !wcd->rx1_digital_on) return -EAGAIN;` — our check,
+> not `taiko`'s. The replacement is stronger than what it replaces: in register
+> mode the path reads `0x1ae` back **from the chip** and refuses unless
+> `& 0x3f == 0x34`, which verifies the hardware rather than a driver flag.
+
+### Two observables the mapping did not have
+
+`INTR_STATUS2` at `0x09a` carries `HPH_PA_OCPL_FAULT` (bit 0) and
+**`HPH_L_PA_STARTUP` (bit 3)**. §9 reached for `0x1b3`, which r172 ruled out;
+these are pollable directly, and bit 3 is the analog block reporting that the
+left PA started rather than a readback of the bit we wrote.
+
+**Sampled at every stage boundary, with the boundary stated in advance the way
+r172's was:** a channel-specific startup indication is useful positive
+corroboration; **no indication is not evidence of failure** — these sources are
+masked and whether the status bits assert while masked is not established; an
+OCP fault is a hard abort. The IRQ mask configuration is **not changed** to
+find out, because `wcd9320-irq-parent-idle-validated` certifies it.
+
+### The PA fence, section 5d of the artefact gate
+
+`0x1ab` goes from **0 write sites to exactly 2**, and the relaxation is bounded
+five ways:
+
+1. exactly two write sites, by count;
+2. both masked to `WCD9320_HPH_PA_HPHL` alone — `0x30` may never appear as a
+   write mask, and `WCD9320_HPH_PA_HPHR` in no write at all;
+3. both inside `wcd9320_hphl_pa_path()`;
+4. the guard compares for **equality**, so the allowed set is exactly
+   `{00, 20}` — a subset test would accept `0x30` while expecting `0x20`;
+5. D1's contract asserted unchanged.
+
+Plus: the four POST_PA writes present with their exact masks and values, **no
+inverse for any of them**, the abort composing the mapped steps in order with
+no early return, the C3 lock balanced and taken by all three stores, and the
+IRQ mask untouched.
+
+**Dry-run against the staged patch: every check in 5d passes.**
+
+### The helpers
+
+| | |
+|---|---|
+| `input-gate` | resolves by name, confirms with `EVIOCGNAME`, proves the abort path at arm time, runs the independent watcher. **Every ambiguous outcome returns non-approve**: timeout, setup error, busy, unknown code. |
+| `pcm-tone` | 1 kHz, 48 kHz S16_LE mono, 250 ms tone/silence/tone/silence in **one uninterrupted stream**, −40 dBFS, with a **compiled −20 dBFS ceiling** checked before the device is opened. It cannot emit a ramp or full scale at all. |
+
+`pcm-run-measured` is **not** used: it writes `(i * 37) & 0x7fff`, a full-scale
+sawtooth with no declared frequency, which is the one thing §23 says never.
+
+> **Why tone/silence/tone/silence in one stream rather than PCM start/stop.**
+> An output that appeared and disappeared with the stream could be explained by
+> the stream machinery, the SLIMbus port, the DSP or the codec's own clock
+> gating — none of which is conversion. Here the stream, the routing, the PA
+> and every register stay unchanged for the whole second, and only the sample
+> values change. At 48 kHz a 250 ms segment is exactly 250 whole cycles of
+> 1 kHz, so every burst begins and ends on a rising zero crossing and the
+> segment boundaries contribute no step of their own.
+
+### Four independent things make the run safe
+
+1. an **independent abort watcher**, started before the first hardware change
+   and alive until the final teardown — the approve gates are blind between
+   calls and it is not;
+2. a **transient systemd fail-safe timer**, armed at the PA-enable boundary,
+   re-armed at each hold taken with the PA live, and cancelled **only** on a
+   chip-verified reading of both PA bits clear;
+3. the driver's teardown is **one idempotent operation under a state lock**, so
+   a normal teardown and an emergency abort cannot interleave;
+4. the PA guard is **never disabled**, only made phase-dependent.
+
+The hold limits are deliberately not one number: **10 minutes** with the PA off
+(scope setup takes as long as it takes), **120 seconds** for each hold taken
+with the PA live, and every expiry is a teardown.
+
+### Offline verification, all passing before any hardware
+
+| | |
+|---|---|
+| `wcd9320-hphl-pa-selftest.sh` | **96 passed, 0 failed** |
+| `c3a-helper-audit.py --selftest` | **19 cases, 16 of which must be rejected, 0 wrong** |
+| `wcd9320-sh-scope-lint.py` | clean on all five new shell files |
+| artefact gate section 5d | every check passes against the staged patch |
+
+The selftest covers the derivation against the measured cold-boot baseline and
+against a hostile one with every fuse-loaded register inverted; the §20 no-op
+predictions; the forced-write journal with a missing inverse, an inverse issued
+as a set, a wrong register, a masked `0x314` and a truncated cycle all caught;
+**every input-gate exit code resolving to abort except 0**; the ssh-detachment
+form; and, against the real binary, key renumbering across two boots, a missing
+abort device, a prefix name that must not match, and a refused double arm.
+
+### Two defects found offline, both in checkers
+
+1. The scope lint caught `pa_derive()` and `pa_apply()` both assigning `_b`. It
+   works today only because every call is inside `$( )`, which runs in a
+   subshell — correctness by accident of the call site, the exact shape of the
+   `_n` bug that cost this project a hardware run.
+2. The helper audit rejected a correct `input-gate`, twice, because it checked
+   for things that are **string literals** in source it had already stripped
+   literals from. Fixed with a third view of the source — comments removed,
+   literals kept — and a selftest case in each direction.
+
+Both were verified by hand before being acted on. Neither was in the code under
+test, which is the fourth and fifth time on this project.
+
+### One standing mystery retired
+
+The artefact gate carried a note about a “constant offset of 2 between source
+call sites and artefact relocations”, stable since r167 and unexplained. It is
+the **two places the comments name `regmap_read_bypassed()` in prose**, which a
+bare `grep -c` counted as calls. Counting calls instead of mentions:
+`83` real sites, `2` prose, `85` bare. The expectation is now `83 + 7 = 90` and
+the subtraction is gone.
+
+### What is still NOT done
+
+**No build, no flash, no run.** No register has been written on hardware. The
+DC band still has to be measured before the tone is ever allowed, and the probe
+point still has to be confirmed with a meter, both per §21 and §22.
