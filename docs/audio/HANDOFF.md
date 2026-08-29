@@ -1303,18 +1303,54 @@ any means this codec offers to software.
 None of these establishes that the bus writes had no effect, and none
 establishes that they had one.
 
+### C2b IS FROZEN AT D1. Do not change it further.
+
+r174 D1 is frozen at `8239a20`. **`wcd9320-hphl-dac-path-proven` is not
+awarded and is not to be awarded.** Software-only observability is exhausted.
+
 ### The next task, precisely
 
-**NO BUILD IS STAGED.** The next experiment belongs on the **physical analog
-side** -- the PA path, or an electrical measurement at the headphone output --
-and not to another register-readback proxy. That is a deliberate change of
-instrument, and it is the first time this branch has needed one.
+**C3 IS OPEN AS RESEARCH, AND THE MAPPING IS DONE.** See
+[wcd9320-hphl-pa-c3-mapping.md](wcd9320-hphl-pa-c3-mapping.md).
 
-Whatever comes next, the r174 mechanism stands: `0x314` and `0x30d` are
-write-effect-unverifiable and inverse-write-mandatory, the exception is
-confined to those two registers by the helper and by the artefact gate, and
-every forced write is journalled so its inverse can be proven rather than
-assumed.
+The milestone is **not audible sound**. It is an **electrical** HPHL output
+proof on a scope, with a controlled PA enable.
+
+**NO CODE IS WRITTEN AND NOTHING IS STAGED**, because section 12 of the mapping
+carries one decision that is the operator's:
+
+> **Compander 1 ON or OFF for C3a?** D1 was proven with it ON, but the
+> compander's `PRE_PMU` clears `0x1ae` bit 5 and takes gain away from the
+> register -- so "minimum mapped gain" is not achievable with it on. The
+> recommendation is **OFF**, which makes gain deterministic and minimum, uses
+> the probe-default pop/click set, and gives the longer 13 ms PA settle; the
+> cost is re-establishing the DAC path without the compander first.
+
+Three things from the mapping worth knowing before reading it:
+
+1. **The gain control is INVERTED.** `SOC_SINGLE_TLV(..., max 20, invert 1)`
+   means the register holds `20 - volume`, and `0x1ae` POR is `0x00` -- so the
+   **reset state is maximum output level**. The safe setting is `0x1ae[4:0] =
+   0x14`, written explicitly before the PA is ever enabled.
+2. **Pop/click settings are paired with the compander state**, not fixed:
+   wavegen timing, chopper, OCP bias and the PA settle (3 ms vs 13 ms) all
+   move together. C2b has never applied the compander-ON half, because it never
+   enabled the PA.
+3. **OCP is an interrupt, not a poll** -- `WCD9XXX_IRQ_HPH_PA_OCPL_FAULT`, with
+   a re-arm toggle on `0x1aa` bit 4. It is the abort condition that matters,
+   and downstream does **not** require a load: OCP guards the opposite failure,
+   so a high-impedance scope is the safe direction.
+
+**PASS is an observed waveform**, not a completed register sequence. Sequencing
+the PA correctly earns **no tag** -- that is the same class of evidence as D1.
+Only a sine at the HPHL pin that tracks the digital content, twice, would
+justify `wcd9320-hphl-electrical-proven`, and even that is electrical rather
+than audible.
+
+Boundaries carried forward unchanged: `0x314`/`0x30d` stay
+write-effect-unverifiable with forced forward and inverse writes and no
+readback expectations; the PA guard stays armed except at the single mapped
+PA-enable step; HPHR, EAR, speaker and lineout remain off-limits.
 
 ### Rules this branch has been run under
 
