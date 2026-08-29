@@ -126,14 +126,26 @@ jrn() {
 }
 
 # --------------------------------------------------------------- discovery --
+#
+# THE CODEC IS TWO SLIMBUS FUNCTIONS AND ONLY ONE OF THEM IS THE CODEC.
+#
+# 217:a0:0:0 is the interface function; 217:a0:1:0 is the control function.
+# The attribute group is registered per device, so BOTH carry hphl_pa_test and
+# hphl_pa_state -- the interface function's readers answer "interface
+# function: not applicable" rather than being absent.
+#
+# So "the first device that has the attribute" picks the WRONG ONE, and its
+# state file has no pa_0x1ab in it. The C3a preflight caught exactly that on
+# its first run, before anything was written.
+#
+# find_devices() from the evidence library is used instead of a second
+# implementation. It has distinguished the two since the coldboot runs, it
+# fails closed if no control function is found, and it also sets PGD_NAME and
+# IFD_NAME, which the report wants.
 c3_find_codec() {
-	_cf_d=""
-	for _cf_c in "${SLIM_DEVICES:-/sys/bus/slimbus/devices}"/*; do
-		[ -e "$_cf_c/hphl_pa_test" ] || continue
-		_cf_d="$_cf_c"
-		break
-	done
-	printf '%s' "$_cf_d"
+	find_devices
+	[ -n "${PGD:-}" ] && [ -e "$PGD/hphl_pa_test" ] || return 1
+	return 0
 }
 
 # rv <text> <key>
@@ -275,8 +287,15 @@ c3_preflight() {	# c3_preflight <arming?>
 	[ -n "$SETCTL" ] || _pf_bad="$_pf_bad no-alsa-setctl"
 	[ -f "$TEARDOWN" ] || _pf_bad="$_pf_bad no-teardown-script"
 
-	PGD=$(c3_find_codec)
-	[ -n "$PGD" ] || _pf_bad="$_pf_bad no-codec-with-hphl_pa_test"
+	#
+	# find_devices() exits 2 itself if there is no control function at all,
+	# which is the right behaviour -- there is nothing to run against. What
+	# is checked here is the r175 attribute, so an OLD module on a correct
+	# device is caught by name rather than by a missing-file error later.
+	#
+	if ! c3_find_codec; then
+		_pf_bad="$_pf_bad control-function-has-no-hphl_pa_test"
+	fi
 
 	if [ -n "$_pf_bad" ]; then
 		say "INVALID SETUP:$_pf_bad"
