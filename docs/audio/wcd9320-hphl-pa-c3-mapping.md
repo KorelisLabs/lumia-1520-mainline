@@ -761,6 +761,16 @@ missing the run **refuses to arm at all**.
 An approve button that works alongside an abort button that does not is worse
 than neither, because it looks armed.
 
+> **Observed on the r175 boot of 2026-08-29:** `gpio-keys` at `event0`,
+> `pm8941_resin` at `event2`. Recorded as a data point, not as a value to rely
+> on — and note what is NOT claimed here. The r175 commit message said these
+> numbers differed from the previous boot's; **no reading of
+> `/proc/bus/input/devices` was ever taken on that boot**, so that comparison
+> was unfounded and is withdrawn. The instability is established from the
+> earlier session that observed the Synaptics touchscreen re-order them; this
+> boot neither confirms nor contradicts it. Resolution is by name regardless,
+> which is why the question does not need settling.
+
 ### 26.3 Approve and abort are on DIFFERENT devices
 
 | | device | key | code |
