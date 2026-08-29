@@ -356,7 +356,9 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 	done
 
 	hdr "the RDAC clock prerequisite, applied explicitly"
-	say "0x314 CDC_CLK_POWER_CTL   $CLKP_BEFORE -> $CLKP_AFTER   [chip-verified]"
+	say "0x314 CDC_CLK_POWER_CTL   reads $CLKP_BEFORE throughout"
+	say "     the 0x03 write was ISSUED per cycle through the forced path;"
+	say "     resulting register state not directly observable by readback"
 	say "0x30d RDAC clock, before  $RDAC_BEFORE"
 
 	hdr "the baseline, with the prerequisite in place"
@@ -416,9 +418,20 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 		eval "_a=\$C${c}_PREREQOFF_RC"
 		check "c$c forced 0x314 clear issued" "$_a" "0"
 	done
-	check "0x314 reads 03 on the chip" "$CLKP_AFTER" "03"
+	#
+	# 0x314 IS NOT CHECKED FOR A VALUE, and cannot be.
+	#
+	# r171 showed every documented bit of it reads back zero; r173 showed it
+	# reads zero even with the codec on the external MCLK and the rate
+	# declared. The check that used to live here asserted 03 and would fail
+	# every run from now on -- it was the precondition's twin and was missed
+	# when the precondition was removed.
+	#
+	# What IS checked is above: that the forced write was issued, in both
+	# directions, in both cycles, with the right register, mask and
+	# direction.
+	#
 	check "0x30d was idle before the run" "$RDAC_BEFORE" "00"
-	check "CHIP_CTL unchanged by this run" \
 
 	say ""
 	say "-- every stage was accepted --"
