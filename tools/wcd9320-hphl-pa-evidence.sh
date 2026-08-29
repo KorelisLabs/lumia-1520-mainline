@@ -94,6 +94,19 @@ MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 HOLD_PA_OFF="${HOLD_PA_OFF:-600}"	# 10 minutes, PA off, then abort
 HOLD_PA_ON="${HOLD_PA_ON:-120}"		# 2 minutes, PA live, then teardown
 HOLD_TONE="${HOLD_TONE:-120}"		# 2 minutes, PA live, then teardown
+#
+# THE ARM WINDOW, and it is the one hold that is not a safety limit.
+#
+# Nothing is armed and no register is written until the operator physically
+# presses Volume Down, so this window costs nothing to make generous -- an
+# expiry here refuses the run and leaves the codec untouched, which is exactly
+# what happened on the first attempt when 120 s ran out while the operator was
+# still reading the instructions.
+#
+# It is still bounded rather than infinite: a run left waiting forever for a
+# press nobody is going to make holds the lock and looks armed.
+#
+HOLD_ARM="${HOLD_ARM:-300}"		# 5 minutes to press Volume Down
 FAILSAFE_PAD="${FAILSAFE_PAD:-45}"	# the timer outlives the gate by this
 
 DBFS="${DBFS:--40}"
@@ -367,9 +380,11 @@ c3_preflight() {	# c3_preflight <arming?>
 	#
 	say ""
 	say "  ==> PRESS VOLUME DOWN NOW to prove the abort path."
-	say "      Nothing arms until you do. 120 s."
+	say "      Nothing arms until you do. ${HOLD_ARM} s."
 	say ""
-	if ! "$GATE" --selftest-abort --timeout 120 --label armtime >>"$JOURNAL" 2>&1; then
+	jrn "awaiting the arm-time Volume Down press, up to $HOLD_ARM s"
+	if ! "$GATE" --selftest-abort --timeout "$HOLD_ARM" --label armtime \
+		     >>"$JOURNAL" 2>&1; then
 		say "INVALID SETUP: the abort self-test did not see a Volume Down press."
 		say "  Nothing was armed and no register was written."
 		return 1
@@ -593,6 +608,7 @@ launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=HOLD_PA_OFF=$HOLD_PA_OFF"
 	CMD="$CMD --setenv=HOLD_PA_ON=$HOLD_PA_ON --setenv=HOLD_TONE=$HOLD_TONE"
+	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "The run detaches into a transient unit so it survives losing ssh."
 	say ""
