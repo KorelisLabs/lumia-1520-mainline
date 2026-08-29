@@ -237,7 +237,9 @@ trade.
 - the cost: it departs from the exact D1 state, so C3a must re-establish and
   re-verify the DAC path without the compander before enabling the PA
 
-**This needs your decision before any code is written.**
+**DECIDED: COMP1 OFF.** C3a optimises for deterministic minimum analog
+output rather than preserving D1's compander-on state. Sections 16 to 19 make
+that concrete.
 
 ---
 
@@ -349,3 +351,201 @@ Any of these → immediate teardown, tone never enabled:
 No code. No register written. No build staged. The decision in section 12 is
 open and belongs to the operator, and nothing should be written until it is
 made.
+
+
+---
+
+## 16. THE COMP1-OFF D1 PREREQUISITE SEQUENCE, EXPLICITLY
+
+D1 was run with COMP1 on. C3a runs the same DAC path with COMP1 **off**, so
+what changes has to be stated register by register rather than assumed to be
+"the same minus the compander".
+
+### What the driver requires, checked rather than assumed
+
+`wcd9320_hphl_dac_path()` has **no `comp1_on` dependency**. The compander check
+lives only inside `wcd9320_comp1_enable()`. Running the DAC path with COMP1 off
+therefore needs **no driver surgery** — it is a gate sequencing change.
+
+### What COMP1 was doing that now must be done explicitly
+
+| what | with COMP1 on (D1) | with COMP1 off (C3a) |
+|---|---|---|
+| gain source `0x1ae[5]` | compander PRE_PMU **clears** it → compander-controlled | **must be set to 1 explicitly** |
+| gain field `0x1ae[4:0]` | irrelevant, compander drives the level | **must be set to `0x14`, the minimum** |
+| pop/click set | compander-ON half (`0xDA`/`0x15`/`0x2A`, chopper on) | **compander-OFF half** (`0xDB`/`0x58`/`0x1A`, chopper off) |
+| PA settle | 3 ms | **13 ms** |
+| `0x373` bit 7 | compander static gain offset | untouched |
+
+> ### ⚠ AT A COLD-BOOT BASELINE, `0x1ae` READS `0x00`
+>
+> Bit 5 **clear** means the gain source is the **compander** — which will not be
+> running. And the field reads `0`, which the inverted control makes
+> **maximum**. So a pristine part is in the worst of both states for C3a.
+>
+> Downstream avoids this with `taiko_codec_reg_init_val[]`:
+> `{TAIKO_A_RX_HPH_L_GAIN, 0x20, 0x20}` — *"Initialize gain registers to use
+> register gain"*. **Our port has never applied that table.** C3a must do it
+> itself, and must do it before the PA is enabled.
+
+### The prerequisite sequence, in order
+
+```
+ P1  pristine baseline, PA guard armed, 0x1ab & 0x30 == 00
+ P2  QDSP6 + SLIMbus up
+ P3  RX1 digital chain on                       (unchanged from D1)
+ P4  COMP1 deliberately NOT enabled             (the change)
+ P5  gain source:  0x1ae mask 0x20 <- 0x20      chip-verified
+ P6  gain field:   0x1ae mask 0x1f <- 0x14      chip-verified  MINIMUM
+ P7  pop/click, compander-OFF half:
+         CNP_WG_CTL   0x1ac <- 0xDB
+         CNP_WG_TIME  0x1ad <- 0x58   (20 ms wavegen)
+         BIAS_WG_OCP  0x1a9 <- 0x1A
+         CHOP_CTL     0x1a5 mask 0x80 <- 0x00   (chopper off)
+     each chip-verified; all four are ordinary verifiable registers
+ P8  DSM mux 0x3b0 <- 0x14                      chip-verified
+ P9  RX bias 0x1a2[7]                           refcounted
+P10  class-H PRE_DAC                            C2a, unchanged
+P11  FORCED 0x314 <- 0x03                       unverifiable, journalled
+P12  FORCED 0x30d[1] <- 1                       unverifiable, journalled
+P13  DAC 0x1b1[6] then [7]                      chip-verified == 0xC0
+```
+
+### The abort gate, before the PA is touched at all
+
+**All of these must hold, or C3a aborts into teardown without ever writing
+`0x1ab`:**
+
+| | required |
+|---|---|
+| `0x1ae & 0x3f` | `0x34` — bit 5 set **and** field `0x14` |
+| `0x1b1` | `0xC0` |
+| `0x3b0` | `0x14` |
+| `0x1a2[7]` | set |
+| `0x320` class-H | `0xa7`, the C2a live value |
+| `0x1ac`/`0x1ad`/`0x1a9` | `0xDB`/`0x58`/`0x1A` |
+| `0x1a5[7]` | clear |
+| QDSP6 / SLIMbus | stream running, no faults |
+| `0x1ab & 0x30` | `0x00` |
+| forced journal | `0x314` set and `0x30d` set both present |
+
+The gain check is the one that matters most, and it is checked as a **field**,
+not a whole register: `0x1ae` also carries bits this run does not own.
+
+---
+
+## 17. CLASS-H POST_PA: THE ENABLE, AND WHAT ITS INVERSE ACTUALLY IS
+
+### The enable — four writes, baseline-relative
+
+`wcd9xxx_clsh_enable_post_pa()`:
+
+| # | register | addr | mask | value |
+|---|---|---|---|---|
+| 1 | `BUCK_MODE_5` | `0x185` | `0x02` | `0x00` |
+| 2 | `NCP_STATIC` | `0x194` | `0x20` | `0x00` |
+| 3 | `BUCK_MODE_3` | `0x183` | `0x04` | `0x04` |
+| 4 | `BUCK_MODE_3` | `0x183` | `0x08` | `0x08` |
+
+All four are inside the **fuse-loaded `0x180`–`0x1e4` range**, so expectations
+must be **baseline-relative per bit** — measure each register before the PA
+step and predict `(baseline & ~mask) | value`. Predicting whole-register values
+here is the exact mistake C2a was caught by.
+
+### The inverse — and it is NOT a reversal of those four writes
+
+> **`wcd9xxx_clsh_turnoff_postpa()` does not touch any of them.**
+
+```c
+static void wcd9xxx_clsh_turnoff_postpa(struct snd_soc_codec *codec)
+{
+	const struct wcd9xxx_reg_mask_val reg_set[] = {
+		{WCD9XXX_A_NCP_EN,          0x01, 0x00},
+		{WCD9XXX_A_BUCK_MODE_1,     0x80, 0x00},
+		{WCD9XXX_A_CDC_CLSH_B1_CTL, 0x10, 0x00},
+	};
+	wcd9xxx_chargepump_request(codec, false);
+	for (...) snd_soc_update_bits(...);
+	wcd9xxx_enable_clsh_block(codec, false);
+}
+```
+
+Different registers entirely. So on the disable side,
+`clsh_fsm(HPHL, DISABLE, POST_PA)` computes `state & ~HPHL` → `state_idle`,
+which runs `comp_req(HPH_L, false)` then `turnoff_postpa()` — and
+**`BUCK_MODE_5[1]`, `NCP_STATIC[5]` and `BUCK_MODE_3[2:3]` keep their post-PA
+values.**
+
+**They are PROGRAMMED state, not RESTORED state**, in exactly the sense the C2b
+expectation model already uses for the compander configuration. C3a's gate must
+classify them that way. **Reversing them would be inventing an inverse
+downstream does not have**, which this branch does not do.
+
+### Our C2a already implements the whole inverse
+
+Checked line by line rather than assumed:
+
+| downstream `state_idle(HPHL)` | our `wcd9320_clsh_hphl(false)` |
+|---|---|
+| `comp_req(HPH_L, false)` → `B1_CTL 0x08 <- 0` | ✅ `"comp req off"` |
+| `chargepump_request(false)` → `CLK_OTHR_CTL 0x01 <- 0` | ✅ refcounted `"charge pump off"` |
+| `NCP_EN 0x01 <- 0` | ✅ `wcd9320_clsh_off[0]` |
+| `BUCK_MODE_1 0x80 <- 0` | ✅ `wcd9320_clsh_off[1]` |
+| `CDC_CLSH_B1_CTL 0x10 <- 0` | ✅ `wcd9320_clsh_off[2]` |
+| `enable_clsh_block(false)` → `B1_CTL 0x01 <- 0` | ✅ `"clsh block off"` |
+
+**Complete, and in downstream's order.** It was proven 82/82 at C2a.
+
+**But one thing about that proof changes in C3a, and it must be said.** C2a ran
+`turnoff_postpa()` in a state where `enable_post_pa()` had never run. C3a is
+the first time the NCP and buck are actually brought up by the post-PA writes
+before it executes. The registers do not overlap, so the sequences are
+independent — but the **expected post-teardown values differ from C2a's**,
+because `BUCK_MODE_3`, `BUCK_MODE_5` and `NCP_STATIC` will hold their post-PA
+values rather than their pre-PA ones. A gate reusing C2a's expectations
+verbatim would fail a correct run.
+
+---
+
+## 18. THE PA GUARD BECOMES AN ALLOWED-STATE GUARD
+
+It is **not removed** at any point. It changes from a constant to a
+phase-dependent assertion on `0x1ab & 0x30`:
+
+| phase | allowed | on violation |
+|---|---|---|
+| everything before the deliberate enable | `0x00` | abort into teardown |
+| while HPHL is intentionally enabled | `0x20` **exactly** — bit 5 set, **bit 4 clear** | abort into teardown |
+| after teardown | `0x00` | fail the run |
+
+The middle phase is the new part and it is strict: **HPHR bit 4 must remain
+clear**, so a mask that accidentally enabled both channels is caught rather
+than passed. Sampled before and after every analog-affecting stage, read
+bypassed, as it has been since C2a.
+
+The guard's own "once tripped, stays tripped" behaviour is kept: a violation
+disables the path for the rest of the boot.
+
+---
+
+## 19. WHAT REMAINS BEFORE CODE
+
+Both prerequisites the operator named are now explicit:
+
+- **the COMP1-off D1 prerequisite sequence** — section 16, P1–P13 with its
+  abort gate;
+- **the exact class-H POST_PA inverse** — section 17, including the finding
+  that it is *not* a reversal of the four enable writes, and the confirmation
+  that our C2a implements the real inverse completely.
+
+Still to be settled by measurement, not by code:
+
+1. The **DC band** that counts as acceptable at the HPHL pin. It has to be
+   declared before the run, from the first PA-off measurement, so that
+   "large or drifting" is a number rather than a judgement.
+2. The **scope setup** — probe, ground reference and the pin itself. Nothing in
+   software can check this, and an unverified probe point would make a null
+   result meaningless.
+
+Neither is a coding question, and C3a should not be written until the DC band
+is agreed.
