@@ -541,11 +541,19 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 
 	say ""
 	say "-- the lifecycle is reusable, not a one-shot --"
+	#
+	# Monotonic counters are stripped, not compared. The "on=" line has
+	# always carried enables/disables/c2b_writes, and r174 added a second
+	# line of cumulative counters (unver_writes/unver_clears). Comparing
+	# those across cycles calls two IDENTICAL hardware states different --
+	# which it did, on the first r174 run, at 2/0 against 4/2 while every
+	# register on every other line matched exactly.
+	#
 	check_cond "cycle 2 enabled == cycle 1 enabled" \
-		"$([ "$(printf '%s' "$C1_DAC" | grep -v '^on=')" = "$(printf '%s' "$C2_DAC" | grep -v '^on=')" ] && echo 1 || echo 0)" \
+		"$([ "$(printf '%s' "$C1_DAC" | grep -vE '^(on=|unver_)')" = "$(printf '%s' "$C2_DAC" | grep -vE '^(on=|unver_)')" ] && echo 1 || echo 0)" \
 		"the second enable produced a different state"
 	check_cond "cycle 2 teardown == cycle 1 teardown" \
-		"$([ "$(printf '%s' "$C1_AFTER" | grep -v '^on=')" = "$(printf '%s' "$C2_AFTER" | grep -v '^on=')" ] && echo 1 || echo 0)" \
+		"$([ "$(printf '%s' "$C1_AFTER" | grep -vE '^(on=|unver_)')" = "$(printf '%s' "$C2_AFTER" | grep -vE '^(on=|unver_)')" ] && echo 1 || echo 0)" \
 		"the second teardown produced a different state"
 
 	say ""

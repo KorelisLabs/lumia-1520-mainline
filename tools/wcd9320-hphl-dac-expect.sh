@@ -65,7 +65,6 @@ c2b_apply() {
 #   set even on a part that came up with it clear.
 C2B_TRANSFORMS="dsm_0x3b0|-|30,10 0c,04|0c,00 30,00
 dac_0x1b1|-|40,40 80,80|80,00 40,00
-rdac_0x30d|-|02,02|02,00
 bias_0x1a2|-|80,80|80,00
 lgain_0x1ae|20,00|-|20,20
 rgain_0x1b4|20,00|-|20,20
@@ -80,7 +79,23 @@ compfs_0x377|07,03|-|-"
 # is pure routing; 0x1b1 only in its top two bits; 0x30d only bit 1, because
 # bits 2 and up belong to HPHR and the line-outs and this run never touches
 # them.
-C2B_RESTORED="dsm_0x3b0:3c dac_0x1b1:c0 rdac_0x30d:02 bias_0x1a2:80"
+#
+# rdac_0x30d IS DELIBERATELY ABSENT from both lists, from r174.
+#
+# It used to be predicted as 02 when enabled and 00 after. That was
+# the pre-r174 model, in which a readback of 00 meant the write had
+# been refused. r171 showed every documented bit of it reads back
+# zero; r173 showed it still does with the codec on the external MCLK
+# and the rate declared. So 0x30d is write-effect-unverifiable: its
+# state cannot be asserted in either direction, and a gate that
+# demanded 02 would fail every correct run.
+#
+# It is still REPORTED in the state dumps, and what IS asserted about
+# it is stronger than a value: that the forced write was issued, with
+# the right register, mask and direction, in both directions, in both
+# cycles -- checked entry by entry against the driver's journal.
+#
+C2B_RESTORED="dsm_0x3b0:3c dac_0x1b1:c0 bias_0x1a2:80"
 
 # PROGRAMMED: reaches its mapped value and STAYS there after teardown.
 #

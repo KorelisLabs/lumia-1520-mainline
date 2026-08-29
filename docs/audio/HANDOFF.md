@@ -1260,75 +1260,61 @@ explain any other way.
 Candidate, not conclusion: bit 2 of those status registers is undescribed in
 any header we hold and may reflect something unrelated.
 
-### r172 and r173 RESULTS: the observable was silent, the conjunction is refuted
+### r174 RESULT: D1 -- the HPHL DAC widget powers
 
-**r172 = S0, 23/0.** Neither HPH status register moved, for either stimulus, in
-either cycle. **Explicitly not evidence that the `0x30d` write failed** -- the
-observable was one downstream never uses that way, and section 14 said so
-before the run. Evidence:
-[wcd9320-hph-status-20260826T234608Z.txt](wcd9320-hph-status-20260826T234608Z.txt).
-
-**r173 = C2, 24/0, and it needed no build.** The r172 driver already contained
-both halves; until r170 the rate declaration inside the MCLK switch went to
-`0x001`, so the conjunction had never actually been formed. Gate-only run.
-Evidence:
-[wcd9320-conjunction-20260826T235036Z.txt](wcd9320-conjunction-20260826T235036Z.txt).
+**D1, 132/0, VERDICT PASS.** Artefact 82/0. Evidence:
+[wcd9320-hphl-dac-20260827T130229Z.txt](wcd9320-hphl-dac-20260827T130229Z.txt),
+full reading in section 19 of
+[wcd9320-refused-registers-audit.md](wcd9320-refused-registers-audit.md).
 
 ```
-clk-src:  SWITCHED to MCLK, CDC block RESPONDING
-chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a  LATCHED  [rate 9.6 MHz, ON MCLK]
-c2b:      0x314 mask 03 want 03 -> chip 00        <-- STILL REFUSED
+predicted   0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
+observed    0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
+cycle 2     0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
 ```
 
-Codec on the external clock with the RC oscillator off, CDC responding,
-`CHIP_CTL` chip-verified at `0a` -- the exact state downstream is in when
-`taiko_reg_defaults[]` writes `0x314`. It still refused.
+`0x1b1` reached `0xC0` in both cycles, chip-verified. `0x3b0` derived not
+assumed. Class-H reproduced C2a (`a7` live, `a6` after). One ASM RUN and one
+`slim_stream_enable` per cycle, 155 completions each. Cycle 2 matched cycle 1.
+**PA off at every stage boundary**, guard never tripped.
 
-### THE MATRIX IS EXHAUSTED
+`0x314` and `0x30d[1]` were **issued** four times each across two cycles, both
+directions, every operation journalled and checked entry by entry. Their
+effective state remains unobservable.
 
-| run | MCLK selected | rate declared | `0x314` |
-|---|---|---|---|
-| r167 | at the pad only | no | refused |
-| r169 | **yes** | no | refused |
-| r170 | no | **yes** | refused |
-| **r173** | **yes** | **yes** | **refused** |
+**`wcd9320-hphl-dac-path-proven` is NOT awarded**, and must not be: a powered
+widget above two unobservable clock registers is a control-path result, not a
+conversion one. `0x314` effective state, `0x30d` effective state, the
+reconstruction clock, D/A conversion, analog output and audible sound all
+remain open.
 
-The cause is none of them, in any combination. Together with r171 (whole-
-register, both registers, every documented bit, both channels) and the audit
-(not revision, reset domain, write-protect, secure mode, QFUSE, aliasing, or
-address block -- `0x311` accepts in the same block), **every prerequisite this
-project can construct has now been constructed, and they refuse in all of
-them.**
+### The state of the branch
 
-### The question has changed shape
+**Software-only observability is exhausted.** Everything that can be
+established by reading registers has been. The control path is built,
+reversible and repeatable; the two registers it rests on cannot be observed by
+any means this codec offers to software.
 
-Not *which prerequisite is missing* any more, but:
+- r171 W0 -- every documented bit of both registers reads back zero.
+- r172 S0 -- inconclusive; the observable was one downstream never uses that way.
+- r173 C2 -- the MCLK/rate matrix is exhausted.
+- r174 D1 -- the widget powers anyway, under forced writes, reversibly, twice.
 
-> **Is a bypassed readback a valid success criterion for these two registers at
-> all?**
-
-If it is not -- if they are write-only or read-as-zero -- then the writes have
-been landing since r164, and what has blocked C2b at stage 6 of 7 is
-`wcd9320_c2b_write()` turning a refused readback into `-EIO`. **Our own
-verification, not the hardware.** Section 2 of the audit shows downstream could
-never have noticed: `taiko_read()` returns the ASoC cache for both registers.
+None of these establishes that the bus writes had no effect, and none
+establishes that they had one.
 
 ### The next task, precisely
 
-**NO BUILD IS STAGED, and this one is a decision rather than an obvious step.**
+**NO BUILD IS STAGED.** The next experiment belongs on the **physical analog
+side** -- the PA path, or an electrical measurement at the headphone output --
+and not to another register-readback proxy. That is a deliberate change of
+instrument, and it is the first time this branch has needed one.
 
-Answering the remaining question needs an observable that depends on these
-registers **working**, and the only one this codec offers is the analog path --
-which means **powering the DAC**. That has been deliberately out of scope for
-every run so far.
-
-The shape it would take: let C2b continue past the refusal to stage 7
-(`0x1b1 <- 0xc0`) with the readback non-fatal **for these two registers only**,
-PA still hard-guarded off, and see whether the DAC and class-H behave as a
-working path or a dead one. It is still not audible without the PA, so it
-remains a conversion-and-routing result.
-
-Everything else is exhausted. This is the call to make.
+Whatever comes next, the r174 mechanism stands: `0x314` and `0x30d` are
+write-effect-unverifiable and inverse-write-mandatory, the exception is
+confined to those two registers by the helper and by the artefact gate, and
+every forced write is journalled so its inverse can be proven rather than
+assumed.
 
 ### Rules this branch has been run under
 
@@ -1353,10 +1339,10 @@ Everything else is exhausted. This is the call to make.
 
 ### Build/deploy state
 
-- **r172 `hphstatus-rc1`** is built (artefact 79/0), installed and run
-  (S0, 23/0), and the phone is currently up on it, RAM-booted. r173 was a
-  GATE-ONLY run on that same module (C2, 24/0) and has no pkgrel of its own.
-  No newer build is staged.
+- **r174 `dacpower-rc1`** is built (artefact 82/0), installed and run
+  (D1, 132/0). The phone is up on it, RAM-booted. No newer build is staged.
+- **The phone's clock runs ~2 days slow**, so evidence filenames carry an
+  earlier date than the day of the run. Do not read staleness into them.
 - Two cross-toolchain hazards, both hit in one session: the Bash tool's
   `python3` is WINDOWS Python, so it defaults to cp1252 and writes CRLF.
   Editing a repo file with it and with WSL `python3` leaves invalid UTF-8, and

@@ -90,8 +90,21 @@ ck "0x3b0 enabled is 0x14"        "$(get "$W/exp" dsm_0x3b0 4)"  "14"
 ck "0x3b0 returns to 00"          "$(get "$W/exp" dsm_0x3b0 5)"  "00"
 ck "0x1b1 enabled is 0xc0"        "$(get "$W/exp" dac_0x1b1 4)"  "c0"
 ck "0x1b1 returns to 00"          "$(get "$W/exp" dac_0x1b1 5)"  "00"
-ck "0x30d bit 1 set at the DAC"   "$(get "$W/exp" rdac_0x30d 4)" "02"
-ck "0x30d bit 1 clear after"      "$(get "$W/exp" rdac_0x30d 5)" "00"
+# 0x30d is DELIBERATELY ABSENT from the derivation from r174. Asserting a
+# readback value for a write-effect-unverifiable register is exactly the
+# mistake the class exists to prevent, and these two cases used to make
+# it -- they predicted 02 enabled and 00 after. What replaces them is
+# stronger: the register must NOT be derivable at all, so a future edit
+# that quietly reinstates a value expectation fails here rather than on
+# hardware.
+# get() returns EMPTY for a key the derivation does not carry at all --
+# distinct from the "MISSING" that c2b_derive emits for a key it expects
+# but the state text omits. Absent from the transform list is the
+# stronger condition and is what is asserted here.
+ck "0x30d is not derived when enabled"  "$(get "$W/exp" rdac_0x30d 4)" ""
+ck "0x30d is not derived after either"  "$(get "$W/exp" rdac_0x30d 5)" ""
+# ...while a register that IS still verifiable must keep deriving.
+ck "0x1b1 still derives; the class is two registers" "$(get "$W/exp" dac_0x1b1 4)" "c0"
 ck "RX bias sets bit 7 only"      "$(get "$W/exp" bias_0x1a2 4)" "a5"
 ck "RX bias clears bit 7 only"    "$(get "$W/exp" bias_0x1a2 5)" "25"
 ck "0x373 bit 7 clear (2.15 V)"   "$(get "$W/exp" b4_0x373 3)"   "3c"

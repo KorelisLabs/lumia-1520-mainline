@@ -1115,3 +1115,94 @@ output or an electrical measurement, and that is a **separate milestone**.
 
 **None of them establishes that the bus writes had no effect.** That is the
 whole reason r174 exists.
+
+---
+
+## 19. r174 RESULT: D1 — THE HPHL DAC WIDGET POWERS
+
+**D1, 132/0, VERDICT PASS.** Artefact verified 82/0 first. Evidence:
+[wcd9320-hphl-dac-20260827T130229Z.txt](wcd9320-hphl-dac-20260827T130229Z.txt).
+
+```
+predicted   0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
+observed    0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
+cycle 2     0x1b1  00 -> c0 -> 00   and   0x3b0  00 -> 14 -> 00
+```
+
+### Established, all chip-verified
+
+- `0x1b1` reached `0xC0` in **both** cycles — bit 6 connecting the DAC's input,
+  bit 7 powering it — read bypassed from the chip, never from the cache.
+- `0x3b0` `00 -> 14 -> 00`, the ZOH **derived** from the source select.
+- Class-H reproduced C2a exactly: `a7` live, `a6` after.
+- The compander ran at its 48 kHz operating point.
+- One ASM RUN and one `slim_stream_enable` per cycle, 155 completions each —
+  the QDSP6 loop and the SLIMbus stream stayed healthy underneath.
+- **Cycle 2 matched cycle 1**, enable and teardown.
+- **The PA was off at every sample**, `0x1ab & 0x30 == 00` at every stage
+  boundary, and the driver's guard never tripped.
+
+### Issued but not confirmable
+
+`0x314 = 0x03` and `0x30d` bit 1, four operations each across two cycles, both
+directions, every one journalled with register, mask, value and direction. The
+gate checks the eight entries **individually**, so a missing inverse cannot
+hide behind a correct total.
+
+Their resulting register state is **not directly observable by readback** on
+this part. That is the r171/r172/r173 position unchanged, and nothing here
+moves it.
+
+### The boundary, restated because it is the whole point
+
+| | |
+|---|---|
+| HPHL DAC widget powered | ✅ |
+| input switch physically enabled | ✅ |
+| surrounding route configured | ✅ |
+| DSP/SLIMbus active underneath | ✅ |
+| PA remained disabled | ✅ |
+| clean reversible sequence, twice | ✅ |
+| `0x314` effective state | **?** |
+| `0x30d` effective state | **?** |
+| reconstruction clock actually running | **?** |
+| actual D/A conversion | **?** |
+| analog output | **?** |
+| audible sound | **?** |
+
+> **`wcd9320-hphl-dac-path-proven` is NOT awarded.** A powered widget with a
+> connected input, above two clock registers whose effect is unobservable, is a
+> control-path result and not a conversion one.
+
+### Four checker defects were found and fixed before this passed
+
+None were hardware, and each was verified by hand before being acted on. Two
+aborted the first run's report; two failed the second run's checks.
+
+1. A leftover `0x314 reads 03` assertion — the precondition's twin, missed when
+   the precondition was removed at r173.
+2. A dangling line continuation left by stripping stale references *line by
+   line*: `check "..." \` followed by a blank line, so `check()` ran with one
+   argument and died on `$2` under `set -u`. **`sh -n` cannot catch this** — the
+   syntax stays valid, only the arguments vanish. The fix now asserts that no
+   backslash-continued line is followed by a blank one.
+3. The derivation still predicted `rdac_0x30d = 02` when enabled — the pre-r174
+   model, contradicting the premise of the build. `0x30d` is now absent from the
+   asserted expectations, and the selftest asserts it must *stay* absent.
+4. The cross-cycle comparison strips lines beginning `on=`, where the
+   pre-existing monotonic counters live. r174 added a second such line
+   (`unver_writes`/`unver_clears`), so it compared `2/0` against `4/2` and
+   called two identical hardware states different.
+
+Selftest: **87 passed, 0 failed**, including six synthetic journal cases —
+a correct eight-operation run accepted, and a missing inverse, an inverse
+issued as a set, a wrong register, a masked `0x314` write and a truncated
+second cycle all caught.
+
+### Where this leaves the branch
+
+**Software-only observability is exhausted.** The control path is built,
+reversible and repeatable; the two registers it rests on cannot be observed by
+any means this codec offers to software. The next experiment belongs on the
+physical analog side — the PA path or an electrical measurement — and not to
+another register-readback proxy.
