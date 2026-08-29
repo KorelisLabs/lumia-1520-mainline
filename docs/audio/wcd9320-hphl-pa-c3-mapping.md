@@ -630,10 +630,52 @@ compander configuration.
 |---|---|
 | signal | HPHL / left-audio contact (**Tip**) |
 | reference | the jack's **actual audio-ground contact** |
-| verification | confirm the ground contact **on the breakout with a meter** before the run — do not rely on generic CTIA pinout assumptions |
+| verification | **SUPERSEDED — see 21a.** The pinout is now established from RM-940 board documentation rather than measured. |
 | probe | **10×**, high impedance |
 | load | **none** — no headphones |
 | coupling | **DC-coupled** for the offset measurements |
+
+### 21a. THE PINOUT IS BOARD DOCUMENTATION, NOT AN ASSUMPTION
+
+**The meter requirement is withdrawn as a hard blocker.** It existed because
+CTIA and OMTP swap ground and mic between Ring 2 and Sleeve, and the project
+had no board-specific source — so the alternative was a generic assumption,
+which is what §21 refused.
+
+That is no longer the alternative. The **Nokia Lumia 1520 service manual,
+covering RM-937 / RM-938 / RM-939 / RM-940, identifies the connector as a
+3.5 mm AHJ connector.** AHJ is the CTIA arrangement, stated for this board
+rather than inferred from what phones usually do.
+
+**FROZEN C3a PINOUT:**
+
+| contact | signal | C3a |
+|---|---|---|
+| **Tip** | HPHL / left audio | **10× probe tip** |
+| **Ring 1** | HPHR / right audio | untouched |
+| **Ring 2** | **audio ground** | **scope ground clip** |
+| **Sleeve** | microphone | untouched |
+
+> **Sleeve is NOT an alternate ground candidate.** On the documented AHJ
+> connector it is the microphone contact. Treating it as a fallback would
+> reintroduce exactly the CTIA/OMTP ambiguity this supersedes.
+
+**What this restores.** §19 warned that "an unverified probe point would make a
+null result meaningless". With the pinout established from board
+documentation, that is no longer the case: a null result is interpretable
+again, and C3a keeps the ability to fail informatively rather than only to
+succeed.
+
+**The one residual, stated rather than glossed.** The service manual
+establishes the PHONE side. It says nothing about whether a particular TRRS
+breakout adapter is wired straight through. A meter would still catch a
+miswired adapter, and it remains a useful optional sanity check — it is simply
+no longer what stands between this project and a first measurement.
+
+**Load-bearing for the run, not just for the probe.** Ring 1 is HPHR, and the
+PA guard's whole purpose is that bit 4 never sets. If a run ever read `0x30`
+under the guard mask, the channel that went live would be the one wired to the
+contact sitting unprobed next to the ground clip.
 
 **Ground safety.** If the scope is earth-referenced, the Lumia must be
 **disconnected from USB and from its charger** before scope ground is attached.
