@@ -549,3 +549,178 @@ Still to be settled by measurement, not by code:
 
 Neither is a coding question, and C3a should not be written until the DC band
 is agreed.
+
+
+---
+
+## 20. THE POST_PA PERSISTENT-CONFIG EXPECTATIONS, CONCRETE
+
+All four POST_PA registers live inside the **fuse-loaded `0x180`–`0x1e4`
+range**, so the header PORs are not trustworthy and are not used. The baselines
+below are read from the recorded cold-boot map
+([wcd9320-fullmap-20260815T154307Z.txt](wcd9320-fullmap-20260815T154307Z.txt),
+`low_before`, taken after reset release and before any driver write).
+
+| # | register | addr | **baseline** | mask | value | **PROGRAMMED** | changes? |
+|---|---|---|---|---|---|---|---|
+| 1 | `BUCK_MODE_5` | `0x185` | `00` | `0x02` | `0x00` | `00` | **no** |
+| 2 | `NCP_STATIC` | `0x194` | `28` | `0x20` | `0x00` | **`08`** | **YES** |
+| 3 | `BUCK_MODE_3` | `0x183` | `ce` | `0x04` | `0x04` | `ce` | **no** |
+| 4 | `BUCK_MODE_3` | `0x183` | `ce` | `0x08` | `0x08` | `ce` | **no** |
+
+> ### THREE OF THE FOUR POST_PA WRITES ARE NO-OPS ON THIS SILICON
+>
+> `BUCK_MODE_5` bit 1 is already clear, and `BUCK_MODE_3` bits 2 and 3 are
+> already set, at cold boot. Only **`NCP_STATIC` `0x28 → 0x08`** actually
+> changes anything.
+>
+> This matters twice over. First, the gate must predict `ce` and `00` for the
+> unchanged ones — a gate expecting movement would fail a correct run, which is
+> the C2a lesson exactly. Second, `regmap_update_bits()` **elides a write whose
+> value is unchanged**, so three of these four transactions may never reach the
+> bus at all. That is correct behaviour for configuration bits and must not be
+> mistaken for a skipped step.
+
+### These four stay PROGRAMMED through teardown
+
+`wcd9xxx_clsh_turnoff_postpa()` touches `NCP_EN`, `BUCK_MODE_1[7]` and
+`B1_CTL[4]` — **none of the four above**. So after the full C3a teardown:
+
+| register | expected after teardown | why |
+|---|---|---|
+| `BUCK_MODE_5` `0x185` | `00` | unchanged throughout |
+| `NCP_STATIC` `0x194` | **`08`, not `28`** | PROGRAMMED by POST_PA, never restored |
+| `BUCK_MODE_3` `0x183` | `ce` | unchanged throughout |
+
+**`NCP_STATIC` not returning to `0x28` is a PASS, not a failure.** Inventing an
+inverse for it would depart from downstream, and this branch does not invent
+inverses. It is the same classification the C2b model already applies to
+compander configuration.
+
+### The other C3a registers, baseline-relative
+
+| register | addr | baseline | target | note |
+|---|---|---|---|---|
+| `RX_HPH_L_GAIN` | `0x1ae` | `00` | **`34`** | bit 5 set + field `0x14`; baseline is the worst case, see §16 |
+| `RX_HPH_CNP_EN` | `0x1ab` | `80` | **`a0`** while on, `80` after | mask `0x30` is the guard |
+| `CNP_WG_CTL` | `0x1ac` | **`da`** | `db` | |
+| `CNP_WG_TIME` | `0x1ad` | **`15`** | `58` | |
+| `BIAS_WG_OCP` | `0x1a9` | **`2a`** | `1a` | |
+| `CHOP_CTL` | `0x1a5` | **`a4`** | `24` | bit 7 clear |
+| `RX_HPH_OCP_CTL` | `0x1aa` | `69` | *left as found* | the limit is board data we do not have |
+
+> ### THE PART COMES UP IN THE COMPANDER-**ON** POP/CLICK CONFIGURATION
+>
+> Measured `0x1ac`/`0x1ad`/`0x1a9` = `da`/`15`/`2a` and `0x1a5` bit 7 **set** —
+> which is exactly `taiko_set_compander(COMPANDER_1, 1)`'s set: 5 ms wavegen,
+> chopper on. These four are all fuse-loaded, so this is the silicon's own
+> reset state and not something a driver did.
+>
+> Running COMP1 **off** against a compander-**on** pop/click configuration would
+> be the mismatched pairing §7 warns about. **C3a must write all four**, and
+> they are ordinary verifiable registers, so each one is chip-verified.
+
+---
+
+## 21. THE FROZEN PHYSICAL SETUP
+
+**Probe — a TRRS breakout, never a bare probe inside the jack.**
+
+| | |
+|---|---|
+| signal | HPHL / left-audio contact (**Tip**) |
+| reference | the jack's **actual audio-ground contact** |
+| verification | confirm the ground contact **on the breakout with a meter** before the run — do not rely on generic CTIA pinout assumptions |
+| probe | **10×**, high impedance |
+| load | **none** — no headphones |
+| coupling | **DC-coupled** for the offset measurements |
+
+**Ground safety.** If the scope is earth-referenced, the Lumia must be
+**disconnected from USB and from its charger** before scope ground is attached.
+An isolated or battery-powered scope, or a differential probe, is preferred.
+
+> This has a consequence the gate must accommodate: with USB disconnected there
+> is **no ssh**. C3a therefore cannot be driven interactively over the link
+> while the probe is attached. The run must be startable and then complete on
+> its own, with its evidence written to the phone and collected afterwards.
+
+## 22. THE FROZEN DC CONTRACT
+
+Measured at HPHL, DC-coupled, against the jack ground contact.
+
+### Stage 1 — PA still OFF, full upstream and DAC path established
+
+```
+Voff = mean HPHL DC over 250 ms
+precondition:  abs(Voff) <= 100 mV
+```
+
+Failing this **aborts before the PA is enabled**.
+
+### Stage 2 — PA enabled by the mapped sequence, after the mapped 13 ms settle
+
+```
+Von = mean HPHL DC over 250 ms
+require:  abs(Von - Voff)                  <= 50 mV
+require:  DC drift across the 250 ms window <= 10 mV
+```
+
+### Hard abort, at any point in the run
+
+```
+abs(HPHL DC) >= 250 mV
+```
+
+> These are **conservative experimental safety limits, not claimed WCD9320
+> datasheet limits.** The load-bearing comparison is `Von` **relative to the
+> measured `Voff` baseline**, not either value against an absolute.
+
+**Only after stage 2 passes may the tone run.**
+
+## 23. THE FROZEN TONE PLAN
+
+| | |
+|---|---|
+| channel | **HPHL only** |
+| waveform | 1 kHz sine, deterministic |
+| format | 48 kHz, **S16_LE**, 1 channel |
+| duration | bounded ~1 second burst |
+| start | **−40 dBFS** |
+| ladder | if below the useful measurement floor, **−30 dBFS**, then **−20 dBFS maximum for C3a** |
+| never | full scale |
+
+Each amplitude step is a **declared** step: recorded in the evidence before it
+is used, not chosen ad hoc while looking at the scope.
+
+## 24. C3a PASS, RESTATED AGAINST THE FROZEN CONTRACT
+
+All of the following, or it is not a pass:
+
+1. A **repeatable waveform at HPHL whose frequency tracks the 1 kHz digital
+   stimulus** — present during playback, **absent afterwards while the PA
+   remains on**.
+2. Across **two clean cycles**.
+3. DC inside the declared band at every stage.
+4. `0x1ab & 0x30`: `00` → `20` → `00`, with HPHR bit 4 clear throughout.
+5. Complete teardown, with `NCP_STATIC` **expected at `08`** and the other three
+   POST_PA registers unchanged.
+6. Forced journal complete, both directions, both cycles.
+
+**Correct PA register sequencing without a measured waveform earns no tag.**
+Point 1 is the milestone; everything else is a precondition for believing it.
+
+| observed | tag |
+|---|---|
+| PA sequences and reverses cleanly, no waveform | **none** |
+| stable DC with the PA on, no tone yet | **none** |
+| waveform tracking the stimulus, twice, DC in band | **`wcd9320-hphl-electrical-proven`** |
+| audible in headphones | *not this milestone* |
+
+---
+
+## 25. STILL NOT DONE
+
+No code. The mapping is complete and the contract is frozen; what remains
+before C3a can be written is the one operational question §21 raises — how the
+run is driven with USB disconnected — and that is a harness design point, not a
+measurement or a mapping one.
