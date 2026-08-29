@@ -212,11 +212,98 @@ ck "present key still derives"  "$(get "$W/exp4" dsm_0x3b0 4)" "14"
 # ------------------------------------------------------- 7. the constants ----
 echo
 echo "7. the derived write counts are self-consistent"
-ck "31 per cycle" "$C2B_WRITES_PER_CYCLE" "31"
-ck "62 for two cycles" "$C2B_WRITES_TOTAL" \
+ck "33 per cycle (r174 adds the forced 0x314 pair)" \
+   "$C2B_WRITES_PER_CYCLE" "33"
+ck "66 for two cycles" "$C2B_WRITES_TOTAL" \
    "$((C2B_WRITES_PER_CYCLE * 2))"
+# The two extra writes per cycle ARE the paired 0x314 enable and inverse.
+ck "the r174 delta is exactly the forced pair" \
+   "$((C2B_WRITES_PER_CYCLE - 31))" "2"
 ck "class-H total unchanged from C2a" "$C2B_CLSH_TOTAL" "104"
 ck "PA mask covers both enables" "$C2B_PA_MASK" "30"
+
+# --------------------------------------------- 8. the forced-write journal ---
+#
+# r174 cannot verify 0x314 or 0x30d by readback, so the gate's only evidence
+# that the required transactions happened -- IN BOTH DIRECTIONS -- is the
+# driver's journal. That makes the journal check load-bearing, and a
+# load-bearing check has to be shown capable of failing.
+#
+# fj <blob> -> the verdict the gate's journal logic would reach: OK, or the
+# first entry that is wrong. Mirrors the gate exactly.
+fj() {
+	_blob=$1
+	_n=$(printf '%s' "$_blob" | tr ' ' '\n' | sed -n 's/^forced_n=//p' | head -n1)
+	[ "$_n" = "8" ] || { echo "count=$_n"; return; }
+	_i=0
+	while [ "$_i" -lt 8 ]; do
+		case $((_i % 4)) in
+		0) _wr=314; _wm=ff; _wd=set   ;;
+		1) _wr=30d; _wm=02; _wd=set   ;;
+		2) _wr=30d; _wm=02; _wd=clear ;;
+		3) _wr=314; _wm=ff; _wd=clear ;;
+		esac
+		for _f in reg:$_wr mask:$_wm dir:$_wd; do
+			_k=${_f%%:*}; _v=${_f#*:}
+			_g=$(printf '%s' "$_blob" | tr ' ' '\n' |
+			     sed -n "s/^f${_i}_${_k}=//p" | head -n1)
+			[ "$_g" = "$_v" ] || { echo "f${_i}_${_k}=$_g"; return; }
+		done
+		_i=$((_i + 1))
+	done
+	echo OK
+}
+
+# One complete, correct run: four operations per cycle, twice.
+GOOD="forced_n=8"
+_i=0
+while [ "$_i" -lt 8 ]; do
+	case $((_i % 4)) in
+	0) _r=314; _m=ff; _v=03; _d=set   ;;
+	1) _r=30d; _m=02; _v=02; _d=set   ;;
+	2) _r=30d; _m=02; _v=00; _d=clear ;;
+	3) _r=314; _m=ff; _v=00; _d=clear ;;
+	esac
+	GOOD="$GOOD f${_i}_reg=$_r f${_i}_mask=$_m f${_i}_val=$_v f${_i}_hw=00 f${_i}_dir=$_d"
+	_i=$((_i + 1))
+done
+
+echo
+echo "8. the forced-write journal check accepts a correct run"
+ck "eight correct operations" "$(fj "$GOOD")" "OK"
+
+echo
+echo "9. and REJECTS every way it can go wrong (these must all pass)"
+
+# 9a. The inverse never issued -- the exact hazard r174 exists to prevent.
+#     Six operations: both enables, but only one clear per cycle.
+SHORT=$(printf '%s' "$GOOD" | sed -e 's/forced_n=8/forced_n=6/')
+ck "missing inverse is caught" "$(fj "$SHORT")" "count=6"
+
+# 9b. A clear issued as a set. The driver derives dir from the value under the
+#     mask, so this is what a botched inverse would actually look like.
+BADDIR=$(printf '%s' "$GOOD" | sed -e 's/f2_dir=clear/f2_dir=set/')
+ck "inverse issued as a set is caught" "$(fj "$BADDIR")" "f2_dir=set"
+
+# 9c. The wrong register -- 0x30d cleared where 0x314 was due.
+BADREG=$(printf '%s' "$GOOD" | sed -e 's/f3_reg=314/f3_reg=30d/')
+ck "wrong register is caught" "$(fj "$BADREG")" "f3_reg=30d"
+
+# 9d. A masked write where downstream uses a full byte. 0x314 must go out as
+#     0xff/0x03, matching snd_soc_write(), not as a read-modify-write.
+BADMASK=$(printf '%s' "$GOOD" | sed -e 's/f0_mask=ff/f0_mask=03/')
+ck "masked 0x314 write is caught" "$(fj "$BADMASK")" "f0_mask=03"
+
+# 9e. Cycle 2 missing entirely, which a total-only check would miss if the
+#     count were fudged. Here the count is right but the entries stop.
+HALF="forced_n=8 f0_reg=314 f0_mask=ff f0_dir=set f1_reg=30d f1_mask=02 f1_dir=set f2_reg=30d f2_mask=02 f2_dir=clear f3_reg=314 f3_mask=ff f3_dir=clear"
+ck "truncated second cycle is caught" "$(fj "$HALF")" "f4_reg="
+
+# 9f. And a readback of 00 must NOT be treated as a failure: it is the
+#     expected phenomenon, and the whole class exists because it means
+#     nothing either way.
+ALLZERO=$(printf '%s' "$GOOD" | sed -e 's/f1_hw=00/f1_hw=00/')
+ck "hw=00 is not a failure" "$(fj "$ALLZERO")" "OK"
 
 echo
 printf 'selftest: %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -105,15 +105,31 @@ C2B_PA_MASK=30
 #
 #   comp1-on  13   rate, gain offset, clocks, reset x2, gain source x2,
 #                  enable, discharge x2, operating point x3
+#   prereq-on  1   FORCED 0x314 = 0x03            (r174)
 #   dac-on     6   DSM source, ZOH, RX bias, RDAC clock, DAC switch, DAC power
 #   dac-off    6   the same six, inverted
+#   prereq-off 1   FORCED 0x314 = 0x00, mandatory (r174)
 #   comp1-off  6   disable, reset x2, clocks, gain source x2
 #
-# 31 per cycle, 62 for two. The class-H writes are counted separately by the
-# C2a code and are 52 per cycle, 104 for two -- unchanged from C2a, which is
-# itself a check that reusing it did not alter it.
-C2B_WRITES_PER_CYCLE=31
-C2B_WRITES_TOTAL=62
+# 33 per cycle, 66 for two.
+#
+# WAS 31/62 BEFORE r174, and the change is not a fudge. The 0x314 pair moved
+# INSIDE the cycle: it used to be applied once before both cycles and its
+# inverse was never issued at all, which is precisely the teardown hazard r174
+# exists to close. Pairing the enable and its inverse within one cycle costs
+# two writes per cycle and is what makes the forced-write journal come to
+# eight operations rather than six.
+#
+# wcd9320_forced_write() increments c2b_writes exactly once per call, on the
+# same line as the other verified helpers, so a forced write counts the same
+# as any other -- what differs is whether its RESULT can be checked, not
+# whether it happened.
+#
+# The class-H writes are counted separately by the C2a code and are 52 per
+# cycle, 104 for two -- unchanged from C2a, which is itself a check that
+# reusing it did not alter it.
+C2B_WRITES_PER_CYCLE=33
+C2B_WRITES_TOTAL=66
 C2B_CLSH_TOTAL=104
 
 # c2b_derive <state-text> <outfile>

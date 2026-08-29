@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-28 19:54:36.047011970 -0400
-@@ -0,0 +1,8476 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-08-29 07:58:23.916907649 -0400
+@@ -0,0 +1,8543 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -821,6 +821,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_MBHC_FIRST			0x3c0
 +#define WCD9320_MBHC_LAST			0x3ff
 +#define WCD9320_MBHC_COUNT		(WCD9320_MBHC_LAST - WCD9320_MBHC_FIRST + 1)
++
++/*
++ * One forced write, as issued. hw is the bypassed read taken immediately
++ * afterwards and is EVIDENCE ONLY -- it documents the phenomenon and never
++ * asserts that the register reached the value.
++ */
++#define WCD9320_FORCED_LOG	16
++struct wcd9320_forced_rec {
++	u16 reg;
++	u8 mask;
++	u8 val;
++	u8 hw;
++};
 +
 +struct wcd9320_wake_step {
 +	u16 reg;
@@ -1912,6 +1925,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool clk_ctrl_post_valid;
 +	int cdc_alive;                 /* -1 never measured, 0 dark, 1 responding */
 +	/* ---- write-effect-unverifiable registers (r174) ---- */
++	/*
++	 * A JOURNAL, not just counters. These two registers cannot be
++	 * verified by readback, so the only honest evidence that the required
++	 * bus transactions happened -- in BOTH directions -- is a record of
++	 * each one as it was issued. A gate that inferred the inverse from
++	 * "teardown ran" would be assuming exactly what r174 exists to prove.
++	 */
++	struct wcd9320_forced_rec forced_log[WCD9320_FORCED_LOG];
++	unsigned int forced_n;         /* total issued; may exceed the ring */
 +	u8 unver_read[2];              /* last bypassed read: 0x314, 0x30d */
 +	unsigned int unver_writes;     /* forced writes issued */
 +	unsigned int unver_clears;     /* mandatory inverse writes issued */
@@ -6723,8 +6745,18 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read_bypassed(wcd->regmap, reg, &got);
 +	wcd->unver_read[slot] = got & 0xff;
 +
++	if (wcd->forced_n < WCD9320_FORCED_LOG) {
++		struct wcd9320_forced_rec *r = &wcd->forced_log[wcd->forced_n];
++
++		r->reg = reg;
++		r->mask = mask;
++		r->val = val;
++		r->hw = got & 0xff;
++	}
++	wcd->forced_n++;
++
 +	dev_info(dev,
-+		 "forced: 0x%03x mask %02x <- %02x, bus write ISSUED; chip reads %02x (EVIDENCE ONLY, not a verdict) [%s]\n",
++		 "forced: 0x%03x mask %02x <- %02x  WRITE ISSUED; resulting register state not directly observable by readback (chip reads %02x) [%s]\n",
 +		 reg, mask, val, got & 0xff, what);
 +
 +	/*
@@ -6941,6 +6973,40 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return n;
 +}
 +static DEVICE_ATTR_RO(hph_status_state);
++
++/*
++ * The journal, for the gate.
++ *
++ * It accumulates across cycles rather than resetting, so the gate can
++ * check the ORDER of the four operations in each cycle as well as their
++ * count -- enable 0x314, enable 0x30d, clear 0x30d, clear 0x314 -- and can
++ * see that cycle 2 repeated cycle 1 exactly.
++ *
++ * dir is derived from the value under the mask, not from a caller's
++ * intention, so a clear that was issued as a set would show up as one.
++ */
++static ssize_t forced_log_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int i, n = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	n += sysfs_emit_at(buf, n, "forced_n=%u ring=%u\n",
++			   wcd->forced_n, WCD9320_FORCED_LOG);
++	for (i = 0; i < wcd->forced_n && i < WCD9320_FORCED_LOG; i++) {
++		const struct wcd9320_forced_rec *r = &wcd->forced_log[i];
++
++		n += sysfs_emit_at(buf, n,
++				   "f%u_reg=%03x f%u_mask=%02x f%u_val=%02x f%u_hw=%02x f%u_dir=%s\n",
++				   i, r->reg, i, r->mask, i, r->val, i, r->hw,
++				   i, (r->val & r->mask) ? "set" : "clear");
++	}
++	return n;
++}
++static DEVICE_ATTR_RO(forced_log);
 +
 +/* ------------------- writability characterisation (r171) -- */
 +
@@ -7872,6 +7938,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_writability_state.attr,
 +	&dev_attr_hph_status_test.attr,
 +	&dev_attr_hph_status_state.attr,
++	&dev_attr_forced_log.attr,
 +	&dev_attr_mclk_test.attr,
 +	&dev_attr_mclk_state.attr,
 +	&dev_attr_clk_source_test.attr,

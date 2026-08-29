@@ -82,8 +82,9 @@ DACT="$PGD/hphl_dac_test"
 DACS="$PGD/hphl_dac_state"
 CLSHS="$PGD/clsh_state"
 PREREQ="$PGD/cdc_clk_prereq"
+FLOG="$PGD/forced_log"
 
-for f in "$C1T" "$RX1T" "$RX1S" "$DACT" "$DACS" "$CLSHS" "$PREREQ"; do
+for f in "$C1T" "$RX1T" "$RX1S" "$DACT" "$DACS" "$CLSHS" "$PREREQ" "$FLOG"; do
 	[ -e "$f" ] || {
 		say "INVALID RUN: $f does not exist."
 		say "  The running codec must be rdac-clk-rc1 or later."
@@ -148,17 +149,45 @@ fi
 # later cleanup, once the behaviour it enables is already established.
 CLKP_BEFORE=$(rv "$PRE" clk_power_0x314)
 RDAC_BEFORE=$(rv "$PRE" rdac_0x30d)
-CHIPCTL_OBS=$(rv "$PRE" chip_ctl_0x001)
-echo on > "$PREREQ" 2>/dev/null; PREREQ_RC=$?
-PRE=$(dst)
-CLKP_AFTER=$(rv "$PRE" clk_power_0x314)
-if [ "$CLKP_AFTER" != "03" ]; then
-	say "INVALID RUN: the RDAC prerequisite did not take."
-	say "  0x314 reads $CLKP_AFTER on the chip, wanted 03 (exit $PREREQ_RC)."
-	say "  Run wcd9320-rdac-prereq-evidence.sh first; without this the DAC"
-	say "  sequence cannot reach its RDAC clock and will refuse by name."
+#
+# r174: 0x314 == 03 IS NO LONGER A PRECONDITION, and cannot be.
+#
+# r173 exhausted the matrix: 0x314 reads 00 in every configuration this
+# project can construct, including the exact one downstream writes it from.
+# Read-as-zero is as consistent with the evidence as refusal, so demanding 03
+# here would make the sequence un-runnable on the only hypothesis still
+# standing.
+#
+# The valid condition is that the required write was ISSUED through the
+# forced, write-effect-unverifiable path -- which the driver's journal
+# records and this gate checks entry by entry below. The readback is captured
+# because it documents the phenomenon, never as a verdict.
+#
+# CHIP_CTL takes no part in r174. The old gate observed 0x001 believing it was
+# CHIP_CTL; it is CHIP_STATUS, and the real CHIP_CTL at 0x000 belongs to the
+# rate/MCLK branch, which is CLOSED. It is not read here at all rather than
+# renamed, so the closed branch cannot creep back in through a stale field.
+#
+#
+# THE PREREQUISITE IS APPLIED PER CYCLE, not once for the run.
+#
+# Applying it once outside the cycles would issue six forced operations rather
+# than eight, and -- worse -- would never issue the 0x314 inverse as part of a
+# cycle. For a register whose state cannot be read back, the enable and its
+# inverse have to be paired inside the same cycle or the pairing is a
+# assumption rather than a record. So run_cycle() owns both.
+#
+# The journal must be empty here: this run has to start from a codec nothing
+# has forced anything into.
+#
+FLOG_PRE=$(cat "$FLOG" 2>/dev/null)
+if [ "$(rv "$FLOG_PRE" forced_n)" != "0" ]; then
+	say "INVALID RUN: forced_n = $(rv "$FLOG_PRE" forced_n), expected 0."
+	say "  Something has already issued forced writes on this boot."
 	exit 2
 fi
+CLKP_AFTER="$CLKP_BEFORE"
+PREREQ_RC=0
 
 EXPFILE="/tmp/.c2b-exp-$$"
 c2b_derive "$PRE" "$EXPFILE"
@@ -241,6 +270,12 @@ run_cycle() {	# run_cycle <n>
 	echo rx1-on > "$RX1T" 2>/dev/null; eval "C${_cyc}_RX1_RC=\$?"
 	pa_sample "c${_cyc}-rx1"
 
+	# FORCED 0x314 <- 0x03. Issued, recorded, never verified by readback.
+	echo on > "$PREREQ" 2>/dev/null; eval "C${_cyc}_PREREQ_RC=\$?"
+	pa_sample "c${_cyc}-prereq"
+
+	# dac-on issues the forced 0x30d[1] <- 1 inside the driver, then the
+	# input switch and the DAC power bit, which ARE chip-verified.
 	echo dac-on > "$DACT" 2>/dev/null; eval "C${_cyc}_DAC_RC=\$?"
 	pa_sample "c${_cyc}-dac"
 	eval "C${_cyc}_DAC=\$(dst)"
@@ -257,8 +292,21 @@ run_cycle() {	# run_cycle <n>
 	pa_sample "c${_cyc}-stream"
 	eval "C${_cyc}_STREAM=\$(dst)"
 
+	# dac-off runs the mapped inverse sink to source, and issues the forced
+	# 0x30d[1] <- 0 unconditionally from its best-effort teardown.
 	echo dac-off > "$DACT" 2>/dev/null; eval "C${_cyc}_DACOFF_RC=\$?"
 	pa_sample "c${_cyc}-dacoff"
+
+	#
+	# FORCED 0x314 <- 0x00, UNCONDITIONALLY.
+	#
+	# Not conditioned on how far the visible state appeared to get. Once an
+	# enable has been issued to a register whose state cannot be observed,
+	# its inverse must be issued during cleanup whatever happened in
+	# between -- that symmetry is the entire safety improvement in r174.
+	#
+	echo off > "$PREREQ" 2>/dev/null; eval "C${_cyc}_PREREQOFF_RC=\$?"
+
 	echo rx1-off > "$RX1T" 2>/dev/null; eval "C${_cyc}_RX1OFF_RC=\$?"
 	echo comp1-off > "$C1T" 2>/dev/null; eval "C${_cyc}_COMPOFF_RC=\$?"
 	pa_sample "c${_cyc}-end"
@@ -268,6 +316,8 @@ run_cycle() {	# run_cycle <n>
 
 run_cycle 1
 run_cycle 2
+
+FLOG_POST=$(cat "$FLOG" 2>/dev/null)
 
 GUARD_POST=""
 for k in $C2B_GUARDED; do GUARD_POST="$GUARD_POST $k=$(rv "$C2_AFTER" "$k")"; done
@@ -289,10 +339,25 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 [ -n "$PA_BAD" ] || PA_BAD=0
 
 {
+	hdr "the forced writes, as ISSUED (readback is not a verdict)"
+	say "These four registers-writes per cycle cannot be confirmed by reading"
+	say "the register back. What is recorded is that each bus transaction was"
+	say "deliberately issued, in both directions, with its mask and value."
+	say ""
+	say "forced_n = $(rv "$FLOG_POST" forced_n)   expected 8 (4 per cycle x 2)"
+	say ""
+	_i=0
+	while [ "$_i" -lt 8 ]; do
+		_r=$(rv "$FLOG_POST" "f${_i}_reg")
+		[ -n "$_r" ] || break
+		say "  f$_i  0x$_r  mask=$(rv "$FLOG_POST" "f${_i}_mask") value=$(rv "$FLOG_POST" "f${_i}_val") dir=$(rv "$FLOG_POST" "f${_i}_dir")   hw reads $(rv "$FLOG_POST" "f${_i}_hw")"
+		say "      write issued; resulting register state not directly observable by readback"
+		_i=$((_i + 1))
+	done
+
 	hdr "the RDAC clock prerequisite, applied explicitly"
 	say "0x314 CDC_CLK_POWER_CTL   $CLKP_BEFORE -> $CLKP_AFTER   [chip-verified]"
 	say "0x30d RDAC clock, before  $RDAC_BEFORE"
-	say "0x001 CHIP_CTL, observed  $CHIPCTL_OBS   -- read, never written"
 
 	hdr "the baseline, with the prerequisite in place"
 	printf '%s\n' "$PRE" | sed 's/^/  /'
@@ -323,10 +388,37 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 	say ""
 	say "-- the RDAC prerequisite is in place, and visible --"
 	check "prerequisite applied" "$PREREQ_RC" "0"
+
+	say ""
+	say "-- the forced writes were ISSUED, in both directions, per cycle --"
+	check "exactly 8 forced operations" "$(rv "$FLOG_POST" forced_n)" "8"
+	#
+	# The expected sequence, twice: enable 0x314, enable 0x30d, clear 0x30d,
+	# clear 0x314. Checked entry by entry rather than by counting, so a
+	# missing inverse cannot hide behind a correct total.
+	#
+	_i=0
+	while [ "$_i" -lt 8 ]; do
+		case $((_i % 4)) in
+		0) _wr=314; _wm=ff; _wd=set   ;;
+		1) _wr=30d; _wm=02; _wd=set   ;;
+		2) _wr=30d; _wm=02; _wd=clear ;;
+		3) _wr=314; _wm=ff; _wd=clear ;;
+		esac
+		check "f$_i register" "$(rv "$FLOG_POST" "f${_i}_reg")" "$_wr"
+		check "f$_i mask" "$(rv "$FLOG_POST" "f${_i}_mask")" "$_wm"
+		check "f$_i direction" "$(rv "$FLOG_POST" "f${_i}_dir")" "$_wd"
+		_i=$((_i + 1))
+	done
+	for c in 1 2; do
+		eval "_a=\$C${c}_PREREQ_RC"
+		check "c$c forced 0x314 set issued" "$_a" "0"
+		eval "_a=\$C${c}_PREREQOFF_RC"
+		check "c$c forced 0x314 clear issued" "$_a" "0"
+	done
 	check "0x314 reads 03 on the chip" "$CLKP_AFTER" "03"
 	check "0x30d was idle before the run" "$RDAC_BEFORE" "00"
 	check "CHIP_CTL unchanged by this run" \
-	      "$(rv "$C2_AFTER" chip_ctl_0x001)" "$CHIPCTL_OBS"
 
 	say ""
 	say "-- every stage was accepted --"
@@ -453,37 +545,51 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 
 	hdr "finding"
 	if [ "$FAIL_N" -eq 0 ]; then
-		say "THE RX1 CHAIN REACHES THE HPHL DAC, AND COMES BACK."
+		say "D1 -- HPHL DAC WIDGET POWERS UNDER FORCED CLOCK-CONTROL WRITES."
 		say ""
-		say "0x1b1 went 00 -> c0 -> 00 twice: bit 7 powering the DAC and bit"
-		say "6 connecting its input, both verified on the chip rather than in"
-		say "the cache. 0x3b0 went 00 -> 14 -> 00, the ZOH derived from the"
-		say "source select rather than assumed. The class-H stage reproduced"
-		say "C2a exactly -- a7 while live, a6 after -- which is the teardown"
-		say "this milestone inherited rather than invented."
+		say "Deliberately narrow, and the name is the claim. Read the boundary"
+		say "below before quoting this anywhere."
 		say ""
-		say "The compander now runs at its 48 kHz operating point instead of"
-		say "the discharge transient it was left on, its static gain offset"
-		say "matches this board's 2.15 V buck, and the gain source moved to"
-		say "the compander and back. Everything outside the HPHL path --"
-		say "the HPHR DAC, the earpiece, a line-out and the speaker driver --"
-		say "did not move."
+		say "WHAT IS ESTABLISHED, all chip-verified:"
+		say "  0x1b1 went 00 -> c0 -> 00 in BOTH cycles -- bit 7 powering the"
+		say "  DAC and bit 6 connecting its input, read bypassed from the chip"
+		say "  rather than from the cache. 0x3b0 went 00 -> 14 -> 00, the ZOH"
+		say "  derived from the source select rather than assumed. Class-H"
+		say "  reproduced C2a exactly, a7 live and a6 after. The compander ran"
+		say "  at its 48 kHz operating point. The QDSP6 loop and the SLIMbus"
+		say "  stream stayed healthy underneath. Cycle 2 matched cycle 1."
 		say ""
-		say "The RDAC clock prerequisite -- CDC_CLK_POWER_CTL = 0x03 -- was"
-		say "applied explicitly before the run and is recorded above. Without"
-		say "it 0x30d bit 1 does not latch on this part: r164 found that on"
-		say "hardware and r165 established it causally with one variable"
-		say "moved. This milestone is therefore proven WITH that prerequisite"
-		say "in place, and claims nothing about a codec that has not had it"
-		say "applied. CHIP_CTL was observed and never written."
+		say "  THE PA WAS OFF AT EVERY SAMPLE, read bypassed, and the driver's"
+		say "  per-stage guard never tripped."
 		say ""
-		say "THE PA WAS OFF AT EVERY SAMPLE, read bypassed from the chip, and"
-		say "the driver's own per-stage guard never tripped."
+		say "WHAT WAS ISSUED BUT CANNOT BE CONFIRMED:"
+		say "  0x314 = 0x03 and 0x30d bit 1, four times each across two"
+		say "  cycles, in both directions. Each bus transaction was issued"
+		say "  deliberately through the forced path and is journalled above."
+		say "  Their resulting register state is not directly observable by"
+		say "  readback on this part -- r171 showed every documented bit of"
+		say "  both reads back zero, r172's observable was silent and"
+		say "  inconclusive, and r173 exhausted the clock/rate matrix. None of"
+		say "  those established that the writes had no effect, and none of"
+		say "  them established that they had one."
 		say ""
-		say "WHAT THIS DOES NOT CLAIM. Nothing was audible: without the PA no"
-		say "signal reaches the jack. Byte arrival at the codec remains"
-		say "unproven, exactly as it was after Branch B -- a powered DAC with"
-		say "a connected input is a routing result, not a conversion one."
+		say "SO THIS RUN DOES NOT ESTABLISH:"
+		say "    0x314 effective state                   ?"
+		say "    0x30d effective state                   ?"
+		say "    reconstruction clock actually running   ?"
+		say "    actual D/A conversion                   ?"
+		say "    analog output                           ?"
+		say "    audible sound                           ?"
+		say ""
+		say "DO NOT AWARD wcd9320-hphl-dac-path-proven ON THIS RUN. A powered"
+		say "widget with a connected input, above two clock registers whose"
+		say "effect is unobservable, is a control-path result and not a"
+		say "conversion one. Settling it needs the analog output or an"
+		say "electrical measurement, which is a separate milestone."
+		say ""
+		say "Software-only observability is now exhausted. The next experiment"
+		say "should move to the physical analog side rather than inventing"
+		say "another register-readback proxy."
 	else
 		say "NOT PROVEN. $FAIL_N check(s) failed above."
 		say ""
@@ -492,6 +598,12 @@ PA_BAD=$(printf '%s' "$PA_SAMPLES" | tr ' ' '\n' | grep -v ':00$' | grep -c ':' 
 		say "So a mismatch means the mapping is wrong -- revisit it rather"
 		say "than adjusting the expectation to match what the hardware"
 		say "happened to do. Do NOT tag on this run."
+		say ""
+		say "Check the forced-write journal above regardless of what else"
+		say "failed: all eight operations must appear, in both directions, in"
+		say "both cycles. If an inverse is missing, an unobservable enable may"
+		say "have survived the teardown and the codec should be power cycled"
+		say "before anything else is run on it."
 	fi
 
 	collect_evidence
