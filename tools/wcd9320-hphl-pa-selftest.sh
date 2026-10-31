@@ -414,6 +414,29 @@ else
 fi
 
 # --------------------------------------------------------------------------
+hdr "THE INSTRUMENT: only the operator can give up the DC contract"
+#
+# The acoustic instrument cannot see DC, so it runs only with an explicit
+# waiver. The cases that matter are the ones that LOOK like consent and are
+# not: "yes", an empty string, a near-miss spelling.
+ok "scope needs no waiver" \
+   "$(pa_instrument_decision scope '' '')" "OK"
+ok "acoustic with the exact waiver" \
+   "$(pa_instrument_decision acoustic operator-waived '')" "OK"
+ok "acoustic with no waiver refuses" \
+   "$(pa_instrument_decision acoustic '' '' | cut -c1-6)" "REFUSE"
+ok "acoustic with 'yes' refuses" \
+   "$(pa_instrument_decision acoustic yes '' | cut -c1-6)" "REFUSE"
+ok "acoustic with a near-miss token refuses" \
+   "$(pa_instrument_decision acoustic operator-waive '' | cut -c1-6)" "REFUSE"
+ok "an unknown instrument refuses" \
+   "$(pa_instrument_decision multimeter '' '' | cut -c1-6)" "REFUSE"
+ok "the pa-off control is accepted" \
+   "$(pa_instrument_decision acoustic operator-waived pa-off)" "OK"
+ok "an unknown control refuses" \
+   "$(pa_instrument_decision acoustic operator-waived maybe | cut -c1-6)" "REFUSE"
+
+# --------------------------------------------------------------------------
 hdr "counts and constants"
 ok "writes per cycle"  "$WCD9320_PA_WRITES_PER_CYCLE" "32"
 ok "writes for two cycles" "$WCD9320_PA_WRITES_TOTAL" "64"

@@ -210,6 +210,45 @@ WCD9320_PA_CLSH_TOTAL=104
 WCD9320_PA_FORCED_PER_CYCLE=4
 WCD9320_PA_FORCED_TOTAL=8
 
+# pa_instrument_decision <instrument> <dc-waiver> <control> -> OK | REFUSE:<why>
+#
+# WHICH INSTRUMENT, AND WHO IS ALLOWED TO GIVE UP THE DC CONTRACT.
+#
+# C3a was frozen around a scope, and the scope is what makes the DC contract
+# measurable: |Voff| <= 100 mV before the first Volume Up, |Von - Voff| <= 50 mV
+# before the second. The ACOUSTIC instrument -- an earbud on the PC's USB
+# microphone -- cannot see DC at all. So running acoustically means running
+# without the contract, and that is a decision only the operator can make.
+#
+# It is therefore not a default and not a flag that means "yes": the waiver has
+# to be the exact token below, typed on purpose. Anything else refuses, which
+# is the same polarity as every gate in this run.
+#
+# CONTROL "pa-off" is the negative control: the identical run and stimulus with
+# the PA deliberately never enabled. It must produce no tracking tone, and it is
+# what attributes a positive in the real run to the PA rather than to leakage.
+pa_instrument_decision() {
+	_id_inst=$1
+	_id_waive=$2
+	_id_ctl=$3
+	case "$_id_ctl" in
+	""|pa-off) ;;
+	*) echo "REFUSE:unknown-control-$_id_ctl"; return ;;
+	esac
+	case "$_id_inst" in
+	scope)
+		echo OK ;;
+	acoustic)
+		if [ "$_id_waive" = "operator-waived" ]; then
+			echo OK
+		else
+			echo "REFUSE:acoustic-needs-the-operator-dc-waiver"
+		fi ;;
+	*)
+		echo "REFUSE:unknown-instrument-$_id_inst" ;;
+	esac
+}
+
 # pa_derive <state-text> <outfile>
 #
 # Writes "key baseline after_prep after_dac after_pa after_teardown" per line.

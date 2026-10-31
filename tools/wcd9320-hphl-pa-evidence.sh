@@ -112,6 +112,27 @@ FAILSAFE_PAD="${FAILSAFE_PAD:-45}"	# the timer outlives the gate by this
 DBFS="${DBFS:--40}"
 CYCLES="${CYCLES:-2}"
 
+#
+# THE INSTRUMENT.
+#
+#   scope     the frozen design: DC measured at the pin, contract enforced
+#             by the operator at the first two gates
+#   acoustic  an earbud on the PC's USB microphone, recorded and analysed by
+#             tools/c3a-capture.py. Proves or refutes that the output follows
+#             the digital content; CANNOT see DC, so it runs only with the
+#             operator's explicit waiver of the DC contract.
+#
+# CONTROL "pa-off" runs everything identically except the PA is never enabled.
+#
+INSTRUMENT="${C3A_INSTRUMENT:-scope}"
+DC_WAIVER="${C3A_DC_WAIVER:-}"
+CONTROL="${C3A_CONTROL:-}"
+if [ "$CONTROL" = "pa-off" ]; then
+	PA_LIVE_EXPECT="$WCD9320_PA_STATE_OFF"
+else
+	PA_LIVE_EXPECT="$WCD9320_PA_STATE_ON"
+fi
+
 GATE=""
 for c in "${INPUT_GATE:-}" "$DIR/input-gate" /tmp/input-gate; do
 	[ -n "$c" ] && [ -x "$c" ] && { GATE="$c"; break; }
@@ -300,6 +321,19 @@ c3_preflight() {	# c3_preflight <arming?>
 	[ -n "$SETCTL" ] || _pf_bad="$_pf_bad no-alsa-setctl"
 	[ -f "$TEARDOWN" ] || _pf_bad="$_pf_bad no-teardown-script"
 
+	_pf_dec=$(pa_instrument_decision "$INSTRUMENT" "$DC_WAIVER" "$CONTROL")
+	if [ "$_pf_dec" != "OK" ]; then
+		say "INVALID SETUP: ${_pf_dec#REFUSE:}"
+		say "  The acoustic instrument cannot measure DC, so it runs only with"
+		say "  C3A_DC_WAIVER=operator-waived, set deliberately by the operator."
+		return 1
+	fi
+	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT"
+	if [ "$INSTRUMENT" = "acoustic" ]; then
+		jrn "DC CONTRACT NOT MEASURED: waived by the operator ($DC_WAIVER)."
+		jrn "  The waveform verdict is the PC-side recording, not this run."
+	fi
+
 	#
 	# find_devices() exits 2 itself if there is no control function at all,
 	# which is the right behaviour -- there is nothing to run against. What
@@ -466,11 +500,20 @@ c3_cycle() {	# c3_cycle <n>
 
 	# ---------------------------------------------- stage 1: DC, PA off --
 	say ""
-	say "  ==> MEASURE DC AT HPHL NOW. The PA is OFF."
-	say "      Contract: |Voff| <= 100 mV. Record it; it is the reference."
-	say "      Volume Up to enable the PA, Volume Down to abort."
+	if [ "$INSTRUMENT" = "acoustic" ]; then
+		say "  ==> The PA is OFF. Earbuds OUT of everyone's ears, one earbud"
+		say "      against the USB microphone, the PC recording running."
+		[ "$CONTROL" = "pa-off" ] &&
+			say "      CONTROL RUN: Volume Up will NOT enable the PA."
+		say "      Volume Up to continue, Volume Down to abort."
+		jrn "HOLD stage-1 ($INSTRUMENT) with the PA OFF, up to $HOLD_PA_OFF s"
+	else
+		say "  ==> MEASURE DC AT HPHL NOW. The PA is OFF."
+		say "      Contract: |Voff| <= 100 mV. Record it; it is the reference."
+		say "      Volume Up to enable the PA, Volume Down to abort."
+		jrn "HOLD stage-1 DC with the PA OFF, up to $HOLD_PA_OFF s"
+	fi
 	say ""
-	jrn "HOLD stage-1 DC with the PA OFF, up to $HOLD_PA_OFF s"
 	c3_gate "dc-pa-off-c$_cy" "$HOLD_PA_OFF" || return 1
 
 	# ------------------------------------------------ the PA goes live --
@@ -478,20 +521,30 @@ c3_cycle() {	# c3_cycle <n>
 	# The fail-safe is armed BEFORE the enable, not after. The window it has
 	# to cover includes the enable itself.
 	#
-	c3_failsafe_arm $((HOLD_PA_ON + FAILSAFE_PAD)) "pa-on-c$_cy" || {
-		c3_abort "failsafe-unavailable"; return 1; }
+	if [ "$CONTROL" = "pa-off" ]; then
+		#
+		# THE NEGATIVE CONTROL. Everything up to here is the real run --
+		# prep, forced writes, DAC at 0xC0 -- and everything after it is
+		# too, stimulus included. Only this write is withheld, so a tone
+		# heard here would be reaching the jack some way other than the PA.
+		#
+		jrn "CONTROL: the PA is deliberately NOT enabled on this run"
+	else
+		c3_failsafe_arm $((HOLD_PA_ON + FAILSAFE_PAD)) "pa-on-c$_cy" || {
+			c3_abort "failsafe-unavailable"; return 1; }
 
-	echo pa-on > "$PGD/hphl_pa_test" 2>/dev/null || {
-		jrn "pa-on REFUSED by the driver"; c3_abort "pa-on-refused"; return 1; }
-	jrn "PA ENABLED"
+		echo pa-on > "$PGD/hphl_pa_test" 2>/dev/null || {
+			jrn "pa-on REFUSED by the driver"; c3_abort "pa-on-refused"; return 1; }
+		jrn "PA ENABLED"
+	fi
 
 	eval "C${_cy}_PA=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "_cy_st=\$C${_cy}_PA"
 	_cy_pa=$(printf '%02x' $(( 0x$(rv "$_cy_st" pa_0x1ab) & 0x$WCD9320_PA_MASK )))
-	jrn "0x1ab=$(rv "$_cy_st" pa_0x1ab) masked=$_cy_pa expected=$WCD9320_PA_STATE_ON"
+	jrn "0x1ab=$(rv "$_cy_st" pa_0x1ab) masked=$_cy_pa expected=$PA_LIVE_EXPECT"
 	jrn "INTR_STATUS2=$(rv "$_cy_st" intr2_0x09a) ocp_seen=$(rv "$_cy_st" ocp_seen)"
 
-	if [ "$_cy_pa" != "$WCD9320_PA_STATE_ON" ]; then
+	if [ "$_cy_pa" != "$PA_LIVE_EXPECT" ]; then
 		jrn "THE PA IS NOT IN THE ONE LEGAL LIVE STATE"
 		c3_abort "pa-state-$_cy_pa"
 		return 1
@@ -505,17 +558,26 @@ c3_cycle() {	# c3_cycle <n>
 
 	# ---------------------------------------------- stage 2: DC, PA on --
 	say ""
-	say "  ==> MEASURE DC AGAIN. The PA is LIVE."
-	say "      Contract: |Von - Voff| <= 50 mV, drift <= 10 mV over 250 ms."
-	say "      Hard abort at |DC| >= 250 mV."
-	say "      Volume Up to play the tone, Volume Down to tear down."
+	if [ "$INSTRUMENT" = "acoustic" ]; then
+		say "  ==> The PA is ${CONTROL:+NOT }LIVE. Listen at the earbud, not in"
+		say "      the ear: a loud thump, buzz or hum now is a Volume Down."
+		say "      Volume Up to play the tone, Volume Down to tear down."
+		jrn "HOLD stage-2 ($INSTRUMENT) after the PA step, up to $HOLD_PA_ON s"
+	else
+		say "  ==> MEASURE DC AGAIN. The PA is LIVE."
+		say "      Contract: |Von - Voff| <= 50 mV, drift <= 10 mV over 250 ms."
+		say "      Hard abort at |DC| >= 250 mV."
+		say "      Volume Up to play the tone, Volume Down to tear down."
+		jrn "HOLD stage-2 DC with the PA ON, up to $HOLD_PA_ON s"
+	fi
 	say ""
-	jrn "HOLD stage-2 DC with the PA ON, up to $HOLD_PA_ON s"
 	c3_gate "dc-pa-on-c$_cy" "$HOLD_PA_ON" || return 1
 
 	# ------------------------------------------------------- the tone --
-	c3_failsafe_arm $((HOLD_TONE + FAILSAFE_PAD)) "tone-c$_cy" || {
-		c3_abort "failsafe-unavailable"; return 1; }
+	if [ "$CONTROL" != "pa-off" ]; then
+		c3_failsafe_arm $((HOLD_TONE + FAILSAFE_PAD)) "tone-c$_cy" || {
+			c3_abort "failsafe-unavailable"; return 1; }
+	fi
 
 	jrn "tone: 1 kHz, $DBFS dBFS, 250 ms tone/silence/tone/silence, one stream"
 	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >>"$JOURNAL" 2>&1
@@ -608,7 +670,9 @@ launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=HOLD_PA_OFF=$HOLD_PA_OFF"
 	CMD="$CMD --setenv=HOLD_PA_ON=$HOLD_PA_ON --setenv=HOLD_TONE=$HOLD_TONE"
-	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM"
+	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM --setenv=CYCLES=$CYCLES"
+	CMD="$CMD --setenv=C3A_INSTRUMENT=$INSTRUMENT"
+	CMD="$CMD --setenv=C3A_DC_WAIVER=$DC_WAIVER --setenv=C3A_CONTROL=$CONTROL"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "The run detaches into a transient unit so it survives losing ssh."
 	say ""
@@ -699,6 +763,12 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	say "aborted     : $ABORTED $ABORT_WHY"
 	say "cycles run  : $((n - 1)) of $CYCLES"
 	say "stimulus    : $DBFS dBFS, 1 kHz, tone/silence/tone/silence, one stream"
+	say "instrument  : $INSTRUMENT"
+	say "control     : ${CONTROL:-none (the PA is enabled)}"
+	if [ "$INSTRUMENT" = "acoustic" ]; then
+		say "DC contract : NOT MEASURED -- waived by the operator ($DC_WAIVER)"
+		say "waveform    : decided by tools/c3a-capture.py on the PC recording"
+	fi
 
 	hdr "the PA, at every boundary"
 	c=1
@@ -723,7 +793,7 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 		eval "_f=\$(rv \"\$C${c}_PAOFF\" pa_0x1ab)"
 		check "c$c PA live masked" \
 		      "$(printf '%02x' $(( 0x${_o:-00} & 0x$WCD9320_PA_MASK )))" \
-		      "$WCD9320_PA_STATE_ON"
+		      "$PA_LIVE_EXPECT"
 		check "c$c HPHR stayed clear" \
 		      "$(printf '%02x' $(( 0x${_o:-00} & 0x10 )))" "00"
 		check "c$c PA off after" \
