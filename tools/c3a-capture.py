@@ -157,19 +157,49 @@ def frame_amplitudes(x, fs, freqs):
     return out
 
 
-def peak_frequency(seg, fs):
-    """The strongest component of a segment, to well under 1 Hz.
+def peak_frequency(seg, fs, quiet):
+    """The tone's frequency, and whether it is the stimulus's own component.
 
-    Returns (frequency in the 900-1100 Hz window, whether that peak is also
-    the strongest thing between 100 Hz and 8 kHz).
+    Returns (frequency of the peak in the 900-1100 Hz window, to well under
+    1 Hz; whether the strongest component that APPEARS in this tone segment
+    relative to the silent segment `quiet` sits at that same frequency).
+
+    THE SECOND TEST WAS WRONG IN ITS FIRST FORM, and the calibration caught it.
+    It used to require the 1 kHz peak to be the strongest thing in the whole
+    100 Hz - 8 kHz range. Behind a noise gate that holds, because the gate
+    removes everything else. With the gate off, in a real room, fan rumble and
+    mains hum are louder than a quiet tone and present ALL the time, so a
+    genuine -50 dBFS calibration tone -- measured at 1000.10 Hz, 21 dB of
+    contrast -- was rejected, and reported misleadingly as a "frequency"
+    failure.
+
+    What the test exists for is a stimulus whose DOMINANT effect is at some
+    other frequency, with only leakage landing at 1 kHz. That is a question
+    about what the stimulus CHANGED, so it is asked of the tone segment
+    against the silence beside it.
+
+    AND IT IS ASKED IN RELATIVE TERMS -- the second correction, also from
+    calibration. Comparing ABSOLUTE added power still failed a known-good
+    -50 dBFS tone: 1 kHz rose 37 dB over its silence (-113 -> -76 dBFS), while
+    112-190 Hz hum rose only 10-14 dB but from a louder starting point, so it
+    out-added the tone in raw power. That hum gates WITH the stimulus because
+    the PC headset's USB DAC mutes itself during all-zero digital silence --
+    an artefact of the playback device, not of anything under test.
+
+    So: among the components loud enough to matter (within 20 dB of the 1 kHz
+    level in the tone segment), 1 kHz must show the LARGEST RISE over its own
+    silence level. A real tone rises by tens of dB; hum that merely fluctuates
+    or un-mutes rises by a few to a dozen; a stimulus whose real effect is at
+    2.5 kHz rises most at 2.5 kHz and is refused.
     """
     w = np.hanning(len(seg))
     nfft = 1 << int(math.ceil(math.log2(len(seg) * 16)))
     spec = np.abs(np.fft.rfft(seg * w, nfft))
+    calm = np.abs(np.fft.rfft(quiet[:len(seg)] * w[:len(quiet)], nfft))
     f = np.fft.rfftfreq(nfft, 1.0 / fs)
     band = (f >= 900) & (f <= 1100)
     wide = (f >= 100) & (f <= 8000)
-    if not band.any():
+    if not band.any() or len(quiet) < len(seg):
         return float("nan"), False
     k = np.flatnonzero(band)[np.argmax(spec[band])]
     if 0 < k < len(spec) - 1:               # parabolic interpolation
@@ -178,7 +208,24 @@ def peak_frequency(seg, fs):
     else:
         d = 0.0
     fk = f[k] + d * (f[1] - f[0])
-    strongest = spec[k] >= spec[wide].max() * 0.999
+    #
+    # Power is smoothed over +/-10 Hz before any comparison. Single
+    # zero-padded bins are noisy, and taking the MAXIMUM of a noisy quantity
+    # over thousands of bins guarantees that some bin wins by chance -- which
+    # is exactly how the first relative version rejected a clean synthetic
+    # tone. And the tone's own main lobe (a 200 ms Hann window spreads it over
+    # about +/-10 Hz) is excluded whole, out to +/-30 Hz, so the tone is never
+    # compared against its own shoulders.
+    #
+    half = max(1, int(round(10.0 / (f[1] - f[0]))))
+    box = np.ones(2 * half + 1)
+    pt = np.convolve(spec ** 2, box, mode="same")
+    pq = np.convolve(calm ** 2, box, mode="same")
+    lt = 10.0 * np.log10(pt + 1e-30)
+    rise = lt - 10.0 * np.log10(pq + 1e-30)
+    own = np.abs(f - fk) <= 30.0
+    loud = wide & (lt >= lt[k] - 20.0) & ~own
+    strongest = (not loud.any()) or rise[k] > rise[loud].max()
     return float(fk), bool(strongest)
 
 
@@ -228,12 +275,15 @@ def analyse(x, fs):
             narrow.append(float(np.median(tone_db[a:a + win] - ref_db[a:a + win])))
             s0 = start + k * seg_samp + int(0.025 * fs)
             s1 = s0 + int(0.200 * fs)
-            fk, st = peak_frequency(x[s0:s1], fs)
+            q0 = s0 + seg_samp              # the silent segment after it
+            fk, st = peak_frequency(x[s0:s1], fs, x[q0:q0 + (s1 - s0)])
             freqs.append(fk)
             strongest.append(st)
         c = float(contrast[b])
         is_narrow = min(narrow) >= NARROW_DB
-        freq_ok = all(abs(fk - TONE_HZ) <= FREQ_TOL_HZ for fk in freqs) and all(strongest)
+        on_freq = all(abs(fk - TONE_HZ) <= FREQ_TOL_HZ for fk in freqs)
+        own = all(strongest)
+        freq_ok = on_freq and own
         if is_narrow and freq_ok:
             cls = "PASS" if c >= PASS_DB else "WEAK"
         else:
@@ -241,8 +291,10 @@ def analyse(x, fs):
         why = []
         if not is_narrow:
             why.append("broadband (narrow %.1f dB)" % min(narrow))
-        if not freq_ok:
+        if not on_freq:
             why.append("frequency %s" % ",".join("%.2f" % f for f in freqs))
+        if on_freq and not own:
+            why.append("another component rose more than 1 kHz did")
         out.append({
             "t": start / fs,
             "contrast": c,
@@ -564,6 +616,21 @@ def selftest():
          ["REJECT"])
     case("broadband noise gated by the pattern", place(canvas(4), 1.0,
                                                        gated_noise(-30)),
+         ["REJECT"])
+    case("loud steady room rumble does not hide a real tone",
+         place(canvas(4) + 10 ** (-40 / 20.0) * np.sin(2 * np.pi * 150 * np.arange(4 * fs) / fs),
+               1.0, pattern(-55)), ["PASS"])
+    hum = canvas(4)
+    gate = np.zeros(len(hum))
+    seg = int(SEG_S * fs)
+    for k_ in (0, 2):                 # a USB DAC un-muting during the tones
+        gate[int(1.0 * fs) + k_ * seg:int(1.0 * fs) + (k_ + 1) * seg] = 1.0
+    hum += gate * 10 ** (-48 / 20.0) * np.sin(2 * np.pi * 112 * np.arange(len(hum)) / fs)
+    hum += 10 ** (-58 / 20.0) * np.sin(2 * np.pi * 112 * np.arange(len(hum)) / fs)
+    case("playback-device hum that un-mutes with the tones",
+         place(hum, 1.0, pattern(-50)), ["PASS"])
+    case("a dominant 2500 Hz effect with 1 kHz only as leakage",
+         place(place(canvas(4), 1.0, pattern(-30, 2500.0)), 1.0, pattern(-50)),
          ["REJECT"])
     thump = canvas(4)
     thump[int(1.5 * fs):int(1.5 * fs) + 200] += 0.5

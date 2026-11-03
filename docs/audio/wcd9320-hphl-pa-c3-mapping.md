@@ -1050,3 +1050,50 @@ run cannot satisfy. An acoustic pass is therefore recorded as
 **`wcd9320-hphl-conversion-proven`**, not `wcd9320-hphl-electrical-proven`.
 The electrical tag stays open until the DC measurement above is made.
 
+### 28a. The instrument, calibrated (2026-11-03)
+
+The identical stimulus was played from the PC through the same headset into the
+same USB microphone, and analysed by the same code that will judge the phone.
+
+| PC playback | setup | result | contrast | peak |
+|---|---|---|---|---|
+| −40 dBFS | headset inline volume down | REJECT — handling noise, broadband | 26.2 dB | 1104 Hz |
+| −20 dBFS | same | nothing | — | — |
+| −40 dBFS | volume up, earcups beside the mic | **PASS** | 29.5 dB | 999.93 Hz |
+| −20 dBFS | same | **PASS** | 48.9 dB | 999.92 Hz |
+| −50 / −60 dBFS | same | nothing — under the mic's noise gate | — | — |
+| −40 dBFS | **gate off, earcup sealed on the mic** | **PASS** | 31.2 dB | 999.98 Hz |
+| **−50 dBFS** | same | **PASS** | 21.4 dB | 1000.10 Hz |
+| −60 dBFS | same | nothing | — | — |
+
+**The detection floor is between −50 and −60 dBFS PC-equivalent: at least
+10 dB of margin below the phone's planned −40 dBFS.** That margin is relative
+to this USB headset at 100%; the phone's absolute output level is unknown.
+
+**The setup that matters, and must not change between calibration and the
+phone:** Windows audio enhancements OFF on the DGM20 (that removed a noise gate
+which turned quiet tones into pure digital silence), and one earcup sealed over
+the mic grille (that raised coupling by about 18 dB).
+
+> **A null at −40 dBFS on the phone is therefore NOT a result.** It sends the
+> run up §23's ladder — a separately armed −30, then −20 dBFS — before anything
+> is concluded. A positive at −40 stands on its own.
+
+**Two analyser defects, found by calibrating against known truth, not by the
+hardware under test.** The "1 kHz must be the strongest component" check was
+wrong twice:
+
+1. As first written — strongest in the whole 100 Hz–8 kHz range — it held only
+   behind the noise gate. With the gate off, steady room rumble outranked a
+   genuine −50 dBFS tone (1000.10 Hz, 21 dB contrast), which was then refused
+   and mislabelled as a "frequency" failure.
+2. Re-asked as the strongest *added* power, it still failed, because the
+   playback headset's USB DAC mutes during digital silence and its 112–190 Hz
+   hum gates with the stimulus — out-adding the tone in raw power while rising
+   only 10–14 dB against the tone's 37 dB.
+
+Settled as: among components within 20 dB of the tone, 1 kHz must show the
+largest **rise over its own silence level**, with power smoothed over ±10 Hz and
+the tone's whole main lobe excluded. Selftest 25/0; all six calibration
+recordings classify as their known truth.
+
