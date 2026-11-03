@@ -133,6 +133,27 @@ else
 	PA_LIVE_EXPECT="$WCD9320_PA_STATE_ON"
 fi
 
+#
+# HOW THE OPERATOR APPROVES.
+#
+#   chat     acoustic runs (USB stays connected): ONE approval per cycle, to
+#            turn the amplifier on, written as a file by tools/c3a-approve.sh
+#            after the operator says so in chat. Everything after it is
+#            automatic and short -- PA on, 2 s for any switch-on pop, the 1 s
+#            tone, 1 s, PA off -- about 5 s live per cycle instead of minutes
+#            held open at gates. Volume Down stays the always-on abort.
+#   buttons  the frozen scope design (USB off, buttons the only channel).
+#            Refused unless input-gate has the dwell, so a burst of presses
+#            cannot chain through gates.
+#
+if [ "$INSTRUMENT" = "acoustic" ]; then
+	APPROVE="${C3A_APPROVE:-chat}"
+else
+	APPROVE="${C3A_APPROVE:-buttons}"
+fi
+APPROVE_DIR="${C3A_APPROVE_DIR:-/run/wcd9320-c3a-approve}"
+FAILSAFE_CHAT="${FAILSAFE_CHAT:-60}"	# covers the ~5 s automatic live window
+
 GATE=""
 for c in "${INPUT_GATE:-}" "$DIR/input-gate" /tmp/input-gate; do
 	[ -n "$c" ] && [ -x "$c" ] && { GATE="$c"; break; }
@@ -303,12 +324,18 @@ c3_failsafe_disarm() {
 # missing entirely -- is an abort. The offline selftest exercises every one of
 # those codes against this same rule.
 c3_gate() {	# c3_gate <label> <timeout> -> 0 proceed, 1 abort
-	jrn "GATE $1: waiting up to $2 s -- Volume Up proceeds, Volume Down aborts"
-	"$GATE" --ask --timeout "$2" --label "$1" >>"$JOURNAL" 2>&1
-	_g_rc=$?
+	if [ "$APPROVE" = "chat" ]; then
+		jrn "GATE $1: waiting up to $2 s for the approval in chat -- Volume Down aborts"
+		pa_chat_wait "$APPROVE_DIR" "$1" "$2" "$FLAG" >/dev/null
+		_g_rc=$?
+	else
+		jrn "GATE $1: waiting up to $2 s -- Volume Up proceeds, Volume Down aborts"
+		"$GATE" --ask --timeout "$2" --label "$1" >>"$JOURNAL" 2>&1
+		_g_rc=$?
+	fi
 	case "$_g_rc" in
-	0)	jrn "GATE $1: APPROVED" ;;
-	1)	jrn "GATE $1: ABORT pressed" ;;
+	0)	jrn "GATE $1: APPROVED ($APPROVE)" ;;
+	1)	jrn "GATE $1: ABORT -- Volume Down" ;;
 	2)	jrn "GATE $1: TIMEOUT after $2 s -- treated as abort" ;;
 	*)	jrn "GATE $1: exit $_g_rc -- treated as abort" ;;
 	esac
@@ -324,6 +351,18 @@ c3_gate() {	# c3_gate <label> <timeout> -> 0 proceed, 1 abort
 	if ! c3_check_flag "gate-$1"; then
 		return 1
 	fi
+	return 0
+}
+
+# A flag-checked pause: the automatic steps of a chat cycle still honour
+# Volume Down within a second.
+c3_pause() {	# c3_pause <seconds> <where> -> 0, or 1 after aborting
+	_ps_n=0
+	while [ "$_ps_n" -lt "$1" ]; do
+		sleep 1
+		c3_check_flag "$2" || return 1
+		_ps_n=$((_ps_n + 1))
+	done
 	return 0
 }
 
@@ -358,7 +397,23 @@ c3_preflight() {	# c3_preflight <arming?>
 		say "  C3A_DC_WAIVER=operator-waived, set deliberately by the operator."
 		return 1
 	fi
-	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT"
+	case "$APPROVE" in
+	chat)
+		if [ "$INSTRUMENT" != "acoustic" ]; then
+			say "INVALID SETUP: chat approval needs USB connected -- acoustic only"
+			return 1
+		fi ;;
+	buttons)
+		if ! "$GATE" --selftest-dwell >/dev/null 2>&1; then
+			say "INVALID SETUP: button gates need an input-gate with the dwell."
+			say "  Rebuild it: tools/build-c3a-helpers.sh --stage <dir> --force"
+			return 1
+		fi ;;
+	*)
+		say "INVALID SETUP: unknown approval mode '$APPROVE'"
+		return 1 ;;
+	esac
+	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT  approvals $APPROVE"
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		jrn "DC CONTRACT NOT MEASURED: waived by the operator ($DC_WAIVER)."
 		jrn "  The waveform verdict is the PC-side recording, not this run."
@@ -534,8 +589,12 @@ c3_cycle() {	# c3_cycle <n>
 		say "  ==> The PA is OFF. Earbuds OUT of everyone's ears, one earbud"
 		say "      against the USB microphone, the PC recording running."
 		[ "$CONTROL" = "pa-off" ] &&
-			say "      CONTROL RUN: Volume Up will NOT enable the PA."
-		say "      Volume Up to continue, Volume Down to abort."
+			say "      CONTROL RUN: approving will NOT enable the PA."
+		if [ "$APPROVE" = "chat" ]; then
+			say "      Approve in chat to continue; Volume Down aborts."
+		else
+			say "      Volume Up to continue, Volume Down to abort."
+		fi
 		jrn "HOLD stage-1 ($INSTRUMENT) with the PA OFF, up to $HOLD_PA_OFF s"
 	else
 		say "  ==> MEASURE DC AT HPHL NOW. The PA is OFF."
@@ -560,7 +619,12 @@ c3_cycle() {	# c3_cycle <n>
 		#
 		jrn "CONTROL: the PA is deliberately NOT enabled on this run"
 	else
-		c3_failsafe_arm $((HOLD_PA_ON + FAILSAFE_PAD)) "pa-on-c$_cy" || {
+		if [ "$APPROVE" = "chat" ]; then
+			_cy_fs=$FAILSAFE_CHAT
+		else
+			_cy_fs=$((HOLD_PA_ON + FAILSAFE_PAD))
+		fi
+		c3_failsafe_arm "$_cy_fs" "pa-on-c$_cy" || {
 			c3_abort "failsafe-unavailable"; return 1; }
 
 		echo pa-on > "$PGD/hphl_pa_test" 2>/dev/null || {
@@ -587,6 +651,15 @@ c3_cycle() {	# c3_cycle <n>
 	c3_check_flag "after-pa-on" || return 1
 
 	# ---------------------------------------------- stage 2: DC, PA on --
+	if [ "$APPROVE" = "chat" ]; then
+		#
+		# AUTOMATIC FROM HERE. The amplifier is on because the operator
+		# approved it; nothing after this needs a human, and holding the PA
+		# open at a gate only lengthens the time it is live.
+		#
+		jrn "AUTO: ${CONTROL:+(control, PA off) }2 s for any switch-on pop, then the tone"
+		c3_pause 2 "settle-c$_cy" || return 1
+	else
 	say ""
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		say "  ==> The PA is ${CONTROL:+NOT }LIVE. Listen at the earbud, not in"
@@ -602,9 +675,10 @@ c3_cycle() {	# c3_cycle <n>
 	fi
 	say ""
 	c3_gate "dc-pa-on-c$_cy" "$HOLD_PA_ON" || return 1
+	fi
 
 	# ------------------------------------------------------- the tone --
-	if [ "$CONTROL" != "pa-off" ]; then
+	if [ "$CONTROL" != "pa-off" ] && [ "$APPROVE" != "chat" ]; then
 		c3_failsafe_arm $((HOLD_TONE + FAILSAFE_PAD)) "tone-c$_cy" || {
 			c3_abort "failsafe-unavailable"; return 1; }
 	fi
@@ -624,13 +698,18 @@ c3_cycle() {	# c3_cycle <n>
 	fi
 	c3_check_flag "after-tone" || return 1
 
-	say ""
-	say "  ==> The stimulus was tone / silence / tone / silence, one uninterrupted"
-	say "      stream, with the PA and every register unchanged throughout."
-	say "      Did the output follow it? Volume Up to tear down and continue."
-	say ""
-	jrn "HOLD post-tone, up to $HOLD_TONE s"
-	c3_gate "post-tone-c$_cy" "$HOLD_TONE" || return 1
+	if [ "$APPROVE" = "chat" ]; then
+		jrn "AUTO: 1 s, then the PA off"
+		c3_pause 1 "post-tone-c$_cy" || return 1
+	else
+		say ""
+		say "  ==> The stimulus was tone / silence / tone / silence, one uninterrupted"
+		say "      stream, with the PA and every register unchanged throughout."
+		say "      Did the output follow it? Volume Up to tear down and continue."
+		say ""
+		jrn "HOLD post-tone, up to $HOLD_TONE s"
+		c3_gate "post-tone-c$_cy" "$HOLD_TONE" || return 1
+	fi
 
 	# --------------------------------------------------------- teardown --
 	echo pa-off > "$PGD/hphl_pa_test" 2>/dev/null
@@ -703,6 +782,7 @@ launch)
 	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM --setenv=CYCLES=$CYCLES"
 	CMD="$CMD --setenv=C3A_INSTRUMENT=$INSTRUMENT"
 	CMD="$CMD --setenv=C3A_DC_WAIVER=$DC_WAIVER --setenv=C3A_CONTROL=$CONTROL"
+	CMD="$CMD --setenv=C3A_APPROVE=$APPROVE"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "The run detaches into a transient unit so it survives losing ssh."
 	say ""
@@ -752,6 +832,15 @@ trap 'jrn "SIGNAL -- running the teardown"; c3_abort signal; exit 3' \
 if ! c3_preflight arm; then
 	jrn "preflight refused -- nothing was armed and nothing was written"
 	exit 2
+fi
+
+#
+# The approval drop-box. Emptied at the start of every run, and each gate also
+# deletes its own file as it opens, so nothing written before can count.
+#
+if [ "$APPROVE" = "chat" ]; then
+	mkdir -p "$APPROVE_DIR" && rm -f "$APPROVE_DIR"/* 2>/dev/null
+	jrn "chat approvals via $APPROVE_DIR"
 fi
 
 c3_watch_start || exit 2

@@ -258,6 +258,49 @@ pa_instrument_decision() {
 	esac
 }
 
+# pa_chat_wait <dir> <label> <timeout-s> <abort-flag> -> APPROVED | ABORT | TIMEOUT
+#
+# A GATE APPROVED FROM CHAT RATHER THAN BY A BUTTON.
+#
+# The button gates were designed for a scope run, where USB had to come off and
+# the buttons were the only channel left. With the acoustic instrument USB
+# stays connected, and the button design caused both of the first real run's
+# problems: a burst of presses chained through three gates, and a gate timed
+# out while its operator was waiting for a cue. So in acoustic runs the one
+# decision that matters -- turn the amplifier on -- is approved in chat and
+# delivered as a file, while Volume Down stays the independent physical abort.
+#
+# Deliberately dumb, so it is hard to misuse:
+#   - any approval for this gate that exists BEFORE it opens is deleted, so an
+#     early or stale approval never counts;
+#   - only a file named for THIS gate and containing THIS gate's name counts;
+#   - the abort flag is checked every second, and wins;
+#   - silence is a timeout, and a timeout is an abort.
+pa_chat_wait() {
+	_cw_dir=$1
+	_cw_lbl=$2
+	_cw_to=$3
+	_cw_flag=$4
+	rm -f "$_cw_dir/$_cw_lbl" 2>/dev/null
+	_cw_n=0
+	while [ "$_cw_n" -lt "$_cw_to" ]; do
+		if [ -e "$_cw_flag" ]; then
+			echo ABORT
+			return 1
+		fi
+		if [ -e "$_cw_dir/$_cw_lbl" ] &&
+		   [ "$(cat "$_cw_dir/$_cw_lbl" 2>/dev/null)" = "$_cw_lbl" ]; then
+			rm -f "$_cw_dir/$_cw_lbl" 2>/dev/null
+			echo APPROVED
+			return 0
+		fi
+		sleep 1
+		_cw_n=$((_cw_n + 1))
+	done
+	echo TIMEOUT
+	return 2
+}
+
 # pa_derive <state-text> <outfile>
 #
 # Writes "key baseline after_prep after_dac after_pa after_teardown" per line.

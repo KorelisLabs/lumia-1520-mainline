@@ -441,6 +441,38 @@ ok "an unknown control refuses" \
    "$(pa_instrument_decision acoustic operator-waived maybe | cut -c1-6)" "REFUSE"
 
 # --------------------------------------------------------------------------
+hdr "CHAT APPROVAL: only a fresh approval, for this gate, counts"
+#
+# Real files and real sleeps, through the same function the runner calls.
+CW="$TMP/cw"
+mkdir -p "$CW"
+( sleep 1; echo gate-a > "$CW/gate-a" ) &
+ok "a fresh approval for this gate is APPROVED" \
+   "$(pa_chat_wait "$CW" gate-a 4 "$TMP/no-flag")" "APPROVED"
+wait
+ok "the approval is consumed, not left behind" \
+   "$([ -e "$CW/gate-a" ] && echo left || echo consumed)" "consumed"
+echo gate-b > "$CW/gate-b"
+ok "an approval written BEFORE the gate opened never counts" \
+   "$(pa_chat_wait "$CW" gate-b 2 "$TMP/no-flag")" "TIMEOUT"
+( sleep 1; echo gate-c > "$CW/gate-x" ) &
+ok "an approval for a DIFFERENT gate does not count" \
+   "$(pa_chat_wait "$CW" gate-c 2 "$TMP/no-flag")" "TIMEOUT"
+wait
+( sleep 1; echo gate-z > "$CW/gate-d" ) &
+ok "a file whose content names another gate does not count" \
+   "$(pa_chat_wait "$CW" gate-d 2 "$TMP/no-flag")" "TIMEOUT"
+wait
+: > "$TMP/abort-flag"
+( sleep 1; echo gate-e > "$CW/gate-e" ) &
+ok "Volume Down wins over an approval" \
+   "$(pa_chat_wait "$CW" gate-e 3 "$TMP/abort-flag")" "ABORT"
+wait
+rm -f "$TMP/abort-flag"
+ok "silence is a timeout, and a timeout is an abort" \
+   "$(pa_chat_wait "$CW" gate-f 1 "$TMP/no-flag")" "TIMEOUT"
+
+# --------------------------------------------------------------------------
 hdr "THE DWELL: one deliberate press per gate, never a burst"
 #
 # The first real run's operator tapped Volume Up several times and carried the
