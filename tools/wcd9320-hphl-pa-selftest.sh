@@ -131,21 +131,25 @@ ok "masked, after: 00" \
 ok "HPHR bit stays clear while HPHL is on" \
    "$(printf '%02x' $((0x$(get "$TMP/exp" pa_0x1ab 5) & 0x10)))" "00"
 
-hdr "SECTION 20: three of the four POST_PA writes are no-ops on this silicon"
+hdr "class-H moves them first; POST_PA moves them back (section 20 corrected)"
 #
-# The lesson C2a was caught by, in the other direction. A gate expecting these
-# to MOVE would fail a correct run, and regmap elides a write whose value is
-# unchanged, so three of these transactions may never reach the bus at all.
-ok "buck5 predicted unchanged at 00"  "$(get "$TMP/exp" buck5_0x185 5)" "00"
-ok "buck3 predicted unchanged at ce"  "$(get "$TMP/exp" buck3_0x183 5)" "ce"
-ok "only NCP_STATIC moves: 28 -> 08"  "$(get "$TMP/exp" ncps_0x194 5)" "08"
+# Section 20 called three POST_PA writes no-ops against the COLD map. The C2a
+# class-H enable runs with the DAC and moves all three registers first; the
+# first acoustic control run, which skips the PA, ended at exactly the
+# "after the DAC" values below.
+ok "class-H sets buck5 bit 1: 00 -> 02"    "$(get "$TMP/exp" buck5_0x185 4)" "02"
+ok "class-H clears buck3 bits 2-3: ce -> c2" "$(get "$TMP/exp" buck3_0x183 4)" "c2"
+ok "class-H leaves NCP_STATIC at 28"       "$(get "$TMP/exp" ncps_0x194 4)" "28"
+ok "POST_PA moves buck5 back: 02 -> 00"    "$(get "$TMP/exp" buck5_0x185 5)" "00"
+ok "POST_PA moves buck3 back: c2 -> ce"    "$(get "$TMP/exp" buck3_0x183 5)" "ce"
+ok "POST_PA clears NCP bit 5: 28 -> 08"    "$(get "$TMP/exp" ncps_0x194 5)" "08"
 #
-# AND THEY STAY. turnoff_postpa() touches NCP_EN, BUCK_MODE_1[7] and
-# B1_CTL[4] -- none of these three. NCP_STATIC not returning to 28 is a PASS.
-ok "buck5 still 00 after teardown"    "$(get "$TMP/exp" buck5_0x185 6)" "00"
-ok "buck3 still ce after teardown"    "$(get "$TMP/exp" buck3_0x183 6)" "ce"
-ok "NCP_STATIC STAYS at 08 -- no invented inverse" \
-   "$(get "$TMP/exp" ncps_0x194 6)" "08"
+# AND THEY STAY. Neither turnoff_postpa() nor the class-H teardown touches
+# these three, so a real run ends at the POST_PA values -- NCP_STATIC at 08,
+# not 28, is a PASS -- and a control run ends at the class-H values.
+ok "real run: buck5 00 after teardown"     "$(get "$TMP/exp" buck5_0x185 6)" "00"
+ok "real run: buck3 ce after teardown"     "$(get "$TMP/exp" buck3_0x183 6)" "ce"
+ok "real run: NCP_STATIC STAYS at 08"      "$(get "$TMP/exp" ncps_0x194 6)" "08"
 
 hdr "the DAC path, unchanged from D1"
 ok "0x1b1 00 -> c0"   "$(get "$TMP/exp" dac_0x1b1 4)" "c0"
@@ -189,7 +193,7 @@ ok "wg ctl restores to 25, not da"   "$(get "$TMP/hexp" wgctl_0x1ac 6)" "25"
 ok "chopper cleared from 5b"         "$(get "$TMP/hexp" chop_0x1a5 3)" "5b"
 ok "buck5 bit 1 cleared from ff"     "$(get "$TMP/hexp" buck5_0x185 5)" "fd"
 ok "buck3 bits set from 31"          "$(get "$TMP/hexp" buck3_0x183 5)" "3d"
-ok "ncp static bit 5 cleared from d7" "$(get "$TMP/hexp" ncps_0x194 5)" "d7"
+ok "ncp static from d7 via class-H and POST_PA" "$(get "$TMP/hexp" ncps_0x194 5)" "c8"
 ok "RX bias set from 7f"             "$(get "$TMP/hexp" bias_0x1a2 4)" "ff"
 ok "RX bias released back to 7f"     "$(get "$TMP/hexp" bias_0x1a2 6)" "7f"
 

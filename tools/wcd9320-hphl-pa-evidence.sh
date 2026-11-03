@@ -806,11 +806,25 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
 
 	say ""
-	say "-- SECTION 20: the POST_PA four stay PROGRAMMED --"
-	note "NCP_STATIC" "expected 08 and NOT 28 -- turnoff_postpa() never restores it"
-	check "NCP_STATIC stays programmed" "$(rv "$POST" ncps_0x194)" "08"
-	check "BUCK_MODE_5 unchanged" "$(rv "$POST" buck5_0x185)" "00"
-	check "BUCK_MODE_3 unchanged" "$(rv "$POST" buck3_0x183)" "ce"
+	say "-- the class-H and POST_PA registers stay PROGRAMMED --"
+	#
+	# DERIVED FROM THE MEASURED BASELINE, PER MODE -- never hardcoded.
+	#
+	# The first version asserted 08/00/ce, the end state of a REAL run, and
+	# the first CONTROL run failed it while doing exactly what the source
+	# says: with the PA step skipped, only the class-H writes apply, and
+	# those leave 28/02/c2. The real run's end state is column 6 of the
+	# derivation (after POST_PA); a control run's is column 4 (after the DAC
+	# step), because nothing after it touches these registers.
+	#
+	_pp_exp="/tmp/.c3a-postpa-$$"
+	pa_derive "$PRE $DPRE" "$_pp_exp"
+	if [ "$CONTROL" = "pa-off" ]; then _pp_col=4; else _pp_col=6; fi
+	for _pp_k in ncps_0x194 buck5_0x185 buck3_0x183; do
+		_pp_w=$(awk -v k="$_pp_k" -v c="$_pp_col" '$1 == k { print $c }' "$_pp_exp")
+		check "$_pp_k stays programmed" "$(rv "$POST" "$_pp_k")" "$_pp_w"
+	done
+	rm -f "$_pp_exp"
 
 	say ""
 	say "-- the forced writes, both directions, every cycle --"

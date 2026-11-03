@@ -99,9 +99,9 @@ pa_0x1ab|-|-|20,20|20,00
 dac_0x1b1|-|40,40 80,80|-|80,00 40,00
 dsm_0x3b0|-|30,10 0c,04|-|0c,00 30,00
 bias_0x1a2|-|80,80|-|80,00
-buck5_0x185|-|-|02,00|-
-ncps_0x194|-|-|20,00|-
-buck3_0x183|-|-|04,04 08,08|-
+buck5_0x185|-|02,02|02,00|-
+ncps_0x194|-|10,00 0f,08 20,20|20,00|-
+buck3_0x183|-|04,00 08,00|04,04 08,08|-
 ocpctl_0x1aa|-|-|-|-"
 
 # RESTORED: the teardown puts these bits back where it FOUND them.
@@ -123,13 +123,22 @@ bias_0x1a2:80"
 # demanded a return to baseline would fail a correct run, and a driver that
 # supplied the inverse would be inventing one.
 #
-# On this silicon three of the four are NO-OPS: 0x185 bit 1 is already clear at
-# cold boot and 0x183 bits 2 and 3 are already set, so the derivation predicts
-# 00 and ce -- unchanged -- and only 0x194 actually moves, 28 -> 08.
+# THE CLASS-H STEP MOVES THEM FIRST, AND SECTION 20 MISSED IT.
 #
-# regmap_update_bits() elides a write whose value is unchanged, so three of
-# these four transactions may never reach the bus at all. That is correct for
-# configuration bits and must not be read as a skipped step.
+# Section 20 called three of the four POST_PA writes no-ops, having computed
+# them against the COLD map. But the C2a class-H enable runs with the DAC,
+# BEFORE the PA, and writes all three registers (wcd9320_clsh_buck_mode[] and
+# wcd9320_clsh_ncp[]):
+#
+#   BUCK_MODE_5  mask 02 <- 03          00 -> 02
+#   BUCK_MODE_3  mask 04 <- 0, 08 <- 0  ce -> c2
+#   NCP_STATIC   10 <- 0, 0f <- 8, 20 <- 20   28 -> 28
+#
+# and the class-H teardown (wcd9320_clsh_off[]) touches none of them. So in
+# sequence ALL FOUR POST_PA writes move bits -- 02 -> 00, c2 -> ce, 28 -> 08 --
+# and the end values merely coincide with the cold ones for the two buck
+# registers. Found by the first acoustic CONTROL run, which skips the PA step
+# and ended at exactly 02 / c2 / 28: the "dac" column above, unchanged.
 WCD9320_PA_PROGRAMMED="buck5_0x185 ncps_0x194 buck3_0x183"
 
 # GUARDED: must not move at all, at any point.

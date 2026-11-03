@@ -1097,3 +1097,54 @@ largest **rise over its own silence level**, with power smoothed over ±10 Hz an
 the tone's whole main lobe excluded. Selftest 25/0; all six calibration
 recordings classify as their known truth.
 
+### 28b. The acoustic CONTROL run: PASS — and a correction to section 20
+
+**Run 20260830T034422Z (phone clock, ~2 days slow), r175 `pa-rc1`, cold boot,
+`C3A_INSTRUMENT=acoustic C3A_CONTROL=pa-off`, one cycle, −40 dBFS.** Phone
+report: [wcd9320-hphl-pa-acoustic-control-20260830T034422Z.txt](wcd9320-hphl-pa-acoustic-control-20260830T034422Z.txt).
+
+Everything a real run does, except the PA write: abort path proven at arm
+time, prep applied, forced `0x314`/`0x30d` issued, DAC at `0xC0`, the §16 abort
+gate passed on the chip, the full tone/silence/tone/silence stimulus played
+(`rc=0`), and the whole teardown. `0x1ab` read `80` throughout, no OCP, guard
+never tripped, `forced_n=4` — both forced registers set and cleared.
+
+**Acoustic verdict: PASS — no tracking tone.** 186.3 s recorded; 7 candidate
+events, all REJECT as broadband (narrowband ≤ 0 dB) — room noise that loosely
+matched the template's timing. Several peak at 1014–1018 Hz: a steady room
+whine near 1 kHz, outside the ±5 Hz window and cancelled by the
+tone-versus-silence comparison. Recording kept outside the repo (18 MB),
+`c3a-control.wav`, sha256 `eba251cf9bf2a88f6951869a1d8e9aab7bf184cdce72e1c75c86915e31199cf5`.
+
+#### THE PHONE REPORT FAILED THREE CHECKS, AND THE CHECKS WERE WRONG — SO WAS §20
+
+| register | report wanted | chip | derived from source, control run |
+|---|---|---|---|
+| NCP_STATIC `0x194` | 08 | 28 | **28** |
+| BUCK_MODE_5 `0x185` | 00 | 02 | **02** |
+| BUCK_MODE_3 `0x183` | ce | c2 | **c2** |
+
+The report hardcoded a real run's end state. A control run skips POST_PA, so
+it cannot reach it. But `02`/`c2` are not the cold values either — and that
+exposed a mapping error. **The C2a class-H enable runs with the DAC, before the
+PA, and writes all three registers** (`wcd9320_clsh_buck_mode[]`,
+`wcd9320_clsh_ncp[]`): BUCK_MODE_5 `00 → 02`, BUCK_MODE_3 `ce → c2`, NCP_STATIC
+`28 → 28`. The class-H teardown touches none of them.
+
+> **§20 is CORRECTED.** It said three of the four POST_PA writes are no-ops on
+> this silicon, having computed them against the cold map. In sequence, **all
+> four move bits** — `02 → 00`, `c2 → ce`, `28 → 08` — and their end values
+> merely coincide with the cold ones for the two buck registers. §20's
+> predicted END state for a real run (`00`/`ce`/`08`) stands; its claim that
+> regmap may elide three of the writes does not.
+
+Fixed: the derivation now models the class-H step in its DAC column; the
+report derives its expected end state per mode (column 6 for a real run,
+column 4 for a control) instead of hardcoding it; selftest 98/0 with the
+sequence asserted step by step. Re-graded against the corrected derivation,
+the control run's chip readings match exactly.
+
+The driver's comment in `wcd9320_hphl_pa_path()` repeats §20's no-op claim. It
+is a comment only — behaviour is unaffected — and is to be corrected in the
+next build rather than by restaging r175.
+
