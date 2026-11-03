@@ -100,10 +100,30 @@
 
 #define VAL_PRESS	1
 
+/*
+ * THE DWELL: ONE DELIBERATE PRESS PER GATE, NEVER A BURST.
+ *
+ * On the first real C3a run the operator pressed Volume Up several times at
+ * one gate. Every press advanced exactly one gate, as designed -- but the gates
+ * open about a second apart, so the burst carried the run through PA enable,
+ * tone and teardown without the pause each gate exists to give.
+ *
+ * So an approve gate now ignores Volume Up for DWELL_MS after it opens, and
+ * every ignored press RESTARTS that interval. A burst of taps therefore never
+ * counts at all; a press counts only once the key has been left alone for
+ * DWELL_MS. That is what "deliberate" means here.
+ *
+ * VOLUME DOWN IS NEVER DELAYED. The dwell applies to the approve key only; an
+ * abort counts the instant it arrives, at every gate, whatever came before it.
+ */
+#define DWELL_MS_DEFAULT	1500
+#define DWELL_MS_MAX		10000
+
 enum mode {
 	MODE_NONE = 0,
 	MODE_RESOLVE,
 	MODE_PARSE,
+	MODE_SELFTEST_DWELL,
 	MODE_SELFTEST_ABORT,
 	MODE_ASK,
 	MODE_WATCH,
@@ -265,10 +285,38 @@ static long now_ms(void)
  * something to resynchronise past: if the stride is not what this program
  * believes, every field it parses afterwards is meaningless.
  */
-static int wait_press(int *fds, const int *keys, int n, int timeout_ms)
+/*
+ * Does an approve press at `now` count? If not, the dwell restarts from it.
+ * Pure, so --selftest-dwell can exercise exactly the code the gates use.
+ */
+static int dwell_accept(long now, long *armed_until, int dwell_ms)
+{
+	if (now >= *armed_until)
+		return 1;
+	*armed_until = now + dwell_ms;
+	return 0;
+}
+
+/*
+ * Does a press on device `idx` count? Only `dwell_idx` -- the approve key at an
+ * --ask gate -- is ever subject to the dwell. Everything else, the abort key
+ * above all, counts immediately.
+ */
+static int press_counts(int idx, long now, long *armed_until, int dwell_idx,
+			int dwell_ms)
+{
+	if (idx != dwell_idx)
+		return 1;
+	return dwell_accept(now, armed_until, dwell_ms);
+}
+
+static int wait_press(int *fds, const int *keys, int n, int timeout_ms,
+		      int dwell_idx, int dwell_ms, const char *label)
 {
 	struct pollfd pfd[2];
-	long deadline = timeout_ms >= 0 ? now_ms() + timeout_ms : 0;
+	long opened = now_ms();
+	long deadline = timeout_ms >= 0 ? opened + timeout_ms : 0;
+	long armed_until = opened + dwell_ms;
 	int i;
 
 	for (i = 0; i < n; i++) {
@@ -327,6 +375,13 @@ static int wait_press(int *fds, const int *keys, int n, int timeout_ms)
 					continue;
 				if (le32(e + EV_OFF_VALUE) != VAL_PRESS)
 					continue;	/* release / autorepeat */
+				if (!press_counts(i, now_ms(), &armed_until,
+						  dwell_idx, dwell_ms)) {
+					printf("ask=%s ignored a press %ld ms after the gate opened -- inside the dwell, which restarts\n",
+					       label, now_ms() - opened);
+					fflush(stdout);
+					continue;
+				}
 				return i;
 			}
 		}
@@ -365,8 +420,9 @@ static void usage(void)
 	fprintf(stderr,
 		"usage: input-gate --resolve\n"
 		"       input-gate --parse FILE\n"
+		"       input-gate --selftest-dwell\n"
 		"       input-gate --selftest-abort [--timeout SEC]\n"
-		"       input-gate --ask [--timeout SEC] [--label TEXT]\n"
+		"       input-gate --ask [--timeout SEC] [--label TEXT] [--dwell MS]\n"
 		"       input-gate --watch --flag PATH [--lock PATH]\n"
 		"\n"
 		"exit: 0 approve  1 abort  2 timeout(=abort)  3 setup  4 busy\n");
@@ -381,6 +437,7 @@ int main(int argc, char **argv)
 	const char *parse_from = NULL;
 	char apath[PATH_MAX], bpath[PATH_MAX];
 	int timeout = -1, afd = -1, bfd = -1, lockfd = -1;
+	int dwell = DWELL_MS_DEFAULT;
 	int fds[2], keys[2], hit, i;
 
 	for (i = 1; i < argc; i++) {
@@ -398,6 +455,10 @@ int main(int argc, char **argv)
 			mode = MODE_WATCH;
 		else if (!strcmp(argv[i], "--timeout") && i + 1 < argc)
 			timeout = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--dwell") && i + 1 < argc)
+			dwell = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--selftest-dwell"))
+			mode = MODE_SELFTEST_DWELL;
 		else if (!strcmp(argv[i], "--flag") && i + 1 < argc)
 			flag = argv[++i];
 		else if (!strcmp(argv[i], "--label") && i + 1 < argc)
@@ -412,6 +473,68 @@ int main(int argc, char **argv)
 	if (mode == MODE_NONE) {
 		usage();
 		return RC_SETUP;
+	}
+	if (dwell < 0 || dwell > DWELL_MS_MAX) {
+		fprintf(stderr, "input-gate: --dwell must be 0..%d ms\n",
+			DWELL_MS_MAX);
+		return RC_SETUP;
+	}
+
+	/*
+	 * --selftest-dwell: THE GATE'S PRESS RULE, EXERCISED IN THIS BINARY.
+	 *
+	 * Synthetic times only -- no device is opened, nothing can arm. Each case
+	 * is a sequence of presses in ms after the gate opened, and the index of
+	 * the press that should count (-1: none). It runs press_counts(), the
+	 * function the live gates call, not a reimplementation of it.
+	 */
+	if (mode == MODE_SELFTEST_DWELL) {
+		static const struct {
+			const char *name;
+			int idx[6];
+			long t[6];
+			int n;
+			int want;
+		} cs[] = {
+			{ "one press after the dwell counts",
+			  { 0 }, { 2000 }, 1, 0 },
+			{ "a press at exactly the dwell counts",
+			  { 0 }, { 1500 }, 1, 0 },
+			{ "a press just inside the dwell does not",
+			  { 0 }, { 1499 }, 1, -1 },
+			{ "an early press, then a later one: the later counts",
+			  { 0, 0 }, { 100, 1700 }, 2, 1 },
+			{ "a burst of taps never counts",
+			  { 0, 0, 0 }, { 100, 900, 1700 }, 3, -1 },
+			{ "a press 1.5 s after the burst ends counts",
+			  { 0, 0, 0, 0 }, { 100, 900, 1700, 3200 }, 4, 3 },
+			{ "ABORT counts instantly, even inside the dwell",
+			  { 1 }, { 10 }, 1, 0 },
+			{ "ABORT counts instantly, even mid-burst",
+			  { 0, 0, 1 }, { 100, 300, 400 }, 3, 2 },
+		};
+		unsigned int c;
+		int fails = 0;
+
+		for (c = 0; c < sizeof(cs) / sizeof(cs[0]); c++) {
+			long armed = DWELL_MS_DEFAULT;	/* gate opened at t=0 */
+			int k, got = -1;
+
+			for (k = 0; k < cs[c].n; k++) {
+				if (press_counts(cs[c].idx[k], cs[c].t[k], &armed,
+						 0, DWELL_MS_DEFAULT)) {
+					got = k;
+					break;
+				}
+			}
+			printf("  %s %-52s got=%d want=%d\n",
+			       got == cs[c].want ? "ok  " : "FAIL", cs[c].name,
+			       got, cs[c].want);
+			if (got != cs[c].want)
+				fails++;
+		}
+		printf("dwell selftest: %d failed\n", fails);
+		return fails ? RC_SETUP : RC_APPROVE;
 	}
 	if (mode == MODE_WATCH && !flag) {
 		fprintf(stderr, "input-gate: --watch needs --flag\n");
@@ -516,7 +639,8 @@ int main(int argc, char **argv)
 		fflush(stdout);
 		fds[0] = bfd;
 		keys[0] = ABORT_KEY;
-		hit = wait_press(fds, keys, 1, timeout < 0 ? -1 : timeout * 1000);
+		hit = wait_press(fds, keys, 1, timeout < 0 ? -1 : timeout * 1000,
+				 -1, 0, label);
 		close(afd);
 		close(bfd);
 		if (hit == 0) {
@@ -533,13 +657,14 @@ int main(int argc, char **argv)
 	case MODE_ASK:
 		drain(afd);
 		drain(bfd);
-		printf("ask=%s timeout=%d\n", label, timeout);
+		printf("ask=%s timeout=%d dwell_ms=%d\n", label, timeout, dwell);
 		fflush(stdout);
 		fds[0] = afd;
 		keys[0] = APPROVE_KEY;
 		fds[1] = bfd;
 		keys[1] = ABORT_KEY;
-		hit = wait_press(fds, keys, 2, timeout < 0 ? -1 : timeout * 1000);
+		hit = wait_press(fds, keys, 2, timeout < 0 ? -1 : timeout * 1000,
+				 0, dwell, label);
 		close(afd);
 		close(bfd);
 		if (hit == 0) {
@@ -581,7 +706,8 @@ int main(int argc, char **argv)
 		fflush(stdout);
 		fds[0] = bfd;
 		keys[0] = ABORT_KEY;
-		hit = wait_press(fds, keys, 1, timeout < 0 ? -1 : timeout * 1000);
+		hit = wait_press(fds, keys, 1, timeout < 0 ? -1 : timeout * 1000,
+				 -1, 0, label);
 		if (hit == 0) {
 			int ffd = open(flag, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 

@@ -237,6 +237,15 @@ GATE_REQUIRED = [
      "presses only -- releases and autorepeat must be ignored"),
 ]
 
+# THE DWELL. An approve gate swallows a burst of taps; the abort key never
+# waits. Checked as the shape of the code, not the presence of a word.
+GATE_DWELL = [
+    (r"idx\s*!=\s*dwell_idx\s*\)\s*return\s+1",
+     "abort is exempt from the dwell -- any key but the approve key counts at once"),
+    (r"wait_press\(\s*fds,\s*keys,\s*2,[^;]*,\s*0,\s*dwell\b",
+     "the --ask gate applies the dwell to the approve key (index 0)"),
+]
+
 # Every ambiguous outcome resolves to something other than approve.
 GATE_POLARITY = [
     (r"hit\s*==\s*-1", "RC_TIMEOUT", "a timeout must return the timeout code"),
@@ -273,6 +282,15 @@ def audit_gate(raw: str):
         if got != [want]:
             missing.append("%s defined as %s (%s); found %s"
                            % (name, want, why, got or "nothing"))
+
+    for pat, why in GATE_DWELL:
+        if not re.search(pat, src):
+            missing.append(why)
+    singles = len(re.findall(r"wait_press\(\s*fds,\s*keys,\s*1,[^;]*,\s*-1,\s*0,",
+                             src))
+    if singles != 2:
+        missing.append("the abort self-test and the watcher both wait with NO "
+                       "dwell (found %d of 2)" % singles)
 
     # THE EXIT CODES ARE THE INTERFACE. The runner branches on every one.
     for name, want in (("RC_APPROVE", "0"), ("RC_ABORT", "1"),
@@ -343,6 +361,14 @@ int main(void) {
 \tif (le32(e + EV_OFF_VALUE) != VAL_PRESS) continue;
 \tif (afd < 0 || bfd < 0) return RC_SETUP;
 \tif (hit == -1) return RC_TIMEOUT;
+\thit = wait_press(fds, keys, 2, t, 0, dwell, label);
+\thit = wait_press(fds, keys, 1, t, -1, 0, label);
+\thit = wait_press(fds, keys, 1, t, -1, 0, label);
+}
+static int press_counts(int idx, long now, long *a, int dwell_idx, int d) {
+\tif (idx != dwell_idx)
+\t\treturn 1;
+\treturn dwell_accept(now, a, d);
 }
 """
 
@@ -401,6 +427,16 @@ def selftest() -> int:
         ("a comment naming event0 does not itself fail the file",
          audit_gate, "/* eventN moves; never write event0 here */" + GATE_OK,
          True),
+        ("an abort subject to the dwell is rejected",
+         audit_gate, GATE_OK.replace("\tif (idx != dwell_idx)\n\t\treturn 1;\n", ""),
+         False),
+        ("an ask gate with no dwell is rejected",
+         audit_gate, GATE_OK.replace("keys, 2, t, 0, dwell", "keys, 2, t, -1, 0"),
+         False),
+        ("a watcher that waits out a dwell is rejected",
+         audit_gate, GATE_OK.replace("keys, 1, t, -1, 0, label);\n}",
+                                     "keys, 1, t, 0, dwell, label);\n}"),
+         False),
         ("prose cannot rescue input-gate",
          audit_gate,
          "/* no struct input_event and no event0 here */" + GATE_OK

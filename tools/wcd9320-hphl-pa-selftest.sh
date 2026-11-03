@@ -441,6 +441,26 @@ ok "an unknown control refuses" \
    "$(pa_instrument_decision acoustic operator-waived maybe | cut -c1-6)" "REFUSE"
 
 # --------------------------------------------------------------------------
+hdr "THE DWELL: one deliberate press per gate, never a burst"
+#
+# The first real run's operator tapped Volume Up several times and carried the
+# run through three gates. The rule now lives in input-gate and is exercised
+# INSIDE the binary by --selftest-dwell. An input-gate built before the dwell
+# does not know that mode, and fails here -- which is the point: the phone must
+# not run a gate that can be chained.
+if [ -n "$GATE" ] && [ -x "$GATE" ]; then
+	"$GATE" --selftest-dwell > "$TMP/dw" 2>&1
+	ok "the gate press rule passes in the real binary" \
+	   "$(tail -n 1 "$TMP/dw")" "dwell selftest: 0 failed"
+	ok "abort is never delayed by the dwell" \
+	   "$(grep -c '^  ok   ABORT counts instantly' "$TMP/dw")" "2"
+	ok "a burst of taps never counts" \
+	   "$(grep -c '^  ok   a burst of taps never counts' "$TMP/dw")" "1"
+else
+	skip "dwell" "no input-gate binary; set GATE=<path>"
+fi
+
+# --------------------------------------------------------------------------
 hdr "THE TEARDOWN MUST HIT THE CONTROL FUNCTION, NOT THE INTERFACE FUNCTION"
 #
 # The first real C3a run's teardown picked 217:a0:0:0, the interface function,
