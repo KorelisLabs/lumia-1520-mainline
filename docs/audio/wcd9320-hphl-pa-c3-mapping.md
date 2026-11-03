@@ -998,3 +998,55 @@ the subtraction is gone.
 **No build, no flash, no run.** No register has been written on hardware. The
 DC band still has to be measured before the tone is ever allowed, and the probe
 point still has to be confirmed with a meter, both per §21 and §22.
+
+---
+
+## 28. C3a ACOUSTIC: THE INSTRUMENT CHANGES, AND THE DC CONTRACT IS WAIVED FOR IT
+
+**Decided by the operator, 2026-11-03.** No scope, TRRS breakout or meter is
+available. Wired 3.5 mm headphones and the PC's USB microphone are.
+
+### The instrument
+
+An earbud on the phone's jack, pressed against the PC's USB microphone, with
+the run recorded and analysed by `tools/c3a-capture.py`. The phone is
+connected to nothing but the earbud, so the earth-reference hazard behind §21's
+ordering does not arise: USB and ssh stay live for the whole run.
+
+**PASS, restated for this instrument:** in the recording, the 1 kHz amplitude
+is present in both tone segments and absent in both silent ones, at least
+20 dB of contrast, narrowband, at 1000 ± 5 Hz — in both cycles. Plus a
+negative control (`C3A_CONTROL=pa-off`, the identical run with the PA write
+withheld) that must show nothing, and a calibration (the identical stimulus
+played from the PC through the same earbud into the same mic) that must pass,
+so that a null on the phone means something.
+
+### THE WAIVER, AND ITS LIMIT
+
+The acoustic instrument cannot see DC, so §22's contract — `|Voff| ≤ 100 mV`,
+`|Von − Voff| ≤ 50 mV`, drift ≤ 10 mV, abort at 250 mV — **is not measured on
+this run**. The operator waived it, and the runner refuses acoustic mode
+unless `C3A_DC_WAIVER=operator-waived` is set exactly.
+
+> **THE WAIVER COVERS C3a ACOUSTIC ONLY. IT IS A BLOCKER FOR THE FINAL BUILD.**
+>
+> Before any final or release build, the HPHL DC behaviour must be measured —
+> PA off, PA on, and drift — either with a scope per §21/§22, or with the
+> on-chip MBHC voltmeter (the zdet path: `CDC_PA_RAMP_B1–B4`, MBHC scaling mux
+> to ADC7, `MBHC_HPH`, results in `CDC_MBHC_B3/B4/B5_STATUS`), planned as r176.
+> A shipping driver must not rely on an output stage whose idle DC has never
+> been observed.
+
+What the waiver gives up, said plainly: the **protection** is covered by other
+means (earbuds out of everyone's ears, minimum mapped gain, −40 dBFS, short
+live holds, the over-current fault aborting the run, a thump being audible).
+The **diagnosis** is lost: a null result cannot be split into "the output
+stage never biased up" and "it biased up but received no signal".
+
+### Tag consequence
+
+§24's PASS includes "DC inside the declared band at every stage", which this
+run cannot satisfy. An acoustic pass is therefore recorded as
+**`wcd9320-hphl-conversion-proven`**, not `wcd9320-hphl-electrical-proven`.
+The electrical tag stays open until the DC measurement above is made.
+

@@ -1010,6 +1010,12 @@ the left headphone PA, an autonomous button-driven runner for a run that has no
 ssh, and the fences that bound the first two writes this project has ever made
 to `0x1ab`. Everything offline passes. Nothing has touched hardware.
 
+**OPEN BLOCKER FOR THE FINAL BUILD: the HPHL DC contract.** C3a runs
+acoustically with the DC contract waived by the operator (section 28 of the C3
+mapping). That waiver covers C3a only. Before any final build, HPHL DC must be
+measured with the PA off and on -- by scope, or by the on-chip MBHC voltmeter
+planned as r176.
+
 **Do not reopen the MCLK branch** (closed at r169) and **do not reintroduce
 readback expectations for `0x314` or `0x30d`** (they are permanently
 write-effect-unverifiable, inverse-write-mandatory).
