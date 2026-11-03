@@ -1148,3 +1148,100 @@ The driver's comment in `wcd9320_hphl_pa_path()` repeats §20's no-op claim. It
 is a comment only — behaviour is unaffected — and is to be corrected in the
 next build rather than by restaging r175.
 
+### 28c. The first REAL acoustic run: a null at −40 dBFS, and a SAFETY INCIDENT
+
+**Run 20260830T035650Z, r175 `pa-rc1`, cold boot, acoustic, two cycles planned,
+−40 dBFS.** Report:
+[wcd9320-hphl-pa-acoustic-run1-20260830T035650Z.txt](wcd9320-hphl-pa-acoustic-run1-20260830T035650Z.txt);
+journal:
+[wcd9320-hphl-pa-acoustic-run1-journal-20260830T035650Z.txt](wcd9320-hphl-pa-acoustic-run1-journal-20260830T035650Z.txt).
+Recording kept outside the repo, `c3a-real.wav`, 525.4 s, sha256 `14401750cc46b8a2cc631284f86db64dca724d9e38afcbd55f831da08efdf10e`.
+
+#### What worked
+
+**The PA enabled for the first time on this port, twice, exactly as mapped.**
+`0x1ab = a0` both times — bit 5 set, HPHR bit 4 clear, the one legal live
+state — with no over-current, `INTR_STATUS2 = 00`, and the guard never tripped.
+Cycle 1 played the full stimulus with the PA live (`rc=0`, no xruns), then tore
+down with the PA chip-verified off. Cycle 2 enabled the PA again.
+
+#### The acoustic result: a NULL, which by §28a is not a result
+
+Nothing in 525 s of recording tracked the stimulus — no PASS, no WEAK; three
+late broadband or off-frequency REJECTs after the run had ended. The
+instrument's floor is about −55 dBFS PC-equivalent, so the null has two live
+explanations that this run cannot separate:
+
+1. the HPHL output is real but below the instrument's floor — the gain field
+   is pinned at the mapped minimum, and how much attenuation 0x14 represents
+   is not established (downstream's `line_gain` TLV is ambiguous);
+2. no conversion is happening — the open question about `0x314` and `0x30d`.
+
+Only louder steps separate them, and the runner cannot yet make one: it does
+not pass `pcm-tone` its escalation flag, so −30 and −20 dBFS are refused. That
+is correct for the frozen −40 plan, and changing it is an operator decision.
+
+#### THE INCIDENT: THE EMERGENCY TEARDOWN TARGETED THE WRONG DEVICE
+
+Cycle 2's second gate timed out — correctly treated as an abort — and the
+teardown script reported `THE ABORT WRITE FAILED` and `PA_AFTER_TEARDOWN
+unknown`. **Its device discovery took the first slimbus function carrying
+`hphl_pa_test`, which is `217:a0:0:0`, the INTERFACE function, whose every
+write is refused.** The runner had exactly this bug and it was fixed there in
+August (f6b7448); the teardown script's copy was not.
+
+Consequences, all confirmed afterwards on the chip:
+
+- **the PA stayed enabled** — `0x1ab = a0`, DAC at `c0`, gain at `34` — for
+  about four minutes after the abort reported complete, about six minutes
+  live in total;
+- **the fail-safe timer could not have helped**: it runs the same script, and
+  the runner's abort had disarmed it *before* running the teardown;
+- it ended only when the PA was torn down by hand through the driver's own
+  `abort` on `217:a0:1:0`, which worked fully at the first correct attempt —
+  `0x1ab 80`, DAC `00`, gain restored, both forced inverses issued
+  (`forced_n` 6 → 8), guard never tripped.
+
+Gain was at the mapped minimum and the headset was on the microphone, not on
+anyone; no harm is evident. But this is precisely the failure the four-layer
+safety design was meant to make impossible, and two of its layers both rested
+on the one broken script.
+
+**Fixed, and fenced as a class rather than an instance:**
+
+- the teardown script skips every function answering "not applicable" and
+  aborts **every** remaining control function, then reads `0x1ab` back and
+  shouts if the PA is still on;
+- the runner's abort writes to its own, `find_devices()`-verified control
+  function first, then runs the shared script, and **disarms the fail-safe
+  only after a chip-verified PA-off** — never before;
+- the selftest rebuilds this phone's two-function layout, interface function
+  listed first, runs the real teardown script against it, and asserts the
+  abort lands on the control function and nothing on the interface function;
+  plus a static check that no C3a script walks the slimbus devices without
+  `find_devices()` or the "not applicable" test;
+- negative proof: the OLD script, run against the same scratch tree, writes
+  `abort` to the interface function and nothing to the control function —
+  the field failure reproduced offline;
+- on the phone: the fixed script skips `217:a0:0:0`, aborts `217:a0:1:0`, and
+  reads back `0x1ab=80 masked=00`. Selftest 105/0 offline, 114/0 on the
+  device.
+
+#### A second, smaller harness defect: rapid presses chained through gates
+
+The operator pressed Volume Up several times at cycle 1's first gate. Each
+press advanced exactly one gate, as designed — but they landed close enough
+together to carry the run through PA enable, tone and teardown without the
+deliberate pause each gate exists for. Nothing went wrong electrically. The
+fix belongs in `input-gate`: a gate should ignore presses during its first
+second and require a fresh key-down after it opens. That changes a helper
+binary, so it rides with the next build.
+
+#### The ssh hang, unexplained
+
+For about two minutes after the cycle-2 press, ssh to the phone timed out while
+the phone itself carried on writing its journal normally. Ping later worked and
+ssh recovered without intervention. Cause not established; recorded so it is
+not mistaken for a phone crash a second time — it was mistaken for one here,
+and that delayed the manual teardown.
+

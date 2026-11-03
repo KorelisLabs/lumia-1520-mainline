@@ -1,0 +1,84 @@
+
+=== what this run can and cannot establish ===
+The milestone is point 1 of section 24: a waveform at HPHL whose
+frequency tracks the 1 kHz digital stimulus, present during the tone
+segments and absent during the silent ones, across two cycles.
+
+THAT IS AN OBSERVATION ON A SCOPE. It is not in this file, and no
+check below can supply it. Everything here is a PRECONDITION for
+believing that observation -- correct sequencing, a guard that never
+tripped, a complete teardown. Correct PA register sequencing without
+a measured waveform earns NO TAG.
+
+=== the run ===
+aborted     : 1 gate-dc-pa-on-c2-rc2
+cycles run  : 1 of 2
+stimulus    : -40 dBFS, 1 kHz, tone/silence/tone/silence, one stream
+instrument  : acoustic
+control     : none (the PA is enabled)
+DC contract : NOT MEASURED -- waived by the operator (operator-waived)
+waveform    : decided by tools/c3a-capture.py on the PC recording
+
+=== the PA, at every boundary ===
+cycle 1   before 80   live a0   after 80   (predicted 80 a0 80)
+
+=== checks ===
+  PASS  module version                   pa-rc1
+  FAIL  the run was not aborted          got=1 want=0
+  FAIL  cycles completed                 got=1 want=2
+
+-- the PA reached its one legal live state, and came back --
+  PASS  c1 PA live masked                20
+  PASS  c1 HPHR stayed clear             00
+  PASS  c1 PA off after                  00
+  PASS  guard never tripped              0
+  PASS  no OCP fault at any point        0
+  FAIL  PA enables == disables           got=2 want=1
+
+-- the class-H and POST_PA registers stay PROGRAMMED --
+  PASS  ncps_0x194 stays programmed      08
+  PASS  buck5_0x185 stays programmed     00
+  PASS  buck3_0x183 stays programmed     ce
+
+-- the forced writes, both directions, every cycle --
+  FAIL  forced operations                got=6 want=4
+  PASS  f0 register                      314
+  PASS  f0 direction                     set
+  PASS  f1 register                      30d
+  PASS  f1 direction                     set
+  PASS  f2 register                      30d
+  PASS  f2 direction                     clear
+  PASS  f3 register                      314
+  PASS  f3 direction                     clear
+
+-- the teardown restored what it found --
+  FAIL  gain restored                    got=34 want=00
+  FAIL  wg ctl restored                  got=db want=da
+  FAIL  wg time restored                 got=58 want=15
+  FAIL  wg ocp restored                  got=1a want=2a
+  FAIL  chopper restored                 got=24 want=a4
+  PASS  OCP_CTL never written            69
+  FAIL  DAC off                          got=c0 want=00
+  FAIL  DSM mux cleared                  got=14 want=00
+  FAIL  RX bias released                 got=1 want=0
+
+=== finding ===
+ABORTED: gate-dc-pa-on-c2-rc2
+
+The mapped teardown ran. Check PA_AFTER_TEARDOWN in the
+journal before doing anything else -- if 0x1ab masked is not
+00, power cycle the phone rather than starting another run.
+
+=== run identity ===
+mode              : wcd9320-hphl-pa
+date              : 2026-08-30T04:01:48Z (UTC)
+module version    : pa-rc1   (expected pa-rc1)
+expect_version_source : environment
+expect_sha_source     : environment
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #176-postmarketos-qcom-msm8974 SMP PREEMPT Sat Aug 29 17:57:20 U
+uptime            : 408.38 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+/home/user/wcd9320-tools/wcd9320-hphl-pa-evidence.sh: line 329: DMESG_LINES: parameter not set

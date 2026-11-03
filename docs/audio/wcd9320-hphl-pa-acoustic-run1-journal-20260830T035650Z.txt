@@ -1,0 +1,162 @@
+20260830T035650Z holds: pa-off 600 s, pa-on 120 s, tone 120 s
+20260830T035650Z stimulus -40 dBFS, 2 cycle(s)
+20260830T035650Z instrument acoustic  control none  pa-live-expect 20
+20260830T035650Z DC CONTRACT NOT MEASURED: waived by the operator (operator-waived).
+20260830T035650Z   The waveform verdict is the PC-side recording, not this run.
+20260830T035651Z module version pa-rc1 (expected pa-rc1)
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+20260830T035651Z input devices resolved by name
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260830T035651Z stimulus declared at -40 dBFS
+20260830T035651Z baseline pristine: 0x1ab=80 0x1b1=00 0x3b0=00 guard clean
+20260830T035651Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260830T035702Z ABORT PATH PROVEN ON HARDWARE at arm time
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260830T035703Z abort watcher armed, pid 899
+20260830T035703Z front-end mixer enabled
+20260830T035703Z === cycle 1: begin ===
+20260830T035703Z prep applied
+20260830T035704Z forced 0x314 issued
+20260830T035704Z RX1 digital chain on
+20260830T035704Z HPHL DAC path up in register-gain mode
+20260830T035704Z state after DAC: 80 34 c0
+20260830T035704Z section 16 abort gate PASSED -- the PA may now be enabled
+20260830T035704Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260830T035704Z GATE dc-pa-off-c1: waiting up to 600 s -- Volume Up proceeds, Volume Down aborts
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-off-c1 timeout=600
+ask=dc-pa-off-c1 result=APPROVE
+20260830T035721Z GATE dc-pa-off-c1: APPROVED
+20260830T035721Z fail-safe armed: 165 s, phase pa-on-c1
+20260830T035721Z PA ENABLED
+20260830T035721Z 0x1ab=a0 masked=20 expected=20
+20260830T035721Z INTR_STATUS2=00 ocp_seen=0
+20260830T035722Z HOLD stage-2 (acoustic) after the PA step, up to 120 s
+20260830T035722Z GATE dc-pa-on-c1: waiting up to 120 s -- Volume Up proceeds, Volume Down aborts
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-on-c1 timeout=120
+ask=dc-pa-on-c1 result=APPROVE
+20260830T035734Z GATE dc-pa-on-c1: APPROVED
+20260830T035735Z fail-safe armed: 165 s, phase tone-c1
+20260830T035735Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.947
+final_rc=0
+complete=1
+20260830T035736Z tone finished rc=0
+20260830T035736Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260830T035736Z HOLD post-tone, up to 120 s
+20260830T035736Z GATE post-tone-c1: waiting up to 120 s -- Volume Up proceeds, Volume Down aborts
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=post-tone-c1 timeout=120
+ask=post-tone-c1 result=APPROVE
+20260830T035752Z GATE post-tone-c1: APPROVED
+20260830T035752Z PA disabled
+20260830T035752Z 0x1ab=80 masked=00 expected=00
+20260830T035752Z fail-safe disarmed: the PA is chip-verified off
+20260830T035752Z DAC, forced inverses, RX1 and prep all torn down
+20260830T035752Z === cycle 1: complete ===
+20260830T035752Z === cycle 2: begin ===
+20260830T035752Z prep applied
+20260830T035752Z forced 0x314 issued
+20260830T035752Z RX1 digital chain on
+20260830T035753Z HPHL DAC path up in register-gain mode
+20260830T035753Z state after DAC: 80 34 c0
+20260830T035753Z section 16 abort gate PASSED -- the PA may now be enabled
+20260830T035753Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260830T035753Z GATE dc-pa-off-c2: waiting up to 600 s -- Volume Up proceeds, Volume Down aborts
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-off-c2 timeout=600
+ask=dc-pa-off-c2 result=APPROVE
+20260830T035945Z GATE dc-pa-off-c2: APPROVED
+20260830T035945Z fail-safe armed: 165 s, phase pa-on-c2
+20260830T035946Z PA ENABLED
+20260830T035946Z 0x1ab=a0 masked=20 expected=20
+20260830T035946Z INTR_STATUS2=00 ocp_seen=0
+20260830T035946Z HOLD stage-2 (acoustic) after the PA step, up to 120 s
+20260830T035946Z GATE dc-pa-on-c2: waiting up to 120 s -- Volume Up proceeds, Volume Down aborts
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-on-c2 timeout=120
+ask=dc-pa-on-c2 result=TIMEOUT treated_as=ABORT
+20260830T040146Z GATE dc-pa-on-c2: TIMEOUT after 120 s -- treated as abort
+20260830T040146Z ABORT reason=gate-dc-pa-on-c2-rc2
+20260830T040146Z teardown: invoked, reason=gate-dc-pa-on-c2-rc2
+20260830T040146Z teardown: codec at /sys/bus/slimbus/devices/217:a0:0:0
+20260830T040146Z   20260830T040146Z teardown: invoked, reason=gate-dc-pa-on-c2-rc2
+20260830T040146Z teardown: THE ABORT WRITE FAILED -- the codec may still be powered
+20260830T040146Z   20260830T040146Z teardown: codec at /sys/bus/slimbus/devices/217:a0:0:0
+20260830T040146Z teardown: state: interface function: not applicable
+20260830T040146Z   20260830T040146Z teardown: THE ABORT WRITE FAILED -- the codec may still be powered
+20260830T040146Z   20260830T040146Z teardown: state: interface function: not applicable
+20260830T040146Z teardown: PA_AFTER_TEARDOWN unknown -- could not read 0x1ab
+20260830T040146Z teardown: complete
+20260830T040146Z   20260830T040146Z teardown: PA_AFTER_TEARDOWN unknown -- could not read 0x1ab
+20260830T040146Z   20260830T040146Z teardown: complete
+20260830T040146Z ABORT complete

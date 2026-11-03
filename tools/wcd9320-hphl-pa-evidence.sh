@@ -194,8 +194,38 @@ c3_abort() {	# c3_abort <reason>
 	ABORTED=1
 	ABORT_WHY="$1"
 	jrn "ABORT reason=$1"
-	c3_failsafe_disarm
+	#
+	# THE RUNNER ABORTS ITS OWN, ALREADY-VERIFIED CONTROL FUNCTION FIRST.
+	#
+	# $PGD came from find_devices(), which tells the interface function from
+	# the control function. The shared teardown script then runs as well --
+	# the abort is idempotent, so the second one is a no-op -- because it is
+	# also what the trap and the fail-safe timer use. Relying on the script
+	# alone is what left the PA enabled on the first real run, when its own
+	# discovery picked the interface function and every write was refused.
+	#
+	if [ -n "${PGD:-}" ] && [ -e "$PGD/hphl_pa_test" ]; then
+		if echo abort > "$PGD/hphl_pa_test" 2>/dev/null; then
+			jrn "abort written to $PGD"
+		else
+			jrn "ABORT WRITE TO $PGD FAILED"
+		fi
+	fi
 	sh "$TEARDOWN" "$1" 2>&1 | while read -r _ab_l; do jrn "  $_ab_l"; done
+	#
+	# And the fail-safe is disarmed only AFTER a chip-verified PA-off, the
+	# same rule the normal teardown follows. Disarming it first, as this
+	# function used to, removed the last layer exactly when the teardown it
+	# was meant to back up had just failed.
+	#
+	_ab_pa=$(rv "$(cat "$PGD/hphl_pa_state" 2>/dev/null)" pa_0x1ab)
+	if [ -n "$_ab_pa" ] &&
+	   [ "$(printf '%02x' $(( 0x$_ab_pa & 0x$WCD9320_PA_MASK )))" = "00" ]; then
+		c3_failsafe_disarm
+		jrn "PA chip-verified off after the abort (0x1ab=$_ab_pa); fail-safe disarmed"
+	else
+		jrn "PA NOT VERIFIED OFF AFTER THE ABORT (0x1ab=${_ab_pa:-unreadable}) -- fail-safe LEFT ARMED"
+	fi
 	c3_watch_stop
 	jrn "ABORT complete"
 }

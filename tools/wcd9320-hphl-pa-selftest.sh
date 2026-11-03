@@ -441,6 +441,57 @@ ok "an unknown control refuses" \
    "$(pa_instrument_decision acoustic operator-waived maybe | cut -c1-6)" "REFUSE"
 
 # --------------------------------------------------------------------------
+hdr "THE TEARDOWN MUST HIT THE CONTROL FUNCTION, NOT THE INTERFACE FUNCTION"
+#
+# The first real C3a run's teardown picked 217:a0:0:0, the interface function,
+# whose every write is refused -- and the PA stayed enabled. This rebuilds that
+# exact layout in a scratch tree, interface function listed FIRST, and runs the
+# real teardown script against it.
+TD="$DIR/wcd9320-hphl-pa-teardown.sh"
+mk_codec() {	# mk_codec <root> -- the two functions, as this phone shows them
+	mkdir -p "$1/217:a0:0:0" "$1/217:a0:1:0"
+	: > "$1/217:a0:0:0/hphl_pa_test"
+	echo "interface function: not applicable" > "$1/217:a0:0:0/hphl_pa_state"
+	: > "$1/217:a0:1:0/hphl_pa_test"
+	printf 'pa_on=0 prep_on=0\npa_0x1ab=80 lgain_0x1ae=00 dac_0x1b1=00\n' \
+		> "$1/217:a0:1:0/hphl_pa_state"
+}
+mk_codec "$TMP/slim"
+SLIM_DEVICES="$TMP/slim" C3A_JOURNAL="$TMP/td.j" sh "$TD" selftest >/dev/null 2>&1
+ok "the abort reached the CONTROL function" \
+   "$(cat "$TMP/slim/217:a0:1:0/hphl_pa_test")" "abort"
+ok "nothing was written to the interface function" \
+   "$(cat "$TMP/slim/217:a0:0:0/hphl_pa_test")" ""
+ok "the PA was read back afterwards" \
+   "$(grep -c 'PA_AFTER_TEARDOWN 0x1ab=80 masked=00' "$TMP/td.j")" "1"
+ok "the interface function was named and skipped" \
+   "$(grep -c 'skipping .*217:a0:0:0' "$TMP/td.j")" "1"
+
+mkdir -p "$TMP/ifdonly/217:a0:0:0"
+: > "$TMP/ifdonly/217:a0:0:0/hphl_pa_test"
+echo "interface function: not applicable" > "$TMP/ifdonly/217:a0:0:0/hphl_pa_state"
+SLIM_DEVICES="$TMP/ifdonly" C3A_JOURNAL="$TMP/td2.j" sh "$TD" selftest >/dev/null 2>&1
+ok "interface function alone: no write, and it says so" \
+   "$(cat "$TMP/ifdonly/217:a0:0:0/hphl_pa_test")$(grep -c 'NO CONTROL FUNCTION' "$TMP/td2.j")" "1"
+
+mk_codec "$TMP/stuck"
+printf 'pa_0x1ab=a0\n' > "$TMP/stuck/217:a0:1:0/hphl_pa_state"
+SLIM_DEVICES="$TMP/stuck" C3A_JOURNAL="$TMP/td3.j" sh "$TD" selftest >/dev/null 2>&1
+ok "a PA still on after teardown is shouted, not just logged" \
+   "$(grep -c 'THE PA IS STILL ON AFTER TEARDOWN' "$TMP/td3.j")" "1"
+
+#
+# THE CLASS, NOT THE INSTANCE. Every C3a script that walks the slimbus devices
+# must either use find_devices() or discriminate on "not applicable". A third
+# copy of the discovery logic without it is how this would happen again.
+_bad=""
+for _f in "$DIR"/wcd9320-hphl-pa-*.sh; do
+	grep -qE 'SLIM_DEVICES|slimbus/devices' "$_f" || continue
+	grep -qE 'not applicable|find_devices' "$_f" || _bad="$_bad $(basename "$_f")"
+done
+ok "no C3a script picks a slimbus function blind" "${_bad:-none}" "none"
+
+# --------------------------------------------------------------------------
 hdr "counts and constants"
 ok "writes per cycle"  "$WCD9320_PA_WRITES_PER_CYCLE" "32"
 ok "writes for two cycles" "$WCD9320_PA_WRITES_TOTAL" "64"
