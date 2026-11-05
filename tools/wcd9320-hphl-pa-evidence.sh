@@ -465,6 +465,18 @@ c3_preflight() {	# c3_preflight <arming?>
 	fi
 	jrn "stimulus declared at $DBFS dBFS"
 
+	_pf_g=$(pa_gain_ok "$WCD9320_PA_GAIN_FIELD")
+	if [ "$_pf_g" != "OK" ]; then
+		say "INVALID SETUP: C3A_GAIN_FIELD=$WCD9320_PA_GAIN_FIELD -- ${_pf_g#REFUSE:}"
+		say "  Two lowercase hex digits, 00 (maximum) .. 14 (minimum, the default)."
+		return 1
+	fi
+	if [ ! -e "$PGD/hphl_pa_gain" ]; then
+		say "INVALID SETUP: this module has no hphl_pa_gain -- r176 (pa-rc2) or later"
+		return 1
+	fi
+	jrn "gain field $WCD9320_PA_GAIN_FIELD (14 = minimum, 00 = maximum)"
+
 	PRE=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 	DPRE=$(cat "$PGD/hphl_dac_state" 2>/dev/null)
 	_pf_pa=$(rv "$PRE" pa_0x1ab)
@@ -553,7 +565,8 @@ c3_cycle() {	# c3_cycle <n>
 	eval "_cy_st=\$C${_cy}_DAC"
 	eval "_cy_dst=\$C${_cy}_DDAC"
 	_cy_bad=""
-	[ "$(printf '%02x' $(( 0x$(rv "$_cy_st" lgain_0x1ae) & 0x3f )))" = "34" ] ||
+	[ "$(printf '%02x' $(( 0x$(rv "$_cy_st" lgain_0x1ae) & 0x3f )))" = \
+	  "$(printf '%02x' $(( 0x20 | 0x$WCD9320_PA_GAIN_FIELD )))" ] ||
 		_cy_bad="$_cy_bad gain=$(rv "$_cy_st" lgain_0x1ae)"
 	[ "$(rv "$_cy_st" dac_0x1b1)" = "c0" ] ||
 		_cy_bad="$_cy_bad dac=$(rv "$_cy_st" dac_0x1b1)"
@@ -778,6 +791,7 @@ launch)
 	#
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=HOLD_PA_OFF=$HOLD_PA_OFF"
+	CMD="$CMD --setenv=C3A_GAIN_FIELD=$WCD9320_PA_GAIN_FIELD"
 	CMD="$CMD --setenv=HOLD_PA_ON=$HOLD_PA_ON --setenv=HOLD_TONE=$HOLD_TONE"
 	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM --setenv=CYCLES=$CYCLES"
 	CMD="$CMD --setenv=C3A_INSTRUMENT=$INSTRUMENT"
@@ -835,6 +849,21 @@ if ! c3_preflight arm; then
 fi
 
 #
+# THE GAIN FIELD, set BEFORE anything is armed and read back from the driver.
+# If the driver refuses it, the run ends here with nothing powered.
+#
+if ! echo "$WCD9320_PA_GAIN_FIELD" > "$PGD/hphl_pa_gain" 2>/dev/null; then
+	jrn "the driver REFUSED gain field $WCD9320_PA_GAIN_FIELD -- nothing was armed"
+	exit 2
+fi
+_g_back=$(sed -n 's/^gain_field=\([0-9a-f]*\).*/\1/p' "$PGD/hphl_pa_gain" 2>/dev/null)
+if [ "$_g_back" != "$WCD9320_PA_GAIN_FIELD" ]; then
+	jrn "gain field reads back ${_g_back:-nothing}, not $WCD9320_PA_GAIN_FIELD -- nothing was armed"
+	exit 2
+fi
+jrn "gain field $WCD9320_PA_GAIN_FIELD set and read back"
+
+#
 # The approval drop-box. Emptied at the start of every run, and each gate also
 # deletes its own file as it opens, so nothing written before can count.
 #
@@ -882,6 +911,7 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	say "aborted     : $ABORTED $ABORT_WHY"
 	say "cycles run  : $((n - 1)) of $CYCLES"
 	say "stimulus    : $DBFS dBFS, 1 kHz, tone/silence/tone/silence, one stream"
+	say "gain field  : $WCD9320_PA_GAIN_FIELD  (0x1ae[4:0]; 14 = minimum, 00 = maximum)"
 	say "instrument  : $INSTRUMENT"
 	say "control     : ${CONTROL:-none (the PA is enabled)}"
 	if [ "$INSTRUMENT" = "acoustic" ]; then

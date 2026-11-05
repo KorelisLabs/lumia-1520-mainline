@@ -544,6 +544,27 @@ done
 ok "no C3a script picks a slimbus function blind" "${_bad:-none}" "none"
 
 # --------------------------------------------------------------------------
+hdr "THE GAIN FIELD (r176): a setting, defaulting to the minimum"
+ok "the default is the minimum, 14" "$WCD9320_PA_GAIN_FIELD" "14"
+for _gf in 14 00 0c 0a; do
+	ok "gain $_gf is accepted" "$(pa_gain_ok "$_gf")" "OK"
+done
+for _gf in 15 1f ff "" x 014 0A; do
+	ok "gain '$_gf' is refused" "$(pa_gain_ok "$_gf" | cut -c1-6)" "REFUSE"
+done
+#
+# Maximum gain, derived through the same expectation file the runner sources:
+# the prep must reach source-bit-only (20) from the cold 00, and the teardown
+# must still restore the MEASURED baseline.
+( C3A_GAIN_FIELD=00
+  . "$DIR/wcd9320-hphl-pa-expect.sh"
+  pa_derive "$BASE" "$TMP/exp00" )
+ok "at maximum gain the prep reaches 20" "$(get "$TMP/exp00" lgain_0x1ae 3)" "20"
+ok "and the teardown restores the measured 00" "$(get "$TMP/exp00" lgain_0x1ae 6)" "00"
+ok "the abort gate would demand 20 under 3f" \
+   "$(printf '%02x' $(( 0x20 | 0x00 )))" "20"
+
+# --------------------------------------------------------------------------
 hdr "counts and constants"
 ok "writes per cycle"  "$WCD9320_PA_WRITES_PER_CYCLE" "32"
 ok "writes for two cycles" "$WCD9320_PA_WRITES_TOTAL" "64"

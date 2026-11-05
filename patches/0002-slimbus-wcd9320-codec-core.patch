@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-08-29 11:48:18.069057733 -0400
-@@ -0,0 +1,9395 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-05 17:08:06.218422534 -0500
+@@ -0,0 +1,9485 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2013,6 +2013,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 pa_irq_status[WCD9320_PA_IRQ_SAMPLES];
 +	unsigned int pa_irq_n;
 +	bool pa_ocp_seen;
++	/*
++	 * r176: the HPHL gain FIELD the C3a prep writes (0x1ae[4:0]), set
++	 * through hphl_pa_gain. Inverted control: 0x14 is the user-minimum and
++	 * 0x00 the maximum. The default is set EXPLICITLY at probe, because
++	 * this struct is zeroed at allocation and zero here means MAXIMUM.
++	 */
++	u8 pa_gain_field;
 +};
 +
 +/*
@@ -5163,7 +5170,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_HPHL_GAIN_FIELD			0x1f
 +#define WCD9320_HPHL_GAIN_MIN			0x14	/* 20 = user-minimum */
 +#define WCD9320_HPHL_GAIN_CHECK			0x3f	/* source + field */
-+#define WCD9320_HPHL_GAIN_C3A			0x34	/* what C3a demands */
++/*
++ * r176: THE FIELD IS A SETTING, NOT A CONSTANT. WCD9320_HPHL_GAIN_C3A (0x34)
++ * is gone. The first acoustic run at the minimum heard nothing, and the only
++ * reviewed figure for this family's headphone gain (upstream WCD938x: 1.5 dB
++ * steps) puts 0x14 about 30 dB below the top -- well under what the
++ * instrument can hear. So the field is set per run through hphl_pa_gain,
++ * defaults to WCD9320_HPHL_GAIN_MIN, is capped to 0x00..0x14, and the DAC
++ * path demands the source bit plus WHATEVER field was set, read back from the
++ * chip. A constant beside the setting would only be something to drift from.
++ */
 +
 +/*
 + * POP AND CLICK SUPPRESSION, AND THE PAIRING RULE IT BELONGS TO.
@@ -7826,11 +7842,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			dev_err(dev, "c2b: 0x1ae chip read failed: %d\n", ret);
 +			return ret;
 +		}
-+		if ((lgain & WCD9320_HPHL_GAIN_CHECK) != WCD9320_HPHL_GAIN_C3A) {
++		if ((lgain & WCD9320_HPHL_GAIN_CHECK) !=
++		    (WCD9320_HPHL_GAIN_SRC | wcd->pa_gain_field)) {
 +			dev_err(dev,
-+				"c2b: 0x1ae reads %02x -- need %02x under mask %02x; the register gain source and the minimum mapped gain must be established first\n",
-+				lgain & 0xff, WCD9320_HPHL_GAIN_C3A,
-+				WCD9320_HPHL_GAIN_CHECK);
++				"c2b: 0x1ae reads %02x -- need %02x under mask %02x; the register gain source and the gain field set by hphl_pa_gain (%02x) must be established first\n",
++				lgain & 0xff,
++				WCD9320_HPHL_GAIN_SRC | wcd->pa_gain_field,
++				WCD9320_HPHL_GAIN_CHECK, wcd->pa_gain_field);
 +			return -EAGAIN;
 +		}
 +		dev_info(dev,
@@ -8219,7 +8237,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ WCD9320_A_RX_HPH_L_GAIN, WCD9320_HPHL_GAIN_SRC,
 +	  WCD9320_HPHL_GAIN_SRC, "HPHL gain source = this register" },
 +	{ WCD9320_A_RX_HPH_L_GAIN, WCD9320_HPHL_GAIN_FIELD,
-+	  WCD9320_HPHL_GAIN_MIN, "HPHL gain = minimum mapped (inverted control)" },
++	  WCD9320_HPHL_GAIN_MIN,
++	  "HPHL gain field (inverted control) -- hphl_pa_gain, default minimum" },
 +	{ WCD9320_A_RX_HPH_CNP_WG_CTL, 0xff, WCD9320_CNP_WG_CTL_COMP_OFF,
 +	  "wavegen control - compander OFF half" },
 +	{ WCD9320_A_RX_HPH_CNP_WG_TIME, 0xff, WCD9320_CNP_WG_TIME_COMP_OFF,
@@ -8319,6 +8338,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			"c3a: prep is the compander-OFF pairing and compander 1 is on -- refusing the mismatch\n");
 +		return -EINVAL;
 +	}
++	/*
++	 * Defence in depth: the store already refuses anything outside the
++	 * field's 20 steps, but the prep is the code that writes it, so it
++	 * checks again rather than trusting one guard.
++	 */
++	if (wcd->pa_gain_field > WCD9320_HPHL_GAIN_MIN) {
++		dev_err(dev, "c3a: gain field %02x is outside 0x00..0x%02x -- refusing\n",
++			wcd->pa_gain_field, WCD9320_HPHL_GAIN_MIN);
++		return -EINVAL;
++	}
 +	ret = wcd9320_pa_guard(wcd, "before the C3a prep");
 +	if (ret)
 +		return ret;
@@ -8336,9 +8365,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->pa_prep_base_valid = true;
 +
 +	for (i = 0; i < WCD9320_PA_PREP_N; i++) {
++		u8 val = wcd9320_pa_prep_set[i].val;
++
++		/* the gain FIELD row takes the per-run setting */
++		if (wcd9320_pa_prep_set[i].mask == WCD9320_HPHL_GAIN_FIELD)
++			val = wcd->pa_gain_field;
 +		ret = wcd9320_c2b_write(wcd, wcd9320_pa_prep_set[i].reg,
-+					wcd9320_pa_prep_set[i].mask,
-+					wcd9320_pa_prep_set[i].val,
++					wcd9320_pa_prep_set[i].mask, val,
 +					wcd9320_pa_prep_set[i].what);
 +		if (ret)
 +			return ret;
@@ -8390,12 +8423,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * through the teardown, and no inverse is written for them. Inventing an
 + * inverse downstream does not have is the thing this branch does not do.
 + *
-+ * On this silicon three of the four are no-ops anyway: BUCK_MODE_5 bit 1 is
-+ * already clear at cold boot and BUCK_MODE_3 bits 2 and 3 are already set.
-+ * Only NCP_STATIC actually moves, 0x28 -> 0x08. regmap_update_bits() elides a
-+ * write whose value is unchanged, so three of these four transactions may
-+ * never reach the bus -- correct behaviour for configuration bits, and not to
-+ * be mistaken for a skipped step.
++ * CORRECTED IN r176. This comment used to say three of the four are no-ops on
++ * this silicon. That was computed against the COLD map, and it is wrong in
++ * sequence: the C2a class-H enable runs with the DAC, before the PA, and moves
++ * all three registers first (BUCK_MODE_5 00 -> 02, BUCK_MODE_3 ce -> c2,
++ * NCP_STATIC 28 -> 28). So all four POST_PA writes really move bits here --
++ * 02 -> 00, c2 -> ce, 28 -> 08 -- and their end values only coincide with the
++ * cold ones. Found by the first acoustic control run, which skips this step and
++ * ended at exactly 02/c2/28. See section 28b of the C3 mapping.
 + */
 +static int wcd9320_hphl_pa_path(struct wcd9320 *wcd, bool enable)
 +{
@@ -8713,7 +8748,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	n += sysfs_emit_at(buf, n,
 +			   "pa_on=%u prep_on=%u enables=%u disables=%u aborts=%u\n"
-+			   "settle_us=%u guard_tripped=%u ocp_seen=%u\n"
++			   "settle_us=%u guard_tripped=%u ocp_seen=%u gain_field=%02x\n"
 +			   "pa_0x1ab=%02x lgain_0x1ae=%02x dac_0x1b1=%02x\n"
 +			   "wgctl_0x1ac=%02x wgtime_0x1ad=%02x wgocp_0x1a9=%02x chop_0x1a5=%02x\n"
 +			   "ocpctl_0x1aa=%02x clsh_0x320=%02x\n"
@@ -8723,7 +8758,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			   wcd->hphl_pa_enables, wcd->hphl_pa_disables,
 +			   wcd->c3_aborts, wcd->pa_settle_us,
 +			   wcd->pa_guard_tripped ? 1 : 0,
-+			   wcd->pa_ocp_seen ? 1 : 0,
++			   wcd->pa_ocp_seen ? 1 : 0, wcd->pa_gain_field,
 +			   pa & 0xff, lgain & 0xff, dac & 0xff,
 +			   wgctl & 0xff, wgtime & 0xff, wgocp & 0xff,
 +			   chop & 0xff, ocp & 0xff, clsh & 0xff,
@@ -8749,6 +8784,58 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return n;
 +}
 +static DEVICE_ATTR_RO(hphl_pa_state);
++
++/*
++ *   cat hphl_pa_gain          the field the next prep will write
++ *   echo 00 > hphl_pa_gain    set it, hex, 00 (maximum) .. 14 (minimum)
++ *
++ * Refused while prep, the DAC or the PA is up: changing the gain under a live
++ * path would desynchronise the field the DAC path checks from the one on the
++ * chip. Serialised on c3_lock with every other C3 entry point.
++ */
++static ssize_t hphl_pa_gain_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf,
++			  "gain_field=%02x (inverted: %02x is the minimum and the default, 00 the maximum)\n",
++			  wcd->pa_gain_field, WCD9320_HPHL_GAIN_MIN);
++}
++
++static ssize_t hphl_pa_gain_store(struct device *dev,
++				  struct device_attribute *attr,
++				  const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int v;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	ret = kstrtouint(buf, 16, &v);
++	if (ret)
++		return ret;
++	if (v > WCD9320_HPHL_GAIN_MIN)
++		return -ERANGE;
++
++	mutex_lock(&wcd->c3_lock);
++	if (wcd->pa_prep_on || wcd->hphl_pa_on || wcd->hphl_dac_on) {
++		ret = -EBUSY;
++	} else {
++		wcd->pa_gain_field = v;
++		dev_info(dev, "c3a: HPHL gain field set to %02x for the next prep (%s)\n",
++			 v, v == WCD9320_HPHL_GAIN_MIN ? "minimum" :
++			    v == 0 ? "MAXIMUM" : "raised");
++		ret = 0;
++	}
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(hphl_pa_gain);
 +
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
@@ -8782,6 +8869,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_hphl_dac_state.attr,
 +	&dev_attr_hphl_pa_test.attr,
 +	&dev_attr_hphl_pa_state.attr,
++	&dev_attr_hphl_pa_gain.attr,
 +	&dev_attr_cdc_clk_prereq.attr,
 +	&dev_attr_rdac_probe.attr,
 +	&dev_attr_chip_ctl_test.attr,
@@ -9329,6 +9417,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	mutex_init(&wcd->wake_lock);
 +	mutex_init(&wcd->slim_stream_lock);
 +	mutex_init(&wcd->c3_lock);
++	/* zero would mean MAXIMUM on this inverted field -- never rely on it */
++	wcd->pa_gain_field = WCD9320_HPHL_GAIN_MIN;
 +	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
 +	dev_set_drvdata(dev, wcd);
 +
@@ -9779,7 +9869,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("pa-rc1");
++MODULE_VERSION("pa-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

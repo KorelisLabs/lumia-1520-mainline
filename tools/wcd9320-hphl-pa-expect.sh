@@ -90,7 +90,32 @@ pa_apply() {
 # gain SOURCE and bits [4:0] are the FIELD. The inverted control means the
 # field value 0x14 is the user-MINIMUM, and the POR of 0x00 is the user
 # maximum -- so the prep is what stands between this run and full output.
-WCD9320_PA_TRANSFORMS="lgain_0x1ae|20,20 1f,14|-|-|R3f
+# THE GAIN FIELD FOR THIS RUN (r176), hex, 00 (maximum) .. 14 (minimum).
+#
+# The first acoustic run at the minimum heard nothing, and the only reviewed
+# figure for this family (upstream WCD938x: 1.5 dB steps) puts 0x14 about
+# 30 dB below the top -- far under what the instrument can hear. So the field
+# became a per-run setting. It defaults to the minimum, and every expectation
+# that mentions it is derived from it rather than written as a constant.
+WCD9320_PA_GAIN_FIELD="${C3A_GAIN_FIELD:-14}"
+
+# pa_gain_ok <hex> -> OK | REFUSE:<why>
+#
+# Two lowercase hex digits, 00..14. Anything else refuses -- the driver also
+# refuses it, but a run should not get as far as asking.
+pa_gain_ok() {
+	case "$1" in
+	[01][0-9a-f]) ;;
+	*) echo "REFUSE:not-two-lowercase-hex-digits"; return ;;
+	esac
+	if [ $((0x$1)) -le $((0x14)) ]; then
+		echo OK
+	else
+		echo "REFUSE:above-0x14"
+	fi
+}
+
+WCD9320_PA_TRANSFORMS="lgain_0x1ae|20,20 1f,$WCD9320_PA_GAIN_FIELD|-|-|R3f
 wgctl_0x1ac|ff,db|-|-|Rff
 wgtime_0x1ad|ff,58|-|-|Rff
 wgocp_0x1a9|ff,1a|-|-|Rff

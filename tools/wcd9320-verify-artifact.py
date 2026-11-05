@@ -496,6 +496,7 @@ def main():
     # Data objects are never inlined away; the symbol is the right assertion.
     for sym, why in (("dev_attr_hphl_dac_test", "sysfs trigger the gate drives"),
                      ("dev_attr_hphl_dac_state", "sysfs state the gate reads"),
+                     ("dev_attr_hphl_pa_gain", "sysfs, the r176 C3a gain field"),
                      ("dev_attr_hphl_pa_test", "sysfs, the r175 PA trigger"),
                      ("dev_attr_hphl_pa_state", "sysfs, the C3a register set"),
                      ("dev_attr_cdc_clk_prereq", "sysfs, 0x314 only"),
@@ -788,10 +789,11 @@ def main():
     check("the register gain mode chip-verifies 0x1ae",
           "WCD9320_A_RX_HPH_L_GAIN" in dac_path
           and "regmap_read_bypassed" in dac_path
-          and "WCD9320_HPHL_GAIN_C3A" in dac_path,
-          "bit 5 set and the field at 0x14, read from the chip")
+          and "WCD9320_HPHL_GAIN_SRC" in dac_path
+          and "pa_gain_field" in dac_path,
+          "bit 5 set and the field the operator set, read from the chip")
     for sym, want in (("WCD9320_HPHL_GAIN_CHECK", "0x3f"),
-                      ("WCD9320_HPHL_GAIN_C3A", "0x34")):
+                      ("WCD9320_HPHL_GAIN_MIN", "0x14")):
         pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
                          re.M)
         found = pat.findall(ptext_all)
@@ -803,6 +805,49 @@ def main():
           re.search(r'sysfs_streq\(buf,\s*"dac-on"\)(.{0,200}?)'
                     r"WCD9320_GAIN_SRC_COMPANDER", dac_store, re.S) is not None,
           "the r174 trigger is unchanged in meaning")
+
+    # ---- r176: THE GAIN FIELD IS A SETTING, AND ITS DEFAULT IS THE MINIMUM --
+    #
+    # The C3a gain field moved from a constant to hphl_pa_gain so a run can
+    # raise it. The danger in that is specific: struct wcd9320 is zeroed at
+    # allocation, and a field of 0x00 is the MAXIMUM on this inverted control.
+    # A build that forgot to initialise it would default to full analog gain
+    # with nothing anywhere saying so. So the default, the cap and the lock are
+    # all pinned here, in the source, before a build can reach the phone.
+    gain_store = func_body("hphl_pa_gain_store")
+    prep_body = func_body("wcd9320_pa_prep")
+    probe_body = func_body("wcd9320_probe")
+    check("hphl_pa_gain_store found in source", len(gain_store) > 0,
+          "%d bytes of body" % len(gain_store))
+    check("the gain field defaults to the MINIMUM at probe",
+          re.search(r"wcd->pa_gain_field\s*=\s*WCD9320_HPHL_GAIN_MIN\s*;",
+                    probe_body) is not None,
+          "a zeroed struct would otherwise mean 0x00, the maximum")
+    check("the gain store refuses anything outside 0x00..0x14",
+          "> WCD9320_HPHL_GAIN_MIN" in gain_store,
+          "the 20-step field and nothing beyond it")
+    check("the gain cannot change while the path is up",
+          all(s in gain_store for s in ("pa_prep_on", "hphl_pa_on",
+                                        "hphl_dac_on")),
+          "prep, PA and DAC must all be off")
+    check("the gain store serialises on c3_lock",
+          "mutex_lock(&wcd->c3_lock)" in gain_store,
+          "it cannot race a sequence")
+    check("the prep refuses an out-of-range field itself",
+          "pa_gain_field > WCD9320_HPHL_GAIN_MIN" in prep_body,
+          "defence in depth: the store is not the only guard")
+    #
+    # CODE lines only. The first form of this check searched the whole source,
+    # and failed r176 on the comment that explains why the constant was
+    # removed -- a guard satisfied or defeated by prose is the checker defect
+    # this project keeps having to fix.
+    stale = [ln for ln in added
+             if "WCD9320_HPHL_GAIN_C3A" in ln
+             and not ln.lstrip().startswith(("*", "/*", "//"))]
+    check("WCD9320_HPHL_GAIN_C3A is gone from the code",
+          not stale,
+          "%d code line(s) still name it -- prose mentions are allowed"
+          % len(stale))
 
     # ---- POST_PA is PROGRAMMED state, not a reversible pair ----------
     #
