@@ -103,6 +103,44 @@ chosen and justified when mapping.
   negative offset could clip at `z`. This has to be characterised before any
   number is trusted.
 
+## Addendum (2026-11-07): the HPH channel's scale, from zdet
+
+r178 showed the HPH mux input has its own offset, so the micbias
+calibration does not give HPH volts (`wcd9320-hphl-dc-vm-mapping.md`
+§10b-c). Downstream's zdet is the only reference for converting HPH
+counts.
+
+- **Three readings:**
+  - **L0:** HPHL at rest, mux `0xF0`.
+  - **L1:** HPHL with the ical current injected, mux `0xF8`.
+  - **L2:** HPHL after the PA ramp generator has stepped the output.
+- **Impedance:** Taiko computes it from the ratio
+  `(L0 - L1) / (L0 - L2)` times constants (rref 11333, alpha 364/65536,
+  beta 3855/65536), which gives about 3.7 Ω per unit of ratio. A
+  plausible headset Z from our own L0/L1/L2 would validate the chain.
+- **The ramp is NOT a voltage register.** TomTom's own comment on
+  `PA_RAMP_B4 = 0x69` is "105 number of samples for PA RAMP" (cached
+  `mbhc/nemo310-wcd9330.c`). Taiko's "0x56 for 10mv. 0xC0 is for 50mv" is
+  therefore the output height under **downstream's static-PA
+  configuration**, `wcd9xxx_prepare_static_pa()`. That sets
+  `RX_HPH_L_GAIN = 0x2C`, which is register gain with field `0x0C`, and
+  `CDC_RX1_B6 = 0x81`. At any other HPH gain the same ramp is a
+  different voltage: about 8x larger at field `00`, if the steps are
+  1.5 dB.
+- **Then the scale is `50 mV / (L2 - L0)`, valid only under that
+  configuration.** That is the number that turns option 1's +59.6
+  counts into millivolts.
+- **Downstream drives BOTH channels.** The static PA writes
+  `0x1ab |= 0x30` (HPHL and HPHR), and `PA_RAMP_B2 = 0x05` is "Start the
+  PA ramp on HPH L and R"; `0x0A` ramps both back down. This port's PA
+  fence allows HPHL only and has never written the HPHR bit.
+  - A left-only variant would set `0x20` and ramp left only (B2 bit 0 by
+    the L/R pattern, unverified). It would skip the HPHR entries of the
+    static-PA list.
+  - It would keep the fence, but it departs from the only sequence known
+    to work, and the 50 mV / 3.7 Ω constants were never published for a
+    single channel.
+
 ## Open questions for the mapping
 
 1. The minimum register set for an L0-only reading. The full zdet sequence
