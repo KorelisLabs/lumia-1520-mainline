@@ -191,6 +191,14 @@ row() {
 	eval "R_${_id}_IDLE_RC=$_c"
 	eval "R_${_id}_IDLE_PEND=$(rv "$_st" pending)"
 	eval "R_${_id}_IDLE_SRC=$(rv "$_st" src)"
+	# Graded on OVERFLOW/UNDERFLOW only. MEASURED at r177: PORT_CLOSED can
+	# latch again a few ms AFTER the clear, from the previous row's stream
+	# teardown completing late on the bus -- the driver's own readback
+	# inside the clear said 00 while this read, moments later, saw 04.
+	_isrc=$(rv "$_st" src)
+	# an empty read becomes ff, which fails the check rather than the shell
+	_ou=$(( 0x${_isrc:-ff} & 0x03 ))
+	eval "R_${_id}_IDLE_OU=$_ou"
 	pa_sample "$_id-idle"
 
 	for _w in "$@"; do
@@ -296,7 +304,7 @@ POST_PS=$(pss)
 		say ""
 		say "-- row $_id --"
 		eval "check \"$_id idle clear rc\"        \"\$R_${_id}_IDLE_RC\" 0"
-		eval "check \"$_id idle clear took\"      \"\$R_${_id}_IDLE_PEND\" 0"
+		eval "check \"$_id idle: no over/underflow\" \"\$R_${_id}_IDLE_OU\" 0"
 		eval "check \"$_id setup\"                \"\$R_${_id}_SETUP_RC\" 0"
 		eval "check \"$_id stream up at s0\"      \"\$R_${_id}_UP0\" 1"
 		eval "check \"$_id stream up at s1\"      \"\$R_${_id}_UP1\" 1"
@@ -358,6 +366,10 @@ POST_PS=$(pss)
 		OUTCOME="unclassified -- read the table"
 	fi
 	say "OUTCOME $OUTCOME"
+	say "CAUTION one steady window per row. MEASURED at r177: with RX1 on, a"
+	say "  stream is either clean throughout or overflowing throughout, and"
+	say "  which one is not decided by 0x314 (6 clean of 15). A single window"
+	say "  cannot tell a cause from that coin flip -- repeat before concluding."
 	if [ -n "$S0BAD" ]; then
 		say "NOTE rows with s0 AND s1 pending:$S0BAD -- the condition re-latched within the read latency (it is continuous) or the window clear did not take. The idle clear check above says which."
 	fi

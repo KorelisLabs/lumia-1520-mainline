@@ -1,0 +1,20 @@
+r177 confirmation, 20260831T151342Z, module port-flow-rc1
+forced journal starts at 6
+step  setup     s0:pend/src  s1:pend/src  verdict   pa
+1D    clk rx1   1/01         1/01         OVERFLOW  00  (hw_ptr_advance=290880)
+2C    rx1       1/01         1/01         OVERFLOW  00  (hw_ptr_advance=290880)
+3D    clk rx1   0/00         0/00         clean     00  (hw_ptr_advance=288000)
+4C    rx1       0/00         0/00         clean     00  (hw_ptr_advance=290880)
+
+forced journal now:
+forced_n=10 ring=16
+f0_reg=314 f0_mask=ff f0_val=03 f0_hw=00 f0_dir=set
+f1_reg=314 f1_mask=ff f1_val=00 f1_hw=00 f1_dir=clear
+f2_reg=314 f2_mask=ff f2_val=03 f2_hw=00 f2_dir=set
+f3_reg=30d f3_mask=02 f3_val=02 f3_hw=00 f3_dir=set
+f4_reg=30d f4_mask=02 f4_val=00 f4_hw=00 f4_dir=clear
+f5_reg=314 f5_mask=ff f5_val=00 f5_hw=00 f5_dir=clear
+f6_reg=314 f6_mask=ff f6_val=03 f6_hw=00 f6_dir=set
+f7_reg=314 f7_mask=ff f7_val=00 f7_hw=00 f7_dir=clear
+f8_reg=314 f8_mask=ff f8_val=03 f8_hw=00 f8_dir=set
+f9_reg=314 f9_mask=ff f9_val=00 f9_hw=00 f9_dir=clear

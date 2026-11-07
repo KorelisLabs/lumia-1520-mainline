@@ -152,3 +152,88 @@ leaves `src` non-zero while the status bit clears is recorded as
 - None of downstream's probe tables are applied. The differences found
   (`NCP_CLK`, `BIAS_CURR_CTL_2`, `HPH_L_TEST`) are analog tuning recorded in
   the evidence file. They are candidates for outcome 2, not for this run.
+
+---
+
+## RESULT (2026-11-07, one cold boot of `port-flow-rc1`)
+
+Evidence, all from one boot:
+
+- `wcd9320-port-flow-20260831T151141Z.txt`: the gate, 88/1.
+- `wcd9320-port-flow-confirm-20260831T151141Z.txt`: C and D alternated.
+- `wcd9320-port-flow-repeat-20260831T151141Z.txt`: C, 8 times.
+
+The phone clock reads August, so the filenames carry the phone's stamp.
+
+**Safety:** the PA was masked `00` at all 32 gate samples and at every
+confirmation and repeat sample. The forced journal held exactly the entries
+expected: 6 from the gate, then 4 from the confirmation.
+
+**The one gate failure is a gate defect.** B0's idle clear: the driver's own
+readback inside the clear said `src 00`, and the gate's read moments later
+saw `04`. PORT_CLOSED from row A's teardown latched again *after* the clear.
+The idle check now grades OVERFLOW/UNDERFLOW only.
+
+### What the data says
+
+| row | setup | steady window |
+|---|---|---|
+| A  | data, RX1 off | OVERFLOW, continuous |
+| B0 | channel up with no AFE, RX1 off | OVERFLOW |
+| B  | channel up with no AFE, RX1 on | OVERFLOW |
+| C  | data, RX1 on | clean |
+| D  | as C, plus forced `0x314` | OVERFLOW |
+| E  | full C3a prep, PA off | OVERFLOW |
+
+The gate's automatic label was outcome 3. **That label is wrong**, because
+the confirmation reversed the C/D difference:
+
+| step | 1D | 2C | 3D | 4C |
+|---|---|---|---|---|
+| result | OVERFLOW | **OVERFLOW** | **clean** | clean |
+
+C alone, eight times: OVERFLOW, OVERFLOW, clean, clean, OVERFLOW, clean,
+OVERFLOW, OVERFLOW. That is **3 of 8**. The RC oscillator tuner `0x1fd` read
+`15` throughout.
+
+Across all three files, **6 of 15 windows with RX1 on were clean, with and
+without the `0x314` write**.
+
+### Conclusions, in order of how firmly they are held
+
+1. **Bytes reach the codec.** That is Branch B's open question, answered for
+   the first time. With RX1 off, port 16 overflows continuously while the
+   DSP streams.
+2. **The RX path can drain the port on the RC oscillator**, with no `0x314`
+   write at all: C, 3D and 4C were clean for the whole two seconds. A
+   free-running consumer slipping against the bus would latch an overflow
+   within that window, so a clean window means the consumer is keeping pace.
+3. **`0x314` is not the variable.** D was clean once and C overflowed once.
+   The first pass's C-versus-D contrast was the coin flip described next.
+4. **Each stream is bistable.** It is clean throughout or overflowing
+   throughout: `s0`, read straight after the clear, already agrees with `s1`
+   every time. Whatever decides it is fixed when the stream starts, and lands
+   on clean roughly 40% of the time.
+5. **OVERFLOW is not simply "producer faster than consumer".** B and B0
+   overflow with the AFE never started. Either the ADSP drives the active
+   channel regardless, or OVERFLOW also covers a port that never locked to
+   valid data. Which one is unresolved.
+
+### What this does NOT explain
+
+Silence. A clean window is a draining port. With a 40% clean rate, it is
+likely that at least one of the r176 acoustic cycles streamed into a draining
+port, and none of them was heard. The port's state during those cycles was
+never recorded, though, and E (the C3a configuration) was sampled only once.
+So nothing here separates "the samples never got past the port" from "the
+samples got through and the silence is further down": the RDAC clock `0x30d`,
+the DAC, or the analog stage.
+
+### The next measurement, small
+
+Record port 16's state inside each acoustic tone cycle: clear at tone start,
+read at tone end. A cycle with a **clean** port and silence at the mic puts
+the fault downstream of the interpolator. That needs no driver change, only
+two lines in the C3a runner. Before that, E repeated four times on a fresh
+boot (four forced entries each) gives the clean rate under the exact C3a
+configuration.

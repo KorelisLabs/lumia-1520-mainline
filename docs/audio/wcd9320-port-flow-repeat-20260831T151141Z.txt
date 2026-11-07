@@ -1,0 +1,13 @@
+1fd: 15
+r177 repeat, 20260831T151528Z, module port-flow-rc1, N=8
+step  tuner-before  s0:pend/src  s1:pend/src  verdict   tuner-s1  pa
+1     15            1/01         1/01         OVERFLOW  15        00
+2     15            1/01         1/01         OVERFLOW  15        00
+3     15            0/00         0/00         clean     15        00
+4     15            0/00         0/00         clean     15        00
+5     15            1/01         1/01         OVERFLOW  15        00
+6     15            0/00         0/00         clean     15        00
+7     15            1/01         1/01         OVERFLOW  15        00
+8     15            1/01         1/01         OVERFLOW  15        00
+
+clean windows: 3 of 8

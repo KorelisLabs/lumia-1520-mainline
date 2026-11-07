@@ -1,0 +1,170 @@
+WCD9320 r177 port-flow evidence
+mode              : wcd9320-port-flow
+stamp             : 20260831T151141Z
+module            : port-flow-rc1 (expect port-flow-rc1, manifest)
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+runner            : /home/user/wcd9320-tools/pcm-run-measured -t 6, settle 2 s, watch 2 s
+design            : docs/audio/wcd9320-rx-port-flow-mapping.md
+
+port 16 at the start of the run (before any clear):
+  read_rc=0 port=16 rx0=00 rx1=00 tx0=00 tx1=00 pending=0 src=00 overflow=0 underflow=0 closed=0 clears=0 clear_rc=0
+
+=== validity and safety (graded) ===
+  PASS  mixer route set                  0
+  PASS  forced journal: this run's entries 6
+  PASS  PA masked 00 at every sample     0
+
+-- row A --
+  PASS  A idle clear rc                  0
+  PASS  A idle clear took                0
+  PASS  A setup                          0
+  PASS  A stream up at s0                1
+  PASS  A stream up at s1                1
+  PASS  A window clear rc                0
+  PASS  A s1 read rc                     0
+  PASS  A helper start                   0
+  PASS  A helper ran                     1
+  PASS  A helper final                   0
+  PASS  A DSP consumed frames            hw_ptr_advance=289920
+  PASS  A torn down: stream              0
+  PASS  A torn down: rx1                 0
+  PASS  A torn down: dac                 0
+  PASS  A torn down: prep                0
+
+-- row B0 --
+  PASS  B0 idle clear rc                 0
+  FAIL  B0 idle clear took               got=1 want=0
+  PASS  B0 setup                         0
+  PASS  B0 stream up at s0               1
+  PASS  B0 stream up at s1               1
+  PASS  B0 window clear rc               0
+  PASS  B0 s1 read rc                    0
+  PASS  B0 stream-on rc                  0
+  PASS  B0 stream-off rc                 0
+  PASS  B0 torn down: stream             0
+  PASS  B0 torn down: rx1                0
+  PASS  B0 torn down: dac                0
+  PASS  B0 torn down: prep               0
+
+-- row B --
+  PASS  B idle clear rc                  0
+  PASS  B idle clear took                0
+  PASS  B setup                          0
+  PASS  B stream up at s0                1
+  PASS  B stream up at s1                1
+  PASS  B window clear rc                0
+  PASS  B s1 read rc                     0
+  PASS  B stream-on rc                   0
+  PASS  B stream-off rc                  0
+  PASS  B torn down: stream              0
+  PASS  B torn down: rx1                 0
+  PASS  B torn down: dac                 0
+  PASS  B torn down: prep                0
+
+-- row C --
+  PASS  C idle clear rc                  0
+  PASS  C idle clear took                0
+  PASS  C setup                          0
+  PASS  C stream up at s0                1
+  PASS  C stream up at s1                1
+  PASS  C window clear rc                0
+  PASS  C s1 read rc                     0
+  PASS  C helper start                   0
+  PASS  C helper ran                     1
+  PASS  C helper final                   0
+  PASS  C DSP consumed frames            hw_ptr_advance=290880
+  PASS  C torn down: stream              0
+  PASS  C torn down: rx1                 0
+  PASS  C torn down: dac                 0
+  PASS  C torn down: prep                0
+
+-- row D --
+  PASS  D idle clear rc                  0
+  PASS  D idle clear took                0
+  PASS  D setup                          0
+  PASS  D stream up at s0                1
+  PASS  D stream up at s1                1
+  PASS  D window clear rc                0
+  PASS  D s1 read rc                     0
+  PASS  D helper start                   0
+  PASS  D helper ran                     1
+  PASS  D helper final                   0
+  PASS  D DSP consumed frames            hw_ptr_advance=289920
+  PASS  D torn down: stream              0
+  PASS  D torn down: rx1                 0
+  PASS  D torn down: dac                 0
+  PASS  D torn down: prep                0
+
+-- row E --
+  PASS  E idle clear rc                  0
+  PASS  E idle clear took                0
+  PASS  E setup                          0
+  PASS  E stream up at s0                1
+  PASS  E stream up at s1                1
+  PASS  E window clear rc                0
+  PASS  E s1 read rc                     0
+  PASS  E helper start                   0
+  PASS  E helper ran                     1
+  PASS  E helper final                   0
+  PASS  E DSP consumed frames            hw_ptr_advance=289920
+  PASS  E torn down: stream              0
+  PASS  E torn down: rx1                 0
+  PASS  E torn down: dac                 0
+  PASS  E torn down: prep                0
+
+=== port 16 observations (the result -- reported, not graded) ===
+row  data  setup               idle-src  s0:pend/src  s1:pend/src  s1 events
+A    1     (none)              00        1/01         1/01         OVERFLOW
+B0   0     (none)              04        1/01         1/01         OVERFLOW
+B    0     rx1                 00        1/01         1/01         OVERFLOW
+C    1     rx1                 00        0/00         0/00         clean
+D    1     clk rx1             00        1/01         1/01         OVERFLOW
+E    1     prep clk rx1 dac    00        1/01         1/01         OVERFLOW
+
+OUTCOME 3: consumption works in C/D and fails under the full prep (E) -- bisect the prep.
+NOTE rows with s0 AND s1 pending: A B0 B D E -- the condition re-latched within the read latency (it is continuous) or the window clear did not take. The idle clear check above says which.
+
+port 16 at the end of the run: read_rc=0 port=16 rx0=01 rx1=00 tx0=00 tx1=00 pending=1 src=05 overflow=1 underflow=0 closed=1 clears=12 clear_rc=0
+
+PA samples: A-idle:00 A-s0:00 A-s1:00 A-down:00 B0-idle:00 B0-s0:00 B0-s1:00 B0-down:00 B-idle:00 B-rx1:00 B-s0:00 B-s1:00 B-down:00 C-idle:00 C-rx1:00 C-s0:00 C-s1:00 C-down:00 D-idle:00 D-clk:00 D-rx1:00 D-s0:00 D-s1:00 D-down:00 E-idle:00 E-prep:00 E-clk:00 E-rx1:00 E-dac:00 E-s0:00 E-s1:00 E-down:00
+
+-- forced journal --
+forced_n=6 ring=16
+f0_reg=314 f0_mask=ff f0_val=03 f0_hw=00 f0_dir=set
+f1_reg=314 f1_mask=ff f1_val=00 f1_hw=00 f1_dir=clear
+f2_reg=314 f2_mask=ff f2_val=03 f2_hw=00 f2_dir=set
+f3_reg=30d f3_mask=02 f3_val=02 f3_hw=00 f3_dir=set
+f4_reg=30d f4_mask=02 f4_val=00 f4_hw=00 f4_dir=clear
+f5_reg=314 f5_mask=ff f5_val=00 f5_hw=00 f5_dir=clear
+
+-- dmesg, port-status and stream lines --
+[   85.469910] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#1), now rx 00 00 src 00
+[   85.644043] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[   87.573735] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#2), now rx 01 00 src 01
+[   91.648910] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[   91.950104] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#3), now rx 00 00 src 00
+[   92.136139] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[   94.165289] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#4), now rx 01 00 src 01
+[   96.489050] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[   96.702330] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#5), now rx 00 00 src 00
+[   96.948373] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[   98.987562] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#6), now rx 01 00 src 01
+[  101.315303] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[  101.528622] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#7), now rx 00 00 src 00
+[  101.804682] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  103.697992] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#8), now rx 00 00 src 00
+[  107.823198] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[  108.099248] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#9), now rx 00 00 src 00
+[  108.603841] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  110.401342] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#10), now rx 01 00 src 01
+[  114.653665] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[  115.073640] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#11), now rx 00 00 src 00
+[  116.052559] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  117.858529] wcd9320 217:a0:1:0: port-status: CLEARED port 16 (#12), now rx 01 00 src 01
+[  122.107580] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+
+=== verdict ===
+mode   : wcd9320-port-flow
+checks : 88 passed, 1 failed
+VERDICT: FAIL (wcd9320-port-flow)
