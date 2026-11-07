@@ -88,6 +88,7 @@ grep -q '^ *0 ' /proc/asound/cards 2>/dev/null || {
 	say "INVALID RUN: no sound card."; exit 2; }
 
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
+chain_bit() { [ -n "$1" ] && printf '%02x' $(( 0x$1 & 0x20 )) || echo READ-FAILED; }  # r180: bit 3 is chip-owned
 state() { cat "$RX1S" 2>/dev/null; }
 
 PRE=$(state)
@@ -95,7 +96,7 @@ BASE_BAD=""
 [ "$(rv "$PRE" on)" = "0" ]           || BASE_BAD="$BASE_BAD chain_on"
 [ "$(rv "$PRE" mux_0x380)" = "00" ]   || BASE_BAD="$BASE_BAD mux"
 [ "$(rv "$PRE" clk_0x30f)" = "00" ]   || BASE_BAD="$BASE_BAD interp_clk"
-[ "$(rv "$PRE" chain_0x2b5)" = "80" ] || BASE_BAD="$BASE_BAD chain"
+[ "$(chain_bit "$(rv "$PRE" chain_0x2b5)")" = "00" ] || BASE_BAD="$BASE_BAD chain"
 [ "$(rv "$PRE" ctl_0x370)" = "30" ]   || BASE_BAD="$BASE_BAD comp1_ctl"
 [ "$(rv "$PRE" clk_0x310)" = "00" ]   || BASE_BAD="$BASE_BAD comp1_clk"
 [ "$(rv "$PRE" comp1_status_0x376)" = "03" ] || BASE_BAD="$BASE_BAD comp1_status"
@@ -263,7 +264,7 @@ WARNS=$(dmesg 2>/dev/null | grep -cE 'WARNING:|BUG:|Call trace' || true)
 	check "rx1-on accepted" "$RX1_ON_RC" "0"
 	check "0x380 selects RX1" "$C_MUX" "05"
 	check "0x30f interpolator on" "$C_ICLK" "01"
-	check "0x2b5 chain enabled" "$C_CHAIN" "a0"
+	check "0x2b5 chain bit enabled" "$(chain_bit "$C_CHAIN")" "20"
 	check "C: one ASM RUN" "$C_RUN" "1"
 	check "D: one ASM RUN" "$D_RUN" "1"
 	check_cond "C: periods completed" \
@@ -279,7 +280,7 @@ WARNS=$(dmesg 2>/dev/null | grep -cE 'WARNING:|BUG:|Call trace' || true)
 		"an analog register changed"
 	check "rx1-off accepted" "$RX1_OFF_RC" "0"
 	check "comp1-off accepted" "$C1_OFF_RC" "0"
-	check "teardown: chain off" "$(rv "$POST" chain_0x2b5)" "80"
+	check "teardown: chain bit off" "$(chain_bit "$(rv "$POST" chain_0x2b5)")" "00"
 	check "teardown: interpolator off" "$(rv "$POST" clk_0x30f)" "00"
 	check "teardown: compander off" "$(rv "$POST" ctl_0x370)" "30"
 	check "teardown: compander clocks off" "$(rv "$POST" clk_0x310)" "00"

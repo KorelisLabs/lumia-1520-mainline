@@ -25,8 +25,8 @@
 # disagree with the tables that were reviewed, the counts move and this run
 # fails rather than quietly measuring a different driver.
 #
-#   cacheable_checked  readable AND NOT volatile   460
-#   volatile_checked   readable AND volatile       209
+#   cacheable_checked  readable AND NOT volatile   458 (460 before r180)
+#   volatile_checked   readable AND volatile       211 (209 before r180)
 #   sum                readable                    669
 #
 # WHY THE COUNTS ARE CHECKED AND NOT JUST THE MISMATCHES
@@ -62,8 +62,8 @@ MASK_ALL="ff ff 3f 7f"
 
 # Derived from the built module's own ELF, not from the driver's report of
 # itself. Override only when the tables are regenerated.
-EXPECT_CACHEABLE="${EXPECT_CACHEABLE:-460}"
-EXPECT_VOLATILE="${EXPECT_VOLATILE:-209}"
+EXPECT_CACHEABLE="${EXPECT_CACHEABLE:-458}"  # r180: 460 -> 458 / 209 -> 211 (0x2b5, 0x2bd volatile)
+EXPECT_VOLATILE="${EXPECT_VOLATILE:-211}"
 EXPECT_READABLE="${EXPECT_READABLE:-669}"
 
 require_module_version

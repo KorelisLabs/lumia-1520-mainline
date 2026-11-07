@@ -171,7 +171,7 @@ LIVE_STATUS=$(sed -n 's/^status=\([0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]*\) mask
 		_cc="/tmp/.wcd9320-cc-$$"
 		cat "$PGD/cache_check" > "$_cc" 2>/dev/null
 		check "cacheable mismatches" "$(kv "$_cc" mismatches)" "0"
-		check "cacheable registers checked" "$(kv "$_cc" cacheable_checked)" "460"
+		check "cacheable registers checked" "$(kv "$_cc" cacheable_checked)" "${EXPECT_CACHEABLE:-458}"
 		check "read errors" "$(kv "$_cc" read_errors)" "0"
 		rm -f "$_cc"
 	else

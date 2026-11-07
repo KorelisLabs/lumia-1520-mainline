@@ -84,6 +84,7 @@ grep -q '^ *0 ' /proc/asound/cards 2>/dev/null || {
 	say "INVALID RUN: no sound card."; exit 2; }
 
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
+chain_bit() { [ -n "$1" ] && printf '%02x' $(( 0x$1 & 0x20 )) || echo READ-FAILED; }  # r180: bit 3 is chip-owned
 
 PRE=$(cat "$RX1S" 2>/dev/null)
 P_ON=$(rv "$PRE" on)
@@ -269,7 +270,7 @@ WARNS=$(dmesg 2>/dev/null | grep -cE 'WARNING:|BUG:|Call trace' || true)
 	check "rx1-on accepted" "$RX1_ON_RC" "0"
 	check "0x380 selects RX1" "$O_MUX" "05"
 	check "0x30f interpolator clock on" "$O_CLK" "01"
-	check "0x2b5 chain enabled" "$O_CHAIN" "a0"
+	check "0x2b5 chain bit enabled" "$(chain_bit "$O_CHAIN")" "20"
 	check "0x2b4 rate still 48 kHz" "$O_RATE" "78"
 	check "state: path on" "$O_ON" "1"
 	check_cond "five writes were made" \
@@ -297,7 +298,7 @@ WARNS=$(dmesg 2>/dev/null | grep -cE 'WARNING:|BUG:|Call trace' || true)
 	check "rx1-off accepted" "$RX1_OFF_RC" "0"
 	check "teardown: 0x380 back to 00" "$Q_MUX" "00"
 	check "teardown: 0x30f back to 00" "$Q_CLK" "00"
-	check "teardown: 0x2b5 back to 80" "$Q_CHAIN" "80"
+	check "teardown: 0x2b5 chain bit clear" "$(chain_bit "$Q_CHAIN")" "00"
 	check "teardown: path off" "$Q_ON" "0"
 	check "no kernel WARNING/BUG" "$WARNS" "0"
 

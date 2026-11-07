@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 12:59:28.472283000 -0500
-@@ -0,0 +1,10749 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 13:24:58.124131100 -0500
+@@ -0,0 +1,10766 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1079,8 +1079,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * readable : 669 of 1024
 + *            351 undocumented map holes rejected
 + *            4 write-only (INTR_CLEAR) rejected
-+ * volatile : 401 (taiko_volatile + 0x1fd measured)
-+ * defaults : 460 -- every eligible cacheable register,
++ * volatile : 403 (taiko_volatile + 0x1fd, 0x2b5, 0x2bd measured)
++ * defaults : 458 -- every eligible cacheable register,
 + *            including the 230 whose
 + *            reset value is zero, because reg_defaults takes part in
 + *            sync decisions and an absent entry is not the same as a
@@ -1115,6 +1115,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + *   status/clipdet     HPH L/R, insert-detect, clip-detect, VBAT
 + * plus, measured on this hardware and NOT in taiko_volatile():
 + *   0x1fd              RC_OSC_TUNER, moved 14 -> 15 with no write
++ *   0x2b5, 0x2bd       CDC_RX1/RX2_B6_CTL: bit 3 is a sticky status the
++ *                      chip sets when the chain runs (r179 rxb6 trace)
 + * and status registers taiko_volatile() misses, on semantics:
 + *   SAR_ERR, RX_LINE/EAR_STATUS, SPKR_DRV/PROT status, RC_OSC_STATUS,
 + *   VBAT_GAIN_UPD_MON, and COMP0/1/2_SHUT_DOWN_STATUS -- the last three
@@ -1128,7 +1130,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x02, 0x20, 0x00, 0x11, 0x11,
 +	0x00, 0x18, 0x60, 0x30, 0xfc, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02,
 +	0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0xff, 0x00, 0xfc, 0x00, 0x00, 0x00,
-+	0x00, 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00, 0x0c,
++	0x00, 0x00, 0xa0, 0xa0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00, 0x0c,
 +	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0xff, 0x0f,
 +	0x00, 0x40, 0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 +	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -1406,14 +1408,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ 0x2b2, 0x00 },	/* TAIKO_A_CDC_RX1_B3_CTL */
 +	{ 0x2b3, 0x08 },	/* TAIKO_A_CDC_RX1_B4_CTL */
 +	{ 0x2b4, 0x78 },	/* TAIKO_A_CDC_RX1_B5_CTL */
-+	{ 0x2b5, 0x80 },	/* TAIKO_A_CDC_RX1_B6_CTL */
 +	{ 0x2b6, 0x00 },	/* TAIKO_A_CDC_RX1_VOL_CTL_B1_CTL */
 +	{ 0x2b8, 0x00 },	/* TAIKO_A_CDC_RX2_B1_CTL */
 +	{ 0x2b9, 0x00 },	/* TAIKO_A_CDC_RX2_B2_CTL */
 +	{ 0x2ba, 0x00 },	/* TAIKO_A_CDC_RX2_B3_CTL */
 +	{ 0x2bb, 0x08 },	/* TAIKO_A_CDC_RX2_B4_CTL */
 +	{ 0x2bc, 0x78 },	/* TAIKO_A_CDC_RX2_B5_CTL */
-+	{ 0x2bd, 0x80 },	/* TAIKO_A_CDC_RX2_B6_CTL */
 +	{ 0x2be, 0x00 },	/* TAIKO_A_CDC_RX2_VOL_CTL_B1_CTL */
 +	{ 0x2c0, 0x00 },	/* TAIKO_A_CDC_RX3_B1_CTL */
 +	{ 0x2c1, 0x00 },	/* TAIKO_A_CDC_RX3_B2_CTL */
@@ -9675,6 +9675,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ WCD9320_A_RX_HPH_R_DAC_CTL,	0xff, 0xc0 },
 +};
 +
++/*
++ * Bits the silicon owns, which a restore cannot put back and must not be
++ * failed on. MEASURED (r179 rxb6 trace): CDC_RX1/RX2_B6_CTL bit 3 sets when
++ * the RX chain runs, stays set, and does not clear on write. The registers are
++ * volatile from r180 for the same reason. Nothing else is excused.
++ */
++#define WCD9320_RX_B6_HW_STATUS		0x08
++
++static u8 wcd9320_hw_owned_bits(unsigned int reg)
++{
++	if (reg == WCD9320_CDC_RX1_B6_CTL || reg == WCD9320_A_CDC_RX2_B6_CTL)
++		return WCD9320_RX_B6_HW_STATUS;
++	return 0;
++}
++
 +static bool wcd9320_zdet_reg_allowed(unsigned int reg)
 +{
 +	unsigned int i;
@@ -9994,9 +10009,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			      wcd->vm_fir[i]);
 +	}
 +	for (i = WCD9320_ZDET_NREGS; i-- > 0; ) {
++		u8 hw = wcd9320_hw_owned_bits(wcd9320_zdet_regs[i]);
++
 +		wcd9320_zdet_wr(wcd, wcd9320_zdet_regs[i], 0xff, wcd->zd_snap[i]);
 +		rret = regmap_read_bypassed(wcd->regmap, wcd9320_zdet_regs[i], &v);
-+		if (rret || (v & 0xff) != wcd->zd_snap[i]) {
++		if (rret || ((v ^ wcd->zd_snap[i]) & 0xff & ~hw)) {
 +			wcd->zd_restore_mismatch++;
 +			dev_err(dev, "zdet: ZDET RESTORE MISMATCH at 0x%03x: wrote %02x, chip reads %02x\n",
 +				wcd9320_zdet_regs[i], wcd->zd_snap[i], v & 0xff);
@@ -11133,7 +11150,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("zdet-rc1");
++MODULE_VERSION("rxb6-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

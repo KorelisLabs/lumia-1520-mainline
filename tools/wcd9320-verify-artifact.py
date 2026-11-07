@@ -31,8 +31,10 @@ import tempfile
 # docs/audio/wcd9320-reg-defaults.md.
 EXPECT = {
     "readable": 669,
-    "volatile": 401,
-    "defaults": 460,
+    # r180: 401 -> 403 and 460 -> 458: 0x2b5 / 0x2bd became volatile (bit 3
+    # is chip-set, measured by the r179 rxb6 trace) and lost their defaults.
+    "volatile": 403,
+    "defaults": 458,
     "zero_defaults": 230,
     "bypass_calls": 10,      # five bypass(true)/bypass(false) pairs
     # C2b reads the CHIP instead of the cache. Every register that branch
@@ -426,6 +428,12 @@ def main():
     print("=== 4. classification invariants ===")
     check("0x1fd RC_OSC_TUNER volatile", 0x1fd in volatile,
           "measured hardware-populated")
+    # r180: bit 3 of RX1/RX2_B6 is set by the chip when the chain runs and
+    # does not clear on write -- measured by the r179 rxb6 trace.
+    check("0x2b5 CDC_RX1_B6_CTL volatile", 0x2b5 in volatile,
+          "measured hardware-populated (bit 3)")
+    check("0x2bd CDC_RX2_B6_CTL volatile", 0x2bd in volatile,
+          "measured hardware-populated (bit 3)")
     check("0x14b MBHC_INSERT_DET_STATUS volatile", 0x14b in volatile)
     check("INTR_CLEAR 0x09c-0x09f not readable",
           not (set(range(0x9c, 0xa0)) & readable))
@@ -1483,6 +1491,21 @@ def main():
               "%d write line(s)" % len(wl))
     check("every zdet table register is restored and read back",
           rst_i >= 0 and "ZDET RESTORE MISMATCH" in z_main, "reverse restore")
+    # r180: the restore check excuses chip-owned bits, and ONLY RX1/RX2_B6 bit 3
+    # (measured by the r179 rxb6 trace). A wider excuse would hide real
+    # restore failures, so its body is pinned.
+    hwo = func_body("wcd9320_hw_owned_bits")
+    hw_regs = sorted(set(re.findall(r"reg == (WCD9320_[A-Z0-9_]+)", hwo)))
+    check("chip-owned bits excused only for RX1/RX2_B6",
+          hw_regs == ["WCD9320_A_CDC_RX2_B6_CTL", "WCD9320_CDC_RX1_B6_CTL"]
+          and "return WCD9320_RX_B6_HW_STATUS;" in hwo,
+          "%s" % (hw_regs or "no wcd9320_hw_owned_bits()"))
+    pat = re.compile(r"^#define\s+WCD9320_RX_B6_HW_STATUS\s+(0x[0-9a-fA-F]+)", re.M)
+    check("the excused bit is bit 3 only",
+          pat.findall(ptext_all) == ["0x08"], "found %s" % pat.findall(ptext_all))
+    check("the zdet restore compare masks only the chip-owned bits",
+          "wcd9320_hw_owned_bits(wcd9320_zdet_regs[i])" in z_main
+          and "& 0xff & ~hw" in z_main, "per-register excuse")
     check('hphl_zdet accepts exactly "measure"',
           re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', z_store) == ["measure"],
           "one verb")

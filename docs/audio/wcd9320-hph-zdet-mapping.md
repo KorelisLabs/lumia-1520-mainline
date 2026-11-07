@@ -278,6 +278,52 @@ assumption, which is why it was never taken as a verdict.
   - confirm the C3a path still plays with it set, which r165-era runs
     suggest
 
+### 9a. The side effect, classified (rxb6 trace, 2026-11-07) and fixed in r180
+
+Evidence: `wcd9320-rxb6-trace-20260831T192546Z.txt`, a fresh boot of
+`zdet-rc1`, with `cache_check` taken after each step.
+
+| step | cache | chip | mismatches |
+|---|---|---|---|
+| idle, MCLK, the voltmeter | `80` | `80` | 0 |
+| **RX1 chain on** | `a0` | **`a8`** | **1** (0x2b5) |
+| RX1 chain off | `80` | **`88`** | 1 |
+| a stream, chain on and off | same | same | 1 |
+| one zdet | 0x2bd `80` | **`88`** | 1 (0x2bd) |
+
+**Bit 3 of CDC_RX1/RX2_B6_CTL is a sticky status the chip sets when that
+RX chain runs.** Enabling the chain bit (bit 5) sets it, disabling does not
+clear it, and neither does writing 0. RX1 is set by the C3a chain, RX2 by
+the zdet's static PA.
+
+So:
+
+- It has been set in **every** C3a run since r161, including the
+  heard-sound run. Playback with it set is therefore already proven, and
+  no separate check is needed.
+- **The regcache certification never saw it** (it was certified at idle),
+  so every RX run left the cache stale on 0x2b5.
+- `rx1_digital_state` and the RX1 write's readback both read the cache:
+  they reported `a0`/`80` while the chip held `a8`/`88`. The trace
+  table's "chip" column above is that cached view. `cache_check` is the
+  true one.
+
+**r180 (`rxb6-rc1`):**
+
+- **Cache tables:** `0x2b5` and `0x2bd` join `0x1fd` in the generator's
+  `HW_POPULATED` (measured, never inferred) and are regenerated from the
+  fullmap evidence. The diff against r179 is exactly two volatile bits and
+  two removed defaults: volatile 401 to 403, defaults 460 to 458,
+  `cache_check` 458 cacheable / 211 volatile. RX3-7 B6 stay cacheable:
+  this driver never enables those chains, so it is unmeasured.
+- **zdet restore:** the compare excuses `wcd9320_hw_owned_bits()`, which
+  is only RX1/RX2_B6 bit 3 (pinned by the fence).
+- **Every gate that hard-coded the old classification is updated:**
+  - regcache, adoption-cache, asoc-callback, asoc-component and rx-dai:
+    the counts
+  - rx1-digital and comp1-observable: the chain is checked as bit 5, not
+    an exact `a0`/`80`
+
 **Tag consequence:** the §22 contract is now measured and within, on-chip:
 14.5 mV against 50, drift 1.5 mV against 10, both cross-checked. That
 meets the bar §10 of the voltmeter map set for

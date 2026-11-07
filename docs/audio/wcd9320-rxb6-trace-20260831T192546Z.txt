@@ -1,0 +1,22 @@
+RX_B6 bit-3 trace, 20260831T192546Z, module zdet-rc1
+0 idle                     chip 80 | cache(debugfs) 2b5: 80 2bd: 80 | cacheable_checked=460 mismatches=0 volatile_checked=209 volatile_moved=0 read_errors=0 
+  on MCLK                  chip 80 | cache(debugfs) 2b5: 80 2bd: 80 | cacheable_checked=460 mismatches=0 volatile_checked=209 volatile_moved=0 read_errors=0 
+  vm rc=0
+1 after voltmeter          chip 80 | cache(debugfs) 2b5: 80 2bd: 80 | cacheable_checked=460 mismatches=0 volatile_checked=209 volatile_moved=0 read_errors=0 
+2 rx1 on                   chip a0 | cache(debugfs) 2b5: a0 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2b5 cached=a0 hw=a8 
+2 rx1 off                  chip 80 | cache(debugfs) 2b5: 80 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2b5 cached=80 hw=88 
+  stream: hw_ptr_advance=98880 final_rc=0 
+3 rx1 on, after stream     chip a0 | cache(debugfs) 2b5: a0 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2b5 cached=a0 hw=a8 
+3 rx1 off                  chip 80 | cache(debugfs) 2b5: 80 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2b5 cached=80 hw=88 
+sh: write error: I/O error
+  zdet rc=1
+4 after one zdet           chip 88 | cache(debugfs) 2b5: 88 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2bd cached=80 hw=88 
+  zdet: runs=1 refusals=0 last_rc=-5 valid=1 restore_mismatch=1 l0=-6234 l1=5116 l2=-5418 r0=-6290 r1=5018 r2=-5542 l0n4=-1560 l2n4=-1356 zl_mohm=51499 zr_mohm=55972 scale16_uv=61 scale4_uv=245 scale16_r_uv=66 
+  back on RCO              chip 88 | cache(debugfs) 2b5: 88 2bd: 80 | cacheable_checked=460 mismatches=1 volatile_checked=209 volatile_moved=0 read_errors=0 first_mismatch reg=0x2bd cached=80 hw=88 
+
+-- dmesg: writes to 0x2b5 / 0x2bd and restore mismatches --
+[   78.375938] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a0  [RX1 CHAIN enabled]
+[   78.703143] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 80  [RX1 CHAIN disabled]
+[   79.036943] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a0  [RX1 CHAIN enabled]
+[   81.738915] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 80  [RX1 CHAIN disabled]
+[   82.404427] wcd9320 217:a0:1:0: zdet: ZDET RESTORE MISMATCH at 0x2bd: wrote 80, chip reads 88

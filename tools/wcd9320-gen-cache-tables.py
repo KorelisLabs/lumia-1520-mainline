@@ -34,7 +34,9 @@ default: eligible means readable, not volatile, and with a KNOWN measured
 
 excluded from defaults, with cause:
     volatile        never cached, so a default would be meaningless
-    hw-side-effect  0x1fd RC_OSC_TUNER moved 14 -> 15 with no write from us
+    hw-side-effect  0x1fd RC_OSC_TUNER moved 14 -> 15 with no write from us;
+                    0x2b5 / 0x2bd RX1/RX2_B6 bit 3, set by the chip when the
+                    chain runs (r179 rxb6 trace)
     unresolved      undocumented; also not readable
     unreadable      INTR_CLEAR
 
@@ -51,7 +53,21 @@ CACHE = os.path.expanduser('~/.cache/wcd9320-hdr')
 MAX_REGISTER = 0x3FF
 LOW_FIRST, CDC_FIRST = 0x000, 0x200
 WRITE_ONLY = set(range(0x09C, 0x0A0))       # INTR_CLEAR0-3, write-1-to-clear
-HW_POPULATED = {0x1FD}                       # RC_OSC_TUNER, measured
+#
+# Hardware-populated: the silicon writes these itself, so a cached copy goes
+# stale. Each one MEASURED on this part, never inferred.
+#
+#   0x1fd  RC_OSC_TUNER     moved 14 -> 15 with no write from us (2026-08-15)
+#   0x2b5  CDC_RX1_B6_CTL   bit 3 sets the moment the RX1 chain (bit 5) is
+#   0x2bd  CDC_RX2_B6_CTL   enabled, stays set after it is disabled, and does
+#                           not clear on write (r179 rxb6 trace, 2026-11-07:
+#                           cache a0 vs chip a8, then 80 vs 88; RX2 the same
+#                           after the zdet's static PA). Downstream never
+#                           writes bit 3 and never reads these back.
+#
+# RX3-RX7 B6 almost certainly share the bit, but this driver never enables
+# those chains, so it is unmeasured and they stay cacheable.
+HW_POPULATED = {0x1FD, 0x2B5, 0x2BD}
 
 # Status registers taiko_volatile() does not cover.
 #
@@ -180,7 +196,7 @@ def main():
     print(f' * readable : {len(readable)} of {MAX_REGISTER + 1}')
     print(f' *            {len(holes)} undocumented map holes rejected')
     print(f' *            {len(WRITE_ONLY)} write-only (INTR_CLEAR) rejected')
-    print(f' * volatile : {len(vol)} (taiko_volatile + 0x1fd measured)')
+    print(f' * volatile : {len(vol)} (taiko_volatile + 0x1fd, 0x2b5, 0x2bd measured)')
     print(f' * defaults : {len(defaults)} -- every eligible cacheable register,')
     print(f' *            including the {sum(1 for _, v in defaults if v == 0)} whose')
     print(' *            reset value is zero, because reg_defaults takes part in')
@@ -213,6 +229,8 @@ def main():
     print(' *   status/clipdet     HPH L/R, insert-detect, clip-detect, VBAT')
     print(' * plus, measured on this hardware and NOT in taiko_volatile():')
     print(' *   0x1fd              RC_OSC_TUNER, moved 14 -> 15 with no write')
+    print(' *   0x2b5, 0x2bd       CDC_RX1/RX2_B6_CTL: bit 3 is a sticky status the')
+    print(' *                      chip sets when the chain runs (r179 rxb6 trace)')
     print(' * and status registers taiko_volatile() misses, on semantics:')
     print(' *   SAR_ERR, RX_LINE/EAR_STATUS, SPKR_DRV/PROT status, RC_OSC_STATUS,')
     print(' *   VBAT_GAIN_UPD_MON, and COMP0/1/2_SHUT_DOWN_STATUS -- the last three')
