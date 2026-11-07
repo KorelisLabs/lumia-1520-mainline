@@ -1045,6 +1045,10 @@ dBFS), not to the driver.
   toggle `EN_CTL`.
 - **The current module is r182.**
 
+**0x314/0x30d on MCLK (r182 forced journal, map section 7a).** All 12 forced
+writes read back 00 with the codec on MCLK and CHIP_CTL `0a`, including the
+heard run. The r174 classification stands.
+
 MCLK ownership moves into the driver. The PM8941 divider is board state applied at probe, and one
 refcounted `wcd9320_mclk_get/_put` holds the RPM vote around the unchanged
 r169 switch (`clk_source_test` `mclk`/`rco`). `mclk_test` and `mclk_div_test`

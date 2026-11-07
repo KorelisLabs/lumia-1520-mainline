@@ -374,6 +374,37 @@ All runs below are on one fresh boot, in order.
 card arrives, its `MCLK` supply calls `wcd9320_mclk_get/_put` from `PRE_PMU`
 and `POST_PMD`.
 
-**Still open:**
-- the pin's drive strength (downstream sets "medium" explicitly);
-- the 0x314/0x30d recheck on MCLK.
+**Still open:** the pin's drive strength (downstream sets "medium"
+explicitly).
+
+### 7a. 0x314 / 0x30d on MCLK: still read 00 (answered from the r182 journal)
+
+The driver's forced-write journal records the chip readback (`fN_hw`) of
+every forced write. On the r182 boot it holds 12 entries, every one issued
+with the codec on MCLK and CHIP_CTL declaring 9.6 MHz (`0a`):
+- f0–f3: the vm gate's DAC step;
+- f4–f11: the two-cycle C3a run that was heard.
+
+| entries | register | written | chip reads |
+|---|---|---|---|
+| f0, f4, f8 | 0x314 | `03` (set) | `00` |
+| f3, f7, f11 | 0x314 | `00` (clear) | `00` |
+| f1, f5, f9 | 0x30d bit 1 | `02` (set) | `00` |
+| f2, f6, f10 | 0x30d bit 1 | `00` (clear) | `00` |
+
+**This is the first time these writes have been observed with the rate
+correctly declared.** r165 to r169 wrote CHIP_CTL at 0x001, which is a status
+register, so r169's "on MCLK, still refused" ran with no rate declaration at
+all.
+
+**Reading:**
+- The clock source and the rate declaration are not why these registers
+  read 00.
+- The HPHL plays with them in exactly this state.
+- So the r174 classification stands unchanged: write-effect-unverifiable,
+  inverse-write-mandatory, no readback expectation.
+
+**Not answered:** whether the writes are effective, meaning write-only and
+read-as-zero, or inert on this part. Only a causal test settles that: a C3a
+run with the forced writes omitted, where silence means they are needed.
+Downstream issues them and they are harmless, so this is optional.
