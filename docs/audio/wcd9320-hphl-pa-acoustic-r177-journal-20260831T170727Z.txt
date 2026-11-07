@@ -1,0 +1,400 @@
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260831T000617Z abort watcher armed, pid 6012
+20260831T000617Z front-end mixer enabled
+20260831T000617Z === cycle 1: begin ===
+20260831T000617Z prep applied
+20260831T000617Z forced 0x314 issued
+20260831T000617Z RX1 digital chain on
+20260831T000618Z HPHL DAC path up in register-gain mode
+20260831T000619Z state after DAC: 80 20 c0
+20260831T000619Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T000619Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260831T000619Z GATE dc-pa-off-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T000638Z GATE dc-pa-off-c1: APPROVED (chat)
+20260831T000639Z fail-safe armed: 60 s, phase pa-on-c1
+20260831T000639Z PA ENABLED
+20260831T000639Z 0x1ab=a0 masked=20 expected=20
+20260831T000639Z INTR_STATUS2=00 ocp_seen=0
+20260831T000639Z AUTO: 2 s for any switch-on pop, then the tone
+20260831T000641Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.107
+final_rc=0
+complete=1
+20260831T000643Z tone finished rc=0
+20260831T000643Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T000643Z AUTO: 1 s, then the PA off
+20260831T000644Z PA disabled
+20260831T000644Z 0x1ab=80 masked=00 expected=00
+20260831T000644Z fail-safe disarmed: the PA is chip-verified off
+20260831T000645Z DAC, forced inverses, RX1 and prep all torn down
+20260831T000645Z === cycle 1: complete ===
+20260831T170601Z instrument acoustic  control none  pa-live-expect 20  approvals chat
+20260831T170601Z DC CONTRACT NOT MEASURED: waived by the operator (operator-waived).
+20260831T170601Z   The waveform verdict is the PC-side recording, not this run.
+20260831T170602Z module version port-flow-rc1 (expected port-flow-rc1)
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+20260831T170602Z input devices resolved by name
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260831T170602Z stimulus declared at -40 dBFS
+20260831T170602Z gain field 00 (14 = minimum, 00 = maximum)
+20260831T170602Z baseline pristine: 0x1ab=80 0x1b1=00 0x3b0=00 guard clean
+20260831T170727Z ================ C3a run 20260831T170727Z ================
+20260831T170727Z holds: pa-off 600 s, pa-on 120 s, tone 120 s
+20260831T170727Z stimulus -40 dBFS, 4 cycle(s)
+20260831T170727Z instrument acoustic  control none  pa-live-expect 20  approvals chat
+20260831T170727Z DC CONTRACT NOT MEASURED: waived by the operator (operator-waived).
+20260831T170727Z   The waveform verdict is the PC-side recording, not this run.
+20260831T170727Z module version port-flow-rc1 (expected port-flow-rc1)
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+20260831T170727Z input devices resolved by name
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260831T170727Z stimulus declared at -40 dBFS
+20260831T170727Z gain field 00 (14 = minimum, 00 = maximum)
+20260831T170727Z baseline pristine: 0x1ab=80 0x1b1=00 0x3b0=00 guard clean
+20260831T170727Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260831T170806Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260831T170806Z gain field 00 set and read back
+20260831T170806Z forced-write journal starts this run at 0 of 16
+20260831T170806Z chat approvals via /run/wcd9320-c3a-approve
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260831T170808Z abort watcher armed, pid 964
+20260831T170808Z front-end mixer enabled
+20260831T170808Z === cycle 1: begin ===
+20260831T170808Z prep applied
+20260831T170808Z forced 0x314 issued
+20260831T170808Z RX1 digital chain on
+20260831T170808Z HPHL DAC path up in register-gain mode
+20260831T170808Z state after DAC: 80 20 c0
+20260831T170808Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T170808Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260831T170808Z GATE dc-pa-off-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T170827Z GATE dc-pa-off-c1: APPROVED (chat)
+20260831T170828Z fail-safe armed: 60 s, phase pa-on-c1
+20260831T170828Z PA ENABLED
+20260831T170828Z 0x1ab=a0 masked=20 expected=20
+20260831T170828Z INTR_STATUS2=00 ocp_seen=0
+20260831T170828Z AUTO: 2 s for any switch-on pop, then the tone
+20260831T170830Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.956
+final_rc=0
+complete=1
+20260831T170831Z tone finished rc=0
+20260831T170831Z port 16 during the tone: pending=0 src=00 overflow=0 read_rc=0
+20260831T170831Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T170831Z AUTO: 1 s, then the PA off
+20260831T170833Z PA disabled
+20260831T170833Z 0x1ab=80 masked=00 expected=00
+20260831T170833Z fail-safe disarmed: the PA is chip-verified off
+20260831T170833Z DAC, forced inverses, RX1 and prep all torn down
+20260831T170833Z === cycle 1: complete ===
+20260831T170833Z === cycle 2: begin ===
+20260831T170833Z prep applied
+20260831T170833Z forced 0x314 issued
+20260831T170833Z RX1 digital chain on
+20260831T170833Z HPHL DAC path up in register-gain mode
+20260831T170834Z state after DAC: 80 20 c0
+20260831T170834Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T170834Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260831T170834Z GATE dc-pa-off-c2: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T170928Z GATE dc-pa-off-c2: APPROVED (chat)
+20260831T170929Z fail-safe armed: 60 s, phase pa-on-c2
+20260831T170929Z PA ENABLED
+20260831T170929Z 0x1ab=a0 masked=20 expected=20
+20260831T170929Z INTR_STATUS2=00 ocp_seen=0
+20260831T170929Z AUTO: 2 s for any switch-on pop, then the tone
+20260831T170931Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.138
+final_rc=0
+complete=1
+20260831T170933Z tone finished rc=0
+20260831T170933Z port 16 during the tone: pending=1 src=01 overflow=1 read_rc=0
+20260831T170933Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T170933Z AUTO: 1 s, then the PA off
+20260831T170934Z PA disabled
+20260831T170934Z 0x1ab=80 masked=00 expected=00
+20260831T170934Z fail-safe disarmed: the PA is chip-verified off
+20260831T170935Z DAC, forced inverses, RX1 and prep all torn down
+20260831T170935Z === cycle 2: complete ===
+20260831T170935Z === cycle 3: begin ===
+20260831T170935Z prep applied
+20260831T170935Z forced 0x314 issued
+20260831T170935Z RX1 digital chain on
+20260831T170936Z HPHL DAC path up in register-gain mode
+20260831T170936Z state after DAC: 80 20 c0
+20260831T170936Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T170936Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260831T170936Z GATE dc-pa-off-c3: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T171024Z GATE dc-pa-off-c3: APPROVED (chat)
+20260831T171025Z fail-safe armed: 60 s, phase pa-on-c3
+20260831T171025Z PA ENABLED
+20260831T171025Z 0x1ab=a0 masked=20 expected=20
+20260831T171025Z INTR_STATUS2=00 ocp_seen=0
+20260831T171025Z AUTO: 2 s for any switch-on pop, then the tone
+20260831T171027Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.059
+final_rc=0
+complete=1
+20260831T171029Z tone finished rc=0
+20260831T171029Z port 16 during the tone: pending=0 src=00 overflow=0 read_rc=0
+20260831T171029Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T171029Z AUTO: 1 s, then the PA off
+20260831T171030Z PA disabled
+20260831T171030Z 0x1ab=80 masked=00 expected=00
+20260831T171030Z fail-safe disarmed: the PA is chip-verified off
+20260831T171031Z DAC, forced inverses, RX1 and prep all torn down
+20260831T171031Z === cycle 3: complete ===
+20260831T171031Z === cycle 4: begin ===
+20260831T171032Z prep applied
+20260831T171032Z forced 0x314 issued
+20260831T171032Z RX1 digital chain on
+20260831T171033Z HPHL DAC path up in register-gain mode
+20260831T171033Z state after DAC: 80 20 c0
+20260831T171033Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T171033Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260831T171033Z GATE dc-pa-off-c4: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T171118Z GATE dc-pa-off-c4: APPROVED (chat)
+20260831T171118Z fail-safe armed: 60 s, phase pa-on-c4
+20260831T171118Z PA ENABLED
+20260831T171118Z 0x1ab=a0 masked=20 expected=20
+20260831T171118Z INTR_STATUS2=00 ocp_seen=0
+20260831T171118Z AUTO: 2 s for any switch-on pop, then the tone
+20260831T171120Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.041
+final_rc=0
+complete=1
+20260831T171122Z tone finished rc=0
+20260831T171122Z port 16 during the tone: pending=1 src=01 overflow=1 read_rc=0
+20260831T171122Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T171122Z AUTO: 1 s, then the PA off
+20260831T171124Z PA disabled
+20260831T171124Z 0x1ab=80 masked=00 expected=00
+20260831T171124Z fail-safe disarmed: the PA is chip-verified off
+20260831T171124Z DAC, forced inverses, RX1 and prep all torn down
+20260831T171124Z === cycle 4: complete ===

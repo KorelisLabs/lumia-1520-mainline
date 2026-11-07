@@ -229,7 +229,36 @@ So nothing here separates "the samples never got past the port" from "the
 samples got through and the silence is further down": the RDAC clock `0x30d`,
 the DAC, or the analog stage.
 
-### The next measurement, small
+### RESULT OF THAT MEASUREMENT (same day, fresh boot, 4 acoustic cycles)
+
+Evidence:
+
+- `wcd9320-hphl-pa-acoustic-r177-20260831T170727Z.txt` and its journal
+- recording `c3a-real-r177.wav` (sha256 `152d8f1d0c2bfca8...`, in
+  `~/c3a-evidence`)
+
+Run conditions: gain field `00` (maximum), −40 dBFS, left earcup sealed on
+the mic. The room floor at 1 kHz was −108.6 dBFS median over 250 ms windows.
+
+| cycle | port 16 during the tone | PA | at the mic | operator |
+|---|---|---|---|---|
+| 1 | **clean** | `a0`, no OCP | nothing (loudest −94.0, not tonal) | heard nothing |
+| 2 | overflow | `a0`, no OCP | nothing | heard nothing |
+| 3 | **clean** | `a0`, no OCP | nothing (loudest −96.7, not tonal) | heard nothing |
+| 4 | overflow | `a0`, no OCP | nothing | heard nothing |
+
+The analyser found no tracking event. Its one event (t = 170 s, between
+cycles) was rejected as broadband.
+
+**In cycles 1 and 3 the codec was draining the samples into the RX path,
+the PA was chip-verified on at maximum gain, and nothing came out.** By the
+§28a calibration, a real signal would have measured about −66 dBFS at the
+mic. So the silence is **downstream of the RX port**: the interpolator,
+the DSM mux, the RDAC clock `0x30d`, the DAC, the PA's supplies, or the
+board wiring to the jack. The port's bistability is real, but it is not why
+the headphone is silent.
+
+### The next measurement, small (as planned before the run)
 
 Record port 16's state inside each acoustic tone cycle: clear at tone start,
 read at tone end. A cycle with a **clean** port and silence at the mic puts
