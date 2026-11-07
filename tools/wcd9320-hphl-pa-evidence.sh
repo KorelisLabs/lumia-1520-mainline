@@ -501,7 +501,7 @@ c3_preflight() {	# c3_preflight <arming?>
 	fi
 	case "$APPROVE" in
 	chat)
-		if [ "$INSTRUMENT" != "acoustic" ]; then
+		if [ "$INSTRUMENT" != "acoustic" ] && [ "$INSTRUMENT" != "onchip" ]; then
 			say "INVALID SETUP: chat approval needs USB connected -- acoustic only"
 			return 1
 		fi ;;
