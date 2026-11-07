@@ -142,7 +142,10 @@ EXPECT = {
     # r178: 93 = 86 + 7. The +3 is the voltmeter, one call site each: the
     #            precondition loop, the S1 snapshot loop and the S5
     #            restore-verify loop in wcd9320_hphl_vm().
-    "read_bypassed_calls": 93,
+    # r179: 97 = 90 + 7. The +4 is the zdet: the snapshot and the
+    #            restore-verify loop for each of its two tables (the
+    #            voltmeter's set and the static-PA set) in wcd9320_hphl_zdet().
+    "read_bypassed_calls": 97,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -713,28 +716,45 @@ def main():
         r"wcd9320_c2b_write\(\s*wcd,\s*WCD9320_A_RX_HPH_CNP_EN,\s*"
         r"([A-Za-z0-9_]+),\s*([A-Za-z0-9_]+),")
     pw = PA_WRITE.findall(ptext_all)
-    check("both PA writes go through the chip-verified helper", len(pw) == 2,
-          "%d matched wcd9320_c2b_write(0x1ab, mask, val)" % len(pw))
-    check("both PA writes are masked to HPHL alone",
-          bool(pw) and all(m == "WCD9320_HPH_PA_HPHL" for m, _ in pw),
-          "masks: %s" % ([m for m, _ in pw] or "none"))
-    check("the PA writes are exactly one enable and one disable",
-          sorted(v for _, v in pw) == ["0", "WCD9320_HPH_PA_HPHL"],
-          "values: %s" % (sorted(v for _, v in pw) or "none"))
-    check("both PA writes live in wcd9320_hphl_pa_path",
-          len(PA_WRITE.findall(pa_path)) == 2,
-          "%d of 2 inside the mapped PA sequence"
-          % len(PA_WRITE.findall(pa_path)))
+    # r179 RELAXES THIS TO FOUR, AND NO FURTHER. The operator decided
+    # (2026-11-07) that the HPH-scale measurement copies downstream zdet
+    # faithfully, both channels: wcd9xxx_enable_static_pa() writes 0x1ab
+    # mask 0x30. Those two writes are confined to wcd9320_zdet_static_pa()
+    # and fenced again in 5g. The two C3a writes are unchanged, HPHL alone,
+    # in wcd9320_hphl_pa_path(). docs/audio/wcd9320-hph-zdet-mapping.md s5.
+    zsp = func_body("wcd9320_zdet_static_pa")
+    pw_pa = PA_WRITE.findall(pa_path)
+    pw_z = PA_WRITE.findall(zsp)
+    check("the PA writes go through the chip-verified helper", len(pw) == 4,
+          "%d matched wcd9320_c2b_write(0x1ab, mask, val) (want 4)" % len(pw))
+    check("every PA write is in one of the two mapped functions",
+          len(pw_pa) + len(pw_z) == len(pw),
+          "%d in wcd9320_hphl_pa_path, %d in wcd9320_zdet_static_pa, %d total"
+          % (len(pw_pa), len(pw_z), len(pw)))
+    check("the C3a PA writes are masked to HPHL alone",
+          len(pw_pa) == 2 and all(m == "WCD9320_HPH_PA_HPHL" for m, _ in pw_pa),
+          "masks: %s" % ([m for m, _ in pw_pa] or "none"))
+    check("the C3a PA writes are exactly one enable and one disable",
+          sorted(v for _, v in pw_pa) == ["0", "WCD9320_HPH_PA_HPHL"],
+          "values: %s" % (sorted(v for _, v in pw_pa) or "none"))
+    check("the zdet PA writes are one both-channel enable and one disable",
+          sorted(pw_z) == [("WCD9320_HPH_PA_MASK", "0"),
+                           ("WCD9320_HPH_PA_MASK", "WCD9320_HPH_PA_MASK")],
+          "%s" % (pw_z or "none"))
 
-    # THE TWO-BIT MASK IS A GUARD MASK, NEVER A WRITE MASK.
+    # THE TWO-BIT MASK IS A GUARD MASK, NEVER A WRITE MASK -- with one fenced
+    # exception: the two writes inside wcd9320_zdet_static_pa().
     #
     # WCD9320_HPH_PA_MASK is 0x30. A write masked with it would set or clear
     # HPHR alongside HPHL from a single statement that reads perfectly well.
     mask_writes = [ln for ln in added
                    if "WCD9320_HPH_PA_MASK" in ln
                    and any(c in ln for c in CALLS)]
-    check("0x30 is never used as a write mask", not mask_writes,
-          "%d write call(s) naming WCD9320_HPH_PA_MASK" % len(mask_writes))
+    zsp_lines = set(zsp.splitlines())
+    check("0x30 is a write mask only inside wcd9320_zdet_static_pa",
+          len(mask_writes) == 2 and all(ln in zsp_lines for ln in mask_writes),
+          "%d write call(s) naming WCD9320_HPH_PA_MASK, %d of them inside it"
+          % (len(mask_writes), sum(ln in zsp_lines for ln in mask_writes)))
     hphr_writes = [ln for ln in added
                    if "WCD9320_HPH_PA_HPHR" in ln
                    and any(c in ln for c in CALLS)]
@@ -781,6 +801,16 @@ def main():
           len(named) == len(vm_pa),
           "%d in the driver, %d inside wcd9320_hphl_vm" % (len(named), len(vm_pa)))
     nz_all = [v for v in nz_all if v != "pa_expect"]
+    # r179: the zdet expects 0x30 while its static PA is on -- permitted only
+    # inside wcd9320_hphl_zdet(), and excluded here only for those sites.
+    zd_pa = [v for v in GEXP.findall(func_body("wcd9320_hphl_zdet"))
+             if v == "WCD9320_HPH_PA_MASK"]
+    zd_named = [v for v in nz_all if v == "WCD9320_HPH_PA_MASK"]
+    check("a 0x30 guard expectation exists only inside the zdet",
+          len(zd_named) == len(zd_pa) and len(zd_pa) >= 1,
+          "%d in the driver, %d inside wcd9320_hphl_zdet"
+          % (len(zd_named), len(zd_pa)))
+    nz_all = [v for v in nz_all if v != "WCD9320_HPH_PA_MASK"]
     nz_pa = [v for v in GEXP.findall(pa_path) if v != "0"]
     check("the only non-zero guard expectation is HPHL",
           nz_all and all(v == "WCD9320_HPH_PA_HPHL" for v in nz_all),
@@ -1003,8 +1033,10 @@ def main():
             # HPHL alone, both inside wcd9320_hphl_pa_path(), and the HPHR bit
             # named by nothing. A THIRD write site fails here, before section
             # 5d is even reached.
-            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 2, 0,
-             "the PA -- r175, exactly one enable and one disable"),
+            # r179: FOUR -- the two C3a sites plus the zdet static PA's two
+            # (both channels, operator decision), fenced in 5d and 5g.
+            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 4, 0,
+             "the PA -- C3a HPHL on/off plus the zdet static PA on/off"),
 
             # CHIP_CTL, at its real address from r170. ONE write site, inside
             # wcd9320_chip_ctl_probe(), reached both to attempt the 9.6 MHz
@@ -1323,6 +1355,146 @@ def main():
           e.code_present("wcd9320_hphl_vm",
                          "vm: RESTORE MISMATCH at 0x%03x"),
           "the measurement, symbol or witness")
+
+    # ==================================================================
+    # 5g. r179: THE ZDET FENCE.
+    #
+    # Downstream impedance detection, copied faithfully, both channels
+    # (operator decision 2026-11-07), to get the HPH channel's scale.
+    # docs/audio/wcd9320-hph-zdet-mapping.md. Bounded:
+    #
+    #   1. new addresses pinned; the closed static-PA + ramp table is exactly
+    #      the mapped set
+    #   2. one write path for registers, refusing outside (voltmeter set +
+    #      zdet set) and refusing the PA register outright; the PA goes only
+    #      through wcd9320_zdet_static_pa(), called only from the zdet
+    #   3. the PAs are switched off BEFORE the register restore begins
+    #   4. preconditions refuse: MCLK, and the whole analog path idle
+    #   5. never 0x314, 0x30d, insert detect or the masks
+    # ==================================================================
+    print()
+    print("=== 5g. the r179 zdet fence ===")
+    for sym, want in (("WCD9320_A_RX_HPH_L_TEST", "0x1af"),
+                      ("WCD9320_A_RX_HPH_R_TEST", "0x1b5"),
+                      ("WCD9320_A_CDC_RX2_B6_CTL", "0x2bd"),
+                      ("WCD9320_A_NCP_CLK", "0x193"),
+                      ("WCD9320_A_CDC_PA_RAMP_B1_CTL", "0x361"),
+                      ("WCD9320_A_CDC_PA_RAMP_B2_CTL", "0x362"),
+                      ("WCD9320_A_CDC_PA_RAMP_B3_CTL", "0x363"),
+                      ("WCD9320_A_CDC_PA_RAMP_B4_CTL", "0x364"),
+                      ("WCD9320_ZDET_RAMP_B4_50MV", "0xc0"),
+                      # ZDET_, never VM_: 5f forbids any VM_ constant at 0xf8
+                      ("WCD9320_ZDET_MUX2_HPHL_ICAL", "0xf8"),
+                      ("WCD9320_ZDET_MUX1_HPHR", "0xa0")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+    for sym, want in (("WCD9320_ZDET_RAMP_MV", "50"),
+                      ("WCD9320_ZDET_WG_US", "5040"),
+                      ("WCD9320_ZDET_RAMP_WAIT_US", "18000"),
+                      ("WCD9320_ZDET_T_STA16_US", "477")):
+        pat = re.compile(r"^#define\s+%s\s+(\d+)\b" % re.escape(sym), re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+
+    z_main = func_body("wcd9320_hphl_zdet")
+    z_wr = func_body("wcd9320_zdet_wr")
+    z_rd = func_body("wcd9320_zdet_read")
+    z_store = func_body("hphl_zdet_store")
+    z_show = func_body("hphl_zdet_show")
+    for nm, bd in (("wcd9320_hphl_zdet", z_main), ("wcd9320_zdet_wr", z_wr),
+                   ("wcd9320_zdet_read", z_rd),
+                   ("wcd9320_zdet_static_pa", zsp),
+                   ("hphl_zdet_store", z_store), ("hphl_zdet_show", z_show)):
+        check("%s found in source" % nm, len(bd) > 0,
+              "%d bytes of body" % len(bd))
+
+    m = re.search(r"static const u16 wcd9320_zdet_regs\[\] = \{(.*?)\};",
+                  ptext_all, re.S)
+    ztab = re.findall(r"(WCD9320_[A-Z0-9_]+)", m.group(1)) if m else []
+    ZMAPPED = {"WCD9320_A_RX_HPH_OCP_CTL", "WCD9320_A_RX_HPH_L_TEST",
+               "WCD9320_A_RX_HPH_R_TEST", "WCD9320_A_RX_HPH_BIAS_WG_OCP",
+               "WCD9320_A_RX_HPH_CNP_WG_CTL", "WCD9320_A_RX_HPH_CNP_WG_TIME",
+               "WCD9320_CDC_RX1_B6_CTL", "WCD9320_CDC_CLK_RX_B1_CTL",
+               "WCD9320_A_RX_HPH_CHOP_CTL", "WCD9320_A_RX_HPH_L_GAIN",
+               "WCD9320_A_CDC_RX2_B6_CTL", "WCD9320_A_RX_HPH_R_GAIN",
+               "WCD9320_A_NCP_CLK", "WCD9320_A_BUCK_CTRL_CCL_3",
+               "WCD9320_A_RX_COM_BIAS", "WCD9320_A_BUCK_MODE_3",
+               "WCD9320_A_BUCK_MODE_4", "WCD9320_A_BUCK_MODE_5",
+               "WCD9320_A_BUCK_MODE_1", "WCD9320_A_NCP_EN",
+               "WCD9320_A_CDC_CLSH_B1_CTL", "WCD9320_A_RX_HPH_L_DAC_CTL",
+               "WCD9320_A_RX_HPH_R_DAC_CTL", "WCD9320_A_CDC_PA_RAMP_B1_CTL",
+               "WCD9320_A_CDC_PA_RAMP_B2_CTL", "WCD9320_A_CDC_PA_RAMP_B3_CTL",
+               "WCD9320_A_CDC_PA_RAMP_B4_CTL"}
+    check("the zdet table is exactly the mapped static-PA + ramp set",
+          set(ztab) == ZMAPPED and len(ztab) == len(ZMAPPED),
+          "%d entries; extra %s; missing %s"
+          % (len(ztab), sorted(set(ztab) - ZMAPPED) or "none",
+             sorted(ZMAPPED - set(ztab)) or "none"))
+    check("the PA register is not in the zdet table",
+          "WCD9320_A_RX_HPH_CNP_EN" not in ztab, "PA only via the static-PA function")
+    check("wcd9320_zdet_wr refuses the PA register and anything unmapped",
+          "WCD9320_A_RX_HPH_CNP_EN" in z_wr and "return -EPERM;" in z_wr
+          and "wcd9320_vm_reg_allowed(reg)" in z_wr
+          and z_wr.index("return -EPERM;") < z_wr.index("regmap_"),
+          "runtime confinement")
+    for nm, bd in (("wcd9320_hphl_zdet", z_main), ("wcd9320_zdet_read", z_rd),
+                   ("hphl_zdet_store", z_store), ("hphl_zdet_show", z_show)):
+        direct = [c for c in ("regmap_write(", "regmap_update_bits(",
+                              "c2b_write(", "forced_write(",
+                              "regmap_write_bits(", "regmap_bulk_write(")
+                  if c in bd]
+        check("%s writes only through the zdet/vm write paths" % nm,
+              not direct, "direct write calls: %s" % (direct or "none"))
+    check("wcd9320_zdet_static_pa is called only from the zdet",
+          len(re.findall(r"wcd9320_zdet_static_pa\(wcd,", ptext_all))
+          == len(re.findall(r"wcd9320_zdet_static_pa\(wcd,", z_main)) >= 2,
+          "%d call(s), %d inside wcd9320_hphl_zdet"
+          % (len(re.findall(r"wcd9320_zdet_static_pa\(wcd,", ptext_all)),
+             len(re.findall(r"wcd9320_zdet_static_pa\(wcd,", z_main))))
+    off_i = z_main.find("wcd9320_zdet_static_pa(wcd, false)")
+    rst_i = z_main.find("for (i = WCD9320_ZDET_NREGS; i-- > 0; )")
+    check("the PAs are switched off before the register restore",
+          0 <= off_i < rst_i, "static PA off at %d, restore loop at %d"
+          % (off_i, rst_i))
+    check("the ramp is taken back to zero before the PAs go off",
+          0 <= z_main.find("WCD9320_ZDET_RAMP_DOWN") < off_i,
+          "PA_RAMP_B2 <- 0x0a precedes the PA disable")
+    for wit, why in (("zdet: refusing -- the codec is not on MCLK", "MCLK"),
+                     ("zdet: refusing -- the analog path is not idle", "idle path"),
+                     ("zdet: refusing -- insert detection is on", "insert detect off"),
+                     ("zdet: refusing -- interrupt masks are not the certified set",
+                      "masks")):
+        check("zdet precondition: %s" % why, wit in z_main, "witness in source")
+    for flag in ("hphl_pa_on", "pa_prep_on", "hphl_dac_on", "rx1_digital_on",
+                 "comp1_on", "clsh_on", "clk_prereq_on"):
+        check("zdet refuses with %s" % flag, "wcd->%s" % flag in z_main,
+              "part of the idle check")
+    for sym, why in (("WCD9320_CDC_CLK_POWER_CTL", "forced 0x314"),
+                     ("WCD9320_CDC_CLK_RDAC_CLK_EN_CTL", "forced 0x30d"),
+                     ("WCD9320_A_MBHC_INSERT_DETECT", "insert detect"),
+                     ("WCD9320_A_INTR_MASK0", "the masks")):
+        wl = [ln for ln in (z_main + z_rd + zsp).splitlines()
+              if sym in ln and ("_wr(" in ln or "c2b_write(" in ln)]
+        check("the zdet never writes %s (%s)" % (sym, why), not wl,
+              "%d write line(s)" % len(wl))
+    check("every zdet table register is restored and read back",
+          rst_i >= 0 and "ZDET RESTORE MISMATCH" in z_main, "reverse restore")
+    check('hphl_zdet accepts exactly "measure"',
+          re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', z_store) == ["measure"],
+          "one verb")
+    check("hphl_zdet serialises on c3_lock",
+          "mutex_lock(&wcd->c3_lock)" in z_store, "with every C3 sequence")
+    check("hphl_zdet is registered", "&dev_attr_hphl_zdet.attr" in ptext_all,
+          "in wcd9320_attrs[]")
+    check("dev_attr_hphl_zdet present", "dev_attr_hphl_zdet" in e.syms,
+          "the sysfs attribute the r179 gate drives")
+    check("zdet witness literal shipped",
+          e.code_present("wcd9320_hphl_zdet", "zdet: ZDET RESTORE MISMATCH at 0x%03x"),
+          "symbol or witness")
 
     if args.expect_asoc:
         print()

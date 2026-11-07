@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 12:02:08.144620200 -0500
-@@ -0,0 +1,10205 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 12:59:28.472283000 -0500
+@@ -0,0 +1,10749 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -869,6 +869,36 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_VM_MUX_SETTLE_MS		50	/* MUX_SWITCH_READY_WAIT_MS */
 +#define WCD9320_VM_MUX_SETTLE_HPH_US		25
 +#define WCD9320_VM_MAX_SAMPLES			32
++
++/*
++ * r179: downstream impedance detection, copied faithfully on both channels
++ * (operator decision), to get the HPH channel's scale. Mapped in
++ * docs/audio/wcd9320-hph-zdet-mapping.md from wcd9xxx_detect_impedance(),
++ * taiko_setup_zdet(), wcd9xxx_prepare_static_pa() and
++ * wcd9xxx_enable_static_pa().
++ */
++#define WCD9320_A_NCP_CLK			0x193
++#define WCD9320_A_RX_HPH_L_TEST			0x1af
++#define WCD9320_A_RX_HPH_R_TEST			0x1b5
++#define WCD9320_A_CDC_RX2_B6_CTL		0x2bd
++#define WCD9320_A_CDC_PA_RAMP_B1_CTL		0x361
++#define WCD9320_A_CDC_PA_RAMP_B2_CTL		0x362
++#define WCD9320_A_CDC_PA_RAMP_B3_CTL		0x363
++#define WCD9320_A_CDC_PA_RAMP_B4_CTL		0x364
++#define WCD9320_ZDET_MUX2_HPHL_ICAL		0xf8	/* L1, R1 only */
++#define WCD9320_ZDET_MUX1_HPHR			0xa0
++#define WCD9320_ZDET_RAMP_B3			0x36	/* FS_48K, L shift 1 */
++/* a SAMPLE COUNT (TomTom: 0x69 = "105 samples"); "50 mV" under the static PA */
++#define WCD9320_ZDET_RAMP_B4_50MV		0xc0
++#define WCD9320_ZDET_RAMP_UP			0x05	/* "PA ramp on HPH L and R" */
++#define WCD9320_ZDET_RAMP_DOWN			0x0a	/* "back to zero" */
++#define WCD9320_ZDET_NAVG			0x10
++#define WCD9320_ZDET_RAMP_MV			50
++/* CNP_WG_TIME 0x15 (the static PA's) * TAIKO_WG_TIME_FACTOR_US 240 */
++#define WCD9320_ZDET_WG_US			5040
++#define WCD9320_ZDET_RAMP_WAIT_US		18000
++/* t_sta at navg 16: 1000*128*17/9600 + 250 */
++#define WCD9320_ZDET_T_STA16_US			477
 +
 +/*
 + * HPHL 10K switch, the one other write downstream makes in this branch.
@@ -2089,6 +2119,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int vm_restore_mismatch;
 +	u8 vm_snap[24];
 +	u8 vm_fir[WCD9320_VM_FIR_N];
++	/* ---- r179: zdet, the HPH channel's scale ---- */
++	unsigned int zd_runs, zd_refusals, zd_restore_mismatch;
++	int zd_last_rc;
++	bool zd_valid;
++	s16 zd_l[3], zd_r[3], zd_l0n4, zd_l2n4;
++	u8 zd_snap[32];
 +	bool hphl_pa_on;		/* the mapped PA sequence has run */
 +	bool pa_prep_on;		/* gain and pop/click established */
 +	unsigned int hphl_pa_enables;
@@ -5295,11 +5331,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * so the addresses have to be visible before that section.
 + */
 +#define WCD9320_A_RX_COM_BIAS			0x1a2	/* RX bias, refcounted */
-+#define WCD9320_A_RX_HPH_CNP_EN			0x1ab	/* the PA -- never written */
++#define WCD9320_A_RX_HPH_CNP_EN			0x1ab	/* the PA: C3a + r179 zdet only */
 +#define WCD9320_A_RX_HPH_L_GAIN			0x1ae
 +#define WCD9320_A_RX_HPH_L_DAC_CTL		0x1b1	/* the HPHL DAC */
 +#define WCD9320_A_RX_HPH_R_GAIN			0x1b4
-+#define WCD9320_A_RX_HPH_R_DAC_CTL		0x1b7	/* off limits */
++#define WCD9320_A_RX_HPH_R_DAC_CTL		0x1b7	/* r179 zdet static PA only */
 +#define WCD9320_A_RX_EAR_EN			0x1bc	/* off limits */
 +#define WCD9320_A_RX_LINE_1_DAC_CTL		0x1cf	/* off limits */
 +#define WCD9320_A_SPKR_DRV_EN			0x1df	/* off limits */
@@ -9188,7 +9224,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * conversion wait, then B3:B2 as a signed 16-bit result. Polled -- every MBHC
 + * interrupt source stays masked, and a masked source does not latch here.
 + */
-+static int wcd9320_vm_sta(struct wcd9320 *wcd, s16 *out)
++static int wcd9320_vm_sta(struct wcd9320 *wcd, s16 *out, unsigned int t_sta_us)
 +{
 +	unsigned int msb = 0, lsb = 0;
 +	int ret;
@@ -9204,7 +9240,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_EN_CTL, 0xff, 0x02);
 +	if (ret)
 +		return ret;
-+	usleep_range(WCD9320_VM_T_STA_US, WCD9320_VM_T_STA_US + 50);
++	/* t_sta depends on navg: WCD9320_VM_T_STA_US at 4, ZDET_T_STA16_US at 16 */
++	usleep_range(t_sta_us, t_sta_us + 50);
 +	/* >= 0x3c0: volatile, so these are chip reads */
 +	ret = regmap_read(wcd->regmap, WCD9320_A_CDC_MBHC_B3_STATUS, &msb);
 +	if (!ret)
@@ -9216,6 +9253,51 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +enum wcd9320_vm_mode { WCD9320_VM_MEASURE, WCD9320_VM_WINDOW, WCD9320_VM_ALT };
++
++/*
++ * The MBHC engine, wcd9xxx_mbhc_setup() + wcd9xxx_update_mbhc_clk_rate() with
++ * def_taiko_mbhc_cal at 9.6 MHz. One copy, shared by the voltmeter (S2) and
++ * the zdet (Z2), so the two cannot drift apart. Every write through
++ * wcd9320_vm_wr(), so the voltmeter's closed set still bounds it.
++ */
++static int wcd9320_vm_engine(struct wcd9320 *wcd)
++{
++	unsigned int i;
++	int ret = 0;
++
++	for (i = 0; i < WCD9320_VM_FIR_N && !ret; i++) {
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B1_CFG, 0x07, i);
++		if (!ret)
++			ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B2_CFG, 0xff,
++					    i == 0 ? 62 : i == 1 ? 124 : 0);
++	}
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B2_CTL, 0x07,
++				    WCD9320_VM_NC);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B4_CTL, 0x7f,
++				    (WCD9320_VM_NSA << 4) | WCD9320_VM_NMEAS);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
++				    WCD9320_VM_NAVG);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B1_CTL, 0xf8,
++				    0x80 | (WCD9320_VM_NSC << 3));
++	if (!ret)	/* release detection OFF for the whole operation */
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B1_CTL, 0x02, 0x00);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B2_CTL, 0x78,
++				    WCD9320_VM_GAIN << 3);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_MICB_2_MBHC, 0x04, 0x04);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B1_CTL, 0xff,
++				    WCD9320_VM_N_READY);
++	if (!ret)
++		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B6_CTL, 0xff,
++				    WCD9320_VM_N_CIC);
++	return ret;
++}
 +
 +/*
 + * The whole measurement, one call, steps S0-S6 of the map. The PA is never
@@ -9303,37 +9385,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	/* ---- S2: the engine (wcd9xxx_mbhc_setup + update_mbhc_clk_rate) ---- */
-+	for (i = 0; i < WCD9320_VM_FIR_N && !ret; i++) {
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B1_CFG, 0x07, i);
-+		if (!ret)
-+			ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B2_CFG, 0xff,
-+					    i == 0 ? 62 : i == 1 ? 124 : 0);
-+	}
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B2_CTL, 0x07,
-+				    WCD9320_VM_NC);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B4_CTL, 0x7f,
-+				    (WCD9320_VM_NSA << 4) | WCD9320_VM_NMEAS);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
-+				    WCD9320_VM_NAVG);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B1_CTL, 0xf8,
-+				    0x80 | (WCD9320_VM_NSC << 3));
-+	if (!ret)	/* release detection OFF for the whole operation */
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B1_CTL, 0x02, 0x00);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_B2_CTL, 0x78,
-+				    WCD9320_VM_GAIN << 3);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_MICB_2_MBHC, 0x04, 0x04);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B1_CTL, 0xff,
-+				    WCD9320_VM_N_READY);
-+	if (!ret)
-+		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B6_CTL, 0xff,
-+				    WCD9320_VM_N_CIC);
++	ret = wcd9320_vm_engine(wcd);
 +	if (ret)
 +		goto restore;
 +
@@ -9374,7 +9426,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!ret)
 +		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_CLK_CTL, 0xff, 0x02);
 +	if (!ret)
-+		ret = wcd9320_vm_sta(wcd, &wcd->vm_z);
++		ret = wcd9320_vm_sta(wcd, &wcd->vm_z, WCD9320_VM_T_STA_US);
 +	/* micbias released and the override reconnected, from the snapshot */
 +	if (!ret)
 +		ret = wcd9320_vm_wr(wcd, WCD9320_A_MICB_2_CTL, 0x01,
@@ -9399,7 +9451,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!ret)
 +		ret = wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_CLK_CTL, 0xff, 0x02);
 +	if (!ret)
-+		ret = wcd9320_vm_sta(wcd, &wcd->vm_mb);
++		ret = wcd9320_vm_sta(wcd, &wcd->vm_mb, WCD9320_VM_T_STA_US);
 +	if (ret)
 +		goto restore;
 +
@@ -9430,7 +9482,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	usleep_range(WCD9320_VM_MUX_SETTLE_HPH_US,
 +		     WCD9320_VM_MUX_SETTLE_HPH_US + 50);
 +	for (i = 0; i < n && !ret; i++) {
-+		ret = wcd9320_vm_sta(wcd, &wcd->vm_l[i]);
++		ret = wcd9320_vm_sta(wcd, &wcd->vm_l[i], WCD9320_VM_T_STA_US);
 +		if (!ret)
 +			wcd->vm_n = i + 1;
 +		if (gap_us && i + 1 < n)
@@ -9555,6 +9607,497 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RW(hphl_vm);
 +
++/* ----------------------------- r179: zdet, the HPH channel's scale -- */
++
++/*
++ * THE CLOSED ZDET SET: wcd9xxx_prepare_static_pa()'s registers plus the PA
++ * ramp generator. Snapshotted and restored, chip-verified, alongside the
++ * voltmeter's set. The PA register is NOT here: it is written only by
++ * wcd9320_zdet_static_pa(), through the chip-verified C2b helper.
++ */
++static const u16 wcd9320_zdet_regs[] = {
++	WCD9320_A_RX_HPH_OCP_CTL,
++	WCD9320_A_RX_HPH_L_TEST,
++	WCD9320_A_RX_HPH_R_TEST,
++	WCD9320_A_RX_HPH_BIAS_WG_OCP,
++	WCD9320_A_RX_HPH_CNP_WG_CTL,
++	WCD9320_A_RX_HPH_CNP_WG_TIME,
++	WCD9320_CDC_RX1_B6_CTL,
++	WCD9320_CDC_CLK_RX_B1_CTL,
++	WCD9320_A_RX_HPH_CHOP_CTL,
++	WCD9320_A_RX_HPH_L_GAIN,
++	WCD9320_A_CDC_RX2_B6_CTL,
++	WCD9320_A_RX_HPH_R_GAIN,
++	WCD9320_A_NCP_CLK,
++	WCD9320_A_BUCK_CTRL_CCL_3,
++	WCD9320_A_RX_COM_BIAS,
++	WCD9320_A_BUCK_MODE_3,
++	WCD9320_A_BUCK_MODE_4,
++	WCD9320_A_BUCK_MODE_5,
++	WCD9320_A_BUCK_MODE_1,
++	WCD9320_A_NCP_EN,
++	WCD9320_A_CDC_CLSH_B1_CTL,
++	WCD9320_A_RX_HPH_L_DAC_CTL,
++	WCD9320_A_RX_HPH_R_DAC_CTL,
++	WCD9320_A_CDC_PA_RAMP_B1_CTL,
++	WCD9320_A_CDC_PA_RAMP_B2_CTL,
++	WCD9320_A_CDC_PA_RAMP_B3_CTL,
++	WCD9320_A_CDC_PA_RAMP_B4_CTL,
++};
++#define WCD9320_ZDET_NREGS	ARRAY_SIZE(wcd9320_zdet_regs)
++
++/* wcd9xxx_prepare_static_pa(), in downstream's order, unchanged */
++static const struct wcd9320_vm_pre_ent wcd9320_zdet_paon[] = {
++	{ WCD9320_A_RX_HPH_OCP_CTL,	0x18, 0x00 },
++	{ WCD9320_A_RX_HPH_L_TEST,	0x01, 0x00 },
++	{ WCD9320_A_RX_HPH_R_TEST,	0x01, 0x00 },
++	{ WCD9320_A_RX_HPH_BIAS_WG_OCP,	0xff, 0x1a },
++	{ WCD9320_A_RX_HPH_CNP_WG_CTL,	0xff, 0xdb },
++	{ WCD9320_A_RX_HPH_CNP_WG_TIME,	0xff, 0x15 },
++	{ WCD9320_CDC_RX1_B6_CTL,	0xff, 0x81 },
++	{ WCD9320_CDC_CLK_RX_B1_CTL,	0x01, 0x01 },
++	{ WCD9320_A_RX_HPH_CHOP_CTL,	0xff, 0xa4 },
++	{ WCD9320_A_RX_HPH_L_GAIN,	0xff, 0x2c },
++	{ WCD9320_A_CDC_RX2_B6_CTL,	0xff, 0x81 },
++	{ WCD9320_CDC_CLK_RX_B1_CTL,	0x02, 0x02 },
++	{ WCD9320_A_RX_HPH_R_GAIN,	0xff, 0x2c },
++	{ WCD9320_A_NCP_CLK,		0xff, 0xfc },
++	{ WCD9320_A_BUCK_CTRL_CCL_3,	0xff, 0x60 },
++	{ WCD9320_A_RX_COM_BIAS,	0xff, 0x80 },
++	{ WCD9320_A_BUCK_MODE_3,	0xff, 0xc6 },
++	{ WCD9320_A_BUCK_MODE_4,	0xff, 0xe6 },
++	{ WCD9320_A_BUCK_MODE_5,	0xff, 0x02 },
++	{ WCD9320_A_BUCK_MODE_1,	0xff, 0xa1 },
++	{ WCD9320_A_NCP_EN,		0xff, 0xff },
++	{ WCD9320_A_BUCK_MODE_5,	0xff, 0x7b },
++	{ WCD9320_A_CDC_CLSH_B1_CTL,	0xff, 0xe6 },
++	{ WCD9320_A_RX_HPH_L_DAC_CTL,	0xff, 0xc0 },
++	{ WCD9320_A_RX_HPH_R_DAC_CTL,	0xff, 0xc0 },
++};
++
++static bool wcd9320_zdet_reg_allowed(unsigned int reg)
++{
++	unsigned int i;
++
++	for (i = 0; i < WCD9320_ZDET_NREGS; i++)
++		if (wcd9320_zdet_regs[i] == reg)
++			return true;
++	return false;
++}
++
++/*
++ * The zdet's register write path: the voltmeter's set plus the zdet set,
++ * and NEVER the PA register, which has its own fenced function below.
++ */
++static int wcd9320_zdet_wr(struct wcd9320 *wcd, unsigned int reg,
++			   unsigned int mask, unsigned int val)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	if (reg == WCD9320_A_RX_HPH_CNP_EN ||
++	    (!wcd9320_vm_reg_allowed(reg) && !wcd9320_zdet_reg_allowed(reg))) {
++		dev_err(dev, "zdet: REFUSED write to 0x%03x -- outside the mapped set\n",
++			reg);
++		return -EPERM;
++	}
++	if (mask == 0xff)
++		ret = regmap_write(wcd->regmap, reg, val);
++	else
++		ret = regmap_update_bits(wcd->regmap, reg, mask, val);
++	if (ret)
++		dev_err(dev, "zdet: write 0x%03x mask %02x val %02x failed: %d\n",
++			reg, mask, val, ret);
++	else
++		wcd->vm_writes++;
++	return ret;
++}
++
++/*
++ * wcd9xxx_enable_static_pa(): BOTH PAs, mask 0x30, then the wave-generator
++ * wait (CNP_WG_TIME 0x15 * 240 us). THE ONLY PLACE OUTSIDE THE C3a PA PATH
++ * THAT WRITES 0x1ab, and the only place anywhere that writes the HPHR bit --
++ * permitted for this measurement by operator decision (2026-11-07), fenced
++ * in section 5d/5g of the artefact gate. Called only from the zdet.
++ */
++static int wcd9320_zdet_static_pa(struct wcd9320 *wcd, bool on)
++{
++	int ret;
++
++	if (on)
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN, WCD9320_HPH_PA_MASK, WCD9320_HPH_PA_MASK,
++					"zdet static PA on, BOTH channels");
++	else
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN, WCD9320_HPH_PA_MASK, 0,
++					"zdet static PA off, both channels");
++	usleep_range(WCD9320_ZDET_WG_US, WCD9320_ZDET_WG_US + 100);
++	return ret;
++}
++
++/* one reading: the mux, the bias block, 25 us settle, one STA */
++static int wcd9320_zdet_read(struct wcd9320 *wcd, unsigned int reg,
++			     unsigned int val, unsigned int t_sta_us, s16 *out)
++{
++	int ret;
++
++	ret = wcd9320_zdet_wr(wcd, reg, 0xff, val);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++				      WCD9320_VM_MUX1_BIAS_BLOCK,
++				      WCD9320_VM_MUX1_BIAS_BLOCK);
++	if (ret)
++		return ret;
++	usleep_range(WCD9320_VM_MUX_SETTLE_HPH_US,
++		     WCD9320_VM_MUX_SETTLE_HPH_US + 50);
++	return wcd9320_vm_sta(wcd, out, t_sta_us);
++}
++
++/*
++ * The measurement, Z0-Z12 of the map. Errors before the static PA go straight
++ * to the restore; errors after it go through the teardown first -- ramp back
++ * to zero, both PAs off and chip-verified -- and only then the restore.
++ */
++static int wcd9320_hphl_zdet(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	u8 masks[WCD9320_NUM_IRQ_REGS];
++	unsigned int i, v, fir_read = 0;
++	bool pa_tried = false, ramp_armed = false;
++	int ret, rret;
++
++	BUILD_BUG_ON(WCD9320_ZDET_NREGS > ARRAY_SIZE(wcd->zd_snap));
++	BUILD_BUG_ON(WCD9320_VM_NREGS > ARRAY_SIZE(wcd->vm_snap));
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready)
++		return -EAGAIN;
++
++	/* ---- Z0: preconditions ---- */
++	if (!wcd->clk_src_mclk || wcd->cdc_alive != 1) {
++		wcd->zd_refusals++;
++		dev_err(dev, "zdet: refusing -- the codec is not on MCLK\n");
++		return -EPERM;
++	}
++	if (wcd->hphl_pa_on || wcd->pa_prep_on || wcd->hphl_dac_on ||
++	    wcd->rx1_digital_on || wcd->comp1_on || wcd->clsh_on ||
++	    wcd->clk_prereq_on) {
++		wcd->zd_refusals++;
++		dev_err(dev, "zdet: refusing -- the analog path is not idle (pa %d prep %d dac %d rx1 %d comp1 %d clsh %d prereq %d)\n",
++			wcd->hphl_pa_on, wcd->pa_prep_on, wcd->hphl_dac_on,
++			wcd->rx1_digital_on, wcd->comp1_on, wcd->clsh_on,
++			wcd->clk_prereq_on);
++		return -EBUSY;
++	}
++	if (wcd->mbhc_detect_on) {
++		wcd->zd_refusals++;
++		dev_err(dev, "zdet: refusing -- insert detection is on\n");
++		return -EBUSY;
++	}
++	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_MASK0, masks,
++			       WCD9320_NUM_IRQ_REGS);
++	if (ret || memcmp(masks, wcd9320_irq_mask_all, WCD9320_NUM_IRQ_REGS)) {
++		wcd->zd_refusals++;
++		dev_err(dev, "zdet: refusing -- interrupt masks are not the certified set\n");
++		return ret ? ret : -EBUSY;
++	}
++	ret = wcd9320_pa_guard(wcd, "before the zdet");
++	if (ret)
++		return ret;
++
++	wcd->zd_runs++;
++	wcd->zd_valid = false;
++	wcd->zd_restore_mismatch = 0;
++	memset(wcd->zd_l, 0, sizeof(wcd->zd_l));
++	memset(wcd->zd_r, 0, sizeof(wcd->zd_r));
++	wcd->zd_l0n4 = 0;
++	wcd->zd_l2n4 = 0;
++
++	/* ---- Z1: snapshot, from the chip ---- */
++	for (i = 0; i < WCD9320_VM_NREGS; i++) {
++		ret = regmap_read_bypassed(wcd->regmap, wcd9320_vm_regs[i], &v);
++		if (ret)
++			return ret;
++		wcd->vm_snap[i] = v;
++	}
++	for (i = 0; i < WCD9320_ZDET_NREGS; i++) {
++		ret = regmap_read_bypassed(wcd->regmap, wcd9320_zdet_regs[i], &v);
++		if (ret)
++			return ret;
++		wcd->zd_snap[i] = v;
++	}
++	for (i = 0; i < WCD9320_VM_FIR_N; i++) {
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B1_CFG, 0x07, i);
++		if (!ret)
++			ret = regmap_read(wcd->regmap,
++					  WCD9320_A_CDC_MBHC_FIR_B2_CFG, &v);
++		if (ret)
++			goto restore;
++		wcd->vm_fir[i] = v;
++		fir_read = i + 1;
++	}
++
++	/* ---- Z2: the engine, the voltmeter's own copy ---- */
++	ret = wcd9320_vm_engine(wcd);
++	/* ---- Z3: the override, off the mic bias ---- */
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MAD_ANA_CTRL, 0x10, 0x00);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_B1_CTL, 0x04, 0x04);
++	/* ---- Z4: the static PA's 25 writes ---- */
++	for (i = 0; i < ARRAY_SIZE(wcd9320_zdet_paon) && !ret; i++)
++		ret = wcd9320_zdet_wr(wcd, wcd9320_zdet_paon[i].reg,
++				      wcd9320_zdet_paon[i].mask,
++				      wcd9320_zdet_paon[i].val);
++	if (ret)
++		goto restore;
++
++	/* ---- Z5: both PAs on ---- */
++	pa_tried = true;
++	ret = wcd9320_zdet_static_pa(wcd, true);
++	if (!ret)
++		ret = wcd9320_pa_guard_expect(wcd, "zdet static PA on",
++					      WCD9320_HPH_PA_MASK);
++	if (ret)
++		goto teardown;
++
++	/* ---- Z6: the ramp generator and the mux, PRE_MEAS ---- */
++	ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B1_CTL, 0xff, 0x1c);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B1_CTL, 0xff, 0x1f);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B1_CTL, 0xff, 0x03);
++	if (!ret)
++		ramp_armed = true;
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B3_CTL, 0xff,
++				      WCD9320_ZDET_RAMP_B3);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B4_CTL, 0xff,
++				      WCD9320_ZDET_RAMP_B4_50MV);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_1, 0xff,
++				      WCD9320_VM_MUX1_HPH_ADC7);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_2, 0xff,
++				      WCD9320_VM_MUX2_HPHL_NO_ICAL);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_TX_7_MBHC_TEST_CTL, 0xff, 0x78);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_TX_7_MBHC_EN, 0xff, 0x8c);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B4_CTL, 0x40, 0x40);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
++				      WCD9320_ZDET_NAVG);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_CLK_CTL, 0xff, 0x0a);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_EN_CTL, 0xff, 0x02);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_CLK_CTL, 0xff, 0x02);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_HPH, 0xb3, 0x80);
++	if (ret)
++		goto teardown;
++
++	/* ---- Z7: phase 1 -- L0, R0, R1, L1 (downstream's order) ---- */
++	ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_2,
++				WCD9320_VM_MUX2_HPHL_NO_ICAL,
++				WCD9320_ZDET_T_STA16_US, &wcd->zd_l[0]);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++					WCD9320_ZDET_MUX1_HPHR,
++					WCD9320_ZDET_T_STA16_US, &wcd->zd_r[0]);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_2,
++					WCD9320_ZDET_MUX2_HPHL_ICAL,
++					WCD9320_ZDET_T_STA16_US, &wcd->zd_r[1]);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++					WCD9320_VM_MUX1_HPH_ADC7,
++					WCD9320_ZDET_T_STA16_US, &wcd->zd_l[1]);
++	/* Z7': L0 again at navg 4, passive (HPHL, no ical) */
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
++				      WCD9320_VM_NAVG);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_2, 0xff,
++				      WCD9320_VM_MUX2_HPHL_NO_ICAL);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++					WCD9320_VM_MUX1_HPH_ADC7,
++					WCD9320_VM_T_STA_US, &wcd->zd_l0n4);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
++				      WCD9320_ZDET_NAVG);
++	if (ret)
++		goto teardown;
++
++	/* ---- Z8: POST_MEAS -- the ramp up, then held ---- */
++	ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B2_CTL, 0xff,
++			      WCD9320_ZDET_RAMP_UP);
++	if (ret)
++		goto teardown;
++	usleep_range(WCD9320_ZDET_RAMP_WAIT_US, WCD9320_ZDET_RAMP_WAIT_US + 100);
++	ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B2_CTL, 0xff, 0x00);
++	if (ret)
++		goto teardown;
++	usleep_range(WCD9320_ZDET_RAMP_WAIT_US, WCD9320_ZDET_RAMP_WAIT_US + 100);
++
++	/* ---- Z9: phase 2 -- L2, R2 ---- */
++	ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_2,
++				WCD9320_VM_MUX2_HPHL_NO_ICAL,
++				WCD9320_ZDET_T_STA16_US, &wcd->zd_l[2]);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++					WCD9320_ZDET_MUX1_HPHR,
++					WCD9320_ZDET_T_STA16_US, &wcd->zd_r[2]);
++	/* Z9': L2 again at navg 4, passive */
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_CDC_MBHC_TIMER_B5_CTL, 0xff,
++				      WCD9320_VM_NAVG);
++	if (!ret)
++		ret = wcd9320_zdet_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_2, 0xff,
++				      WCD9320_VM_MUX2_HPHL_NO_ICAL);
++	if (!ret)
++		ret = wcd9320_zdet_read(wcd, WCD9320_A_MBHC_SCALING_MUX_1,
++					WCD9320_VM_MUX1_HPH_ADC7,
++					WCD9320_VM_T_STA_US, &wcd->zd_l2n4);
++	if (!ret)
++		wcd->zd_valid = true;
++
++teardown:
++	/* ---- Z10: ramp back to zero, then both PAs off, chip-verified ---- */
++	if (ramp_armed) {
++		wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B2_CTL, 0xff,
++				WCD9320_ZDET_RAMP_DOWN);
++		usleep_range(WCD9320_ZDET_RAMP_WAIT_US,
++			     WCD9320_ZDET_RAMP_WAIT_US + 100);
++		wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B2_CTL, 0xff, 0x00);
++		wcd9320_zdet_wr(wcd, WCD9320_A_CDC_PA_RAMP_B1_CTL, 0xff, 0x00);
++	}
++	if (pa_tried) {
++		rret = wcd9320_zdet_static_pa(wcd, false);
++		if (rret)
++			dev_err(dev, "zdet: THE STATIC PA DID NOT GO OFF (%d)\n", rret);
++		if (!ret && rret)
++			ret = rret;
++	}
++
++restore:
++	/* ---- Z11: everything back, chip-verified ---- */
++	wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_EN_CTL, 0xff, 0x00);
++	for (i = 0; i < fir_read; i++) {
++		wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B1_CFG, 0x07, i);
++		wcd9320_vm_wr(wcd, WCD9320_A_CDC_MBHC_FIR_B2_CFG, 0xff,
++			      wcd->vm_fir[i]);
++	}
++	for (i = WCD9320_ZDET_NREGS; i-- > 0; ) {
++		wcd9320_zdet_wr(wcd, wcd9320_zdet_regs[i], 0xff, wcd->zd_snap[i]);
++		rret = regmap_read_bypassed(wcd->regmap, wcd9320_zdet_regs[i], &v);
++		if (rret || (v & 0xff) != wcd->zd_snap[i]) {
++			wcd->zd_restore_mismatch++;
++			dev_err(dev, "zdet: ZDET RESTORE MISMATCH at 0x%03x: wrote %02x, chip reads %02x\n",
++				wcd9320_zdet_regs[i], wcd->zd_snap[i], v & 0xff);
++		}
++	}
++	for (i = WCD9320_VM_NREGS; i-- > 0; ) {
++		wcd9320_vm_wr(wcd, wcd9320_vm_regs[i], 0xff, wcd->vm_snap[i]);
++		rret = regmap_read_bypassed(wcd->regmap, wcd9320_vm_regs[i], &v);
++		if (rret || (v & 0xff) != wcd->vm_snap[i]) {
++			wcd->zd_restore_mismatch++;
++			dev_err(dev, "zdet: ZDET RESTORE MISMATCH at 0x%03x: wrote %02x, chip reads %02x\n",
++				wcd9320_vm_regs[i], wcd->vm_snap[i], v & 0xff);
++		}
++	}
++	if (!ret && wcd->zd_restore_mismatch)
++		ret = -EIO;
++
++	/* ---- Z12 ---- */
++	rret = wcd9320_pa_guard(wcd, "after the zdet");
++	if (!ret && rret)
++		ret = rret;
++	wcd->zd_last_rc = ret;
++	dev_info(dev, "zdet: valid %d L %d %d %d R %d %d %d L0'/L2' %d %d, %u restore mismatch(es), rc %d\n",
++		 wcd->zd_valid, wcd->zd_l[0], wcd->zd_l[1], wcd->zd_l[2],
++		 wcd->zd_r[0], wcd->zd_r[1], wcd->zd_r[2], wcd->zd_l0n4,
++		 wcd->zd_l2n4, wcd->zd_restore_mismatch, ret);
++	return ret;
++}
++
++/*
++ *   echo measure > hphl_zdet    the whole measurement, both channels
++ *   cat hphl_zdet               raw readings, Taiko Z, and the scales
++ */
++static ssize_t hphl_zdet_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!sysfs_streq(buf, "measure"))
++		return -EINVAL;
++
++	mutex_lock(&wcd->c3_lock);
++	ret = wcd9320_hphl_zdet(wcd);
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++
++/* taiko_compute_impedance(), one channel, milliohm; -1 if L0 == L2 */
++static s64 wcd9320_zdet_mohm(const s16 *x)
++{
++	s32 d = (s32)x[0] - (s32)x[2];
++	s64 r;
++
++	if (!d)
++		return -1;
++	r = div_s64((s64)((s32)x[0] - (s32)x[1]) * 1000, d);
++	r = r * 11333 * 364;
++	r >>= 16;
++	r = r * 3855;
++	r >>= 16;
++	return r;
++}
++
++/* microvolts per count: the ramp's 50 mV over its rise; 0 if no rise */
++static int wcd9320_zdet_uv_per_count(s16 lo, s16 hi)
++{
++	s32 d = (s32)hi - (s32)lo;
++
++	return d ? (WCD9320_ZDET_RAMP_MV * 1000) / d : 0;
++}
++
++static ssize_t hphl_zdet_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	return sysfs_emit(buf,
++			  "runs=%u refusals=%u last_rc=%d valid=%u restore_mismatch=%u\n"
++			  "l0=%d l1=%d l2=%d r0=%d r1=%d r2=%d l0n4=%d l2n4=%d\n"
++			  "zl_mohm=%lld zr_mohm=%lld scale16_uv=%d scale4_uv=%d scale16_r_uv=%d\n",
++			  wcd->zd_runs, wcd->zd_refusals, wcd->zd_last_rc,
++			  wcd->zd_valid ? 1 : 0, wcd->zd_restore_mismatch,
++			  wcd->zd_l[0], wcd->zd_l[1], wcd->zd_l[2],
++			  wcd->zd_r[0], wcd->zd_r[1], wcd->zd_r[2],
++			  wcd->zd_l0n4, wcd->zd_l2n4,
++			  (long long)wcd9320_zdet_mohm(wcd->zd_l),
++			  (long long)wcd9320_zdet_mohm(wcd->zd_r),
++			  wcd9320_zdet_uv_per_count(wcd->zd_l[0], wcd->zd_l[2]),
++			  wcd9320_zdet_uv_per_count(wcd->zd_l0n4, wcd->zd_l2n4),
++			  wcd9320_zdet_uv_per_count(wcd->zd_r[0], wcd->zd_r[2]));
++}
++static DEVICE_ATTR_RW(hphl_zdet);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -9580,6 +10123,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_slim_transport.attr,
 +	&dev_attr_slim_port_status.attr,
 +	&dev_attr_hphl_vm.attr,
++	&dev_attr_hphl_zdet.attr,
 +	&dev_attr_rx1_digital_test.attr,
 +	&dev_attr_rx1_digital_state.attr,
 +	&dev_attr_comp1_test.attr,
@@ -10589,7 +11133,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("vm-rc1");
++MODULE_VERSION("zdet-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

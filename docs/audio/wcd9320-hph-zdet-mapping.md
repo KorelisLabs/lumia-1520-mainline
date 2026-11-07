@@ -197,3 +197,29 @@ r179 changes, each one fenced:
 
 A pass on 3 and a converted shift within 50 mV would close the §22
 contract, qualified as on-chip.
+
+## 8. r179 AS BUILT (`zdet-rc1`, pkgrel 179)
+
+- **Order of work:** fence first this time.
+  - The section 5d changes and the new section 5g were written before any
+    driver code and proven to fail r178 in 48 places (43 in 5g, 5 in 5d).
+  - One naming conflict surfaced and was settled in the fence's favour:
+    5f forbids any `WCD9320_VM_*` constant at `0xf8`, so the ical mux
+    constants are `WCD9320_ZDET_*`.
+- **Driver:** `hphl_zdet` (RW), verb `measure`. `wcd9320_hphl_zdet()` is
+  Z0-Z12.
+  - `wcd9320_zdet_wr()` refuses `0x1ab` and anything outside the voltmeter
+    set plus the zdet set.
+  - The PA is written only by `wcd9320_zdet_static_pa()`: two
+    chip-verified C2b writes, mask `0x30`.
+  - Errors before the static PA go straight to the restore. Errors after
+    it go through the teardown first: ramp back to zero, both PAs off,
+    then the restore.
+- **Shared with the voltmeter:** the MBHC engine setup is now one function,
+  `wcd9320_vm_engine()`, used by both. `wcd9320_vm_sta()` takes its
+  `t_sta` as a parameter (316 µs at navg 4, 477 µs at navg 16).
+- **show** publishes the raw L0-L2, R0-R2, L0', L2'; Taiko Zl and Zr in
+  mΩ; and the scale in µV per count at navg 16 and at navg 4.
+- **`read_bypassed_calls`:** 93 to 97 (snapshot and restore of each of the
+  zdet's two tables).
+- **Gate:** `tools/wcd9320-hphl-zdet-evidence.sh`, section 7 steps 1-6.
