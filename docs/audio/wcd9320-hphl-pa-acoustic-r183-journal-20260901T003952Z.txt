@@ -1,0 +1,183 @@
+20260901T003952Z ================ C3a run 20260901T003952Z ================
+20260901T003952Z holds: pa-off 600 s, pa-on 120 s, tone 120 s
+20260901T003952Z stimulus -40 dBFS, 2 cycle(s)
+20260901T003952Z instrument acoustic  control none  pa-live-expect 20  approvals chat  clock mclk
+20260901T003952Z DC CONTRACT NOT MEASURED: waived by the operator (operator-waived).
+20260901T003952Z   The waveform verdict is the PC-side recording, not this run.
+20260901T003952Z module version mclkpin-rc1 (expected mclkpin-rc1)
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+20260901T003952Z input devices resolved by name
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260901T003952Z stimulus declared at -40 dBFS
+20260901T003952Z gain field 00 (14 = minimum, 00 = maximum)
+20260901T003953Z baseline pristine: 0x1ab=80 0x1b1=00 0x3b0=00 guard clean
+20260901T003953Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260901T004011Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T004011Z gain field 00 set and read back
+20260901T004011Z forced-write journal starts this run at 0 of 16
+20260901T004011Z chat approvals via /run/wcd9320-c3a-approve
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260901T004012Z abort watcher armed, pid 1591
+20260901T004012Z front-end mixer enabled
+20260901T004012Z clock for this run: mclk
+20260901T004013Z clock: board state: div_ctl1=02 factor=2 gpio15_function=2
+20260901T004013Z clock: before the switch: 1b3=04 1b9=04
+20260901T004014Z clock: mclk_users=1 on_mclk=1 cdc_alive=1 chip_ctl_0x000=0a chip_ctl_latched=1 buff1_0x108=05 rcosc_0x1fa=46
+20260901T004014Z clock: codec on the external 9.6 MHz clock; 1b3=04 1b9=04
+20260901T004014Z === cycle 1: begin ===
+20260901T004015Z prep applied
+20260901T004015Z forced 0x314 issued
+20260901T004015Z RX1 digital chain on
+20260901T004016Z HPHL DAC path up in register-gain mode
+20260901T004016Z state after DAC: 80 20 c0
+20260901T004016Z section 16 abort gate PASSED -- the PA may now be enabled
+20260901T004016Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260901T004016Z GATE dc-pa-off-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T004034Z GATE dc-pa-off-c1: APPROVED (chat)
+20260901T004035Z fail-safe armed: 60 s, phase pa-on-c1
+20260901T004035Z PA ENABLED
+20260901T004035Z 0x1ab=a0 masked=20 expected=20
+20260901T004035Z INTR_STATUS2=00 ocp_seen=0
+20260901T004035Z AUTO: 2 s for any switch-on pop, then the acoustic stage
+20260901T004037Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.333
+final_rc=0
+complete=1
+20260901T004039Z tone finished rc=0
+20260901T004039Z port 16 during the tone: pending=0 src=00 overflow=0 read_rc=0
+20260901T004039Z hph status during the tone: 1b3=08 1b9=04 (Xperia: 04 = no master clock, 08 = clocked)
+20260901T004039Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260901T004039Z AUTO: 1 s, then the PA off
+20260901T004040Z PA disabled
+20260901T004040Z 0x1ab=80 masked=00 expected=00
+20260901T004041Z fail-safe disarmed: the PA is chip-verified off
+20260901T004041Z DAC, forced inverses, RX1 and prep all torn down
+20260901T004041Z === cycle 1: complete ===
+20260901T004041Z === cycle 2: begin ===
+20260901T004042Z prep applied
+20260901T004042Z forced 0x314 issued
+20260901T004042Z RX1 digital chain on
+20260901T004043Z HPHL DAC path up in register-gain mode
+20260901T004043Z state after DAC: 80 20 c0
+20260901T004043Z section 16 abort gate PASSED -- the PA may now be enabled
+20260901T004043Z HOLD stage-1 (acoustic) with the PA OFF, up to 600 s
+20260901T004043Z GATE dc-pa-off-c2: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T004119Z GATE dc-pa-off-c2: APPROVED (chat)
+20260901T004120Z fail-safe armed: 60 s, phase pa-on-c2
+20260901T004120Z PA ENABLED
+20260901T004120Z 0x1ab=a0 masked=20 expected=20
+20260901T004120Z INTR_STATUS2=00 ocp_seen=0
+20260901T004120Z AUTO: 2 s for any switch-on pop, then the acoustic stage
+20260901T004123Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.047
+final_rc=0
+complete=1
+20260901T004124Z tone finished rc=0
+20260901T004124Z port 16 during the tone: pending=0 src=00 overflow=0 read_rc=0
+20260901T004124Z hph status during the tone: 1b3=08 1b9=04 (Xperia: 04 = no master clock, 08 = clocked)
+20260901T004124Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260901T004124Z AUTO: 1 s, then the PA off
+20260901T004125Z PA disabled
+20260901T004126Z 0x1ab=80 masked=00 expected=00
+20260901T004126Z fail-safe disarmed: the PA is chip-verified off
+20260901T004127Z DAC, forced inverses, RX1 and prep all torn down
+20260901T004127Z === cycle 2: complete ===
+20260901T004128Z clock: RESTORED to RCO: mclk_users=0 on_mclk=0 cdc_alive=1 chip_ctl_0x000=08

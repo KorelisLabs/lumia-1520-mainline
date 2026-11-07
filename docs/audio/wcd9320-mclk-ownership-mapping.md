@@ -374,8 +374,42 @@ All runs below are on one fresh boot, in order.
 card arrives, its `MCLK` supply calls `wcd9320_mclk_get/_put` from `PRE_PMU`
 and `POST_PMD`.
 
-**Still open:** the pin's drive strength (downstream sets "medium"
-explicitly).
+**The pin's drive strength** was the last open item, and r183 closed it
+(section 7b).
+
+### 7b. r183 (`mclkpin-rc1`): gpio15 driven like downstream (2026-11-07)
+
+**What r169 to r182 actually ran with.** The `divclk` state set neither
+strength nor bias, so gpio15 stayed at its POR electrical config:
+
+| register | value | meaning |
+|---|---|---|
+| `0xce45` DIG_OUT_CTL | `01` | CMOS, strength LOW |
+| `0xce42` DIG_PULL | `04` | pull-down 10 µA |
+
+**What the two independent sources set:**
+- **Nexus 5** (`gpio@ce00 /* WCD_MCLK */`): raw strength 3 and pull 5 (no
+  pull). Its DT comment says "MED", but 3 is HIGH in its own qpnp enum.
+- **The Lumia's own ACPI** codec power state:
+  `PMICGPIO … 0x0E, 0, 0x02, 0x04, 0x03`, which is VIN2, FUNC1 and strength
+  3 (high).
+
+**Encodings checked against mainline `pinctrl-spmi-gpio.c`:**
+- register strength: 1 low, 2 medium, 3 high;
+- the binding's `PMIC_GPIO_STRENGTH_HIGH` (1) is translated to register 3;
+- pull: 4 is pull-down 10 µA, 5 is none.
+
+**r183 change:** DT only, `bias-disable;` and
+`qcom,drive-strength = <PMIC_GPIO_STRENGTH_HIGH>;` on `divclk`, applied to
+all three DTS copies. The module is unchanged except `MODULE_VERSION`.
+
+**Result, on one fresh boot:**
+- **mclk-own gate 90/0.** `0xce42 = 05` and `0xce45 = 03`; FUNC1, the
+  factor, the counts and the cache all as on r182.
+- **C3a acoustic `003952Z`: PASS 2/2.** −65.3 / −65.8 dBFS, contrast
+  28.9 / 25.3 dB, 1000.01 Hz both cycles, heard.
+- That is within run-to-run placement variance of r182 (−67 / −66.4); no
+  level change is claimed.
 
 ### 7a. 0x314 / 0x30d on MCLK: still read 00 (answered from the r182 journal)
 

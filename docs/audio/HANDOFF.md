@@ -1043,7 +1043,9 @@ dBFS), not to the driver.
 - C3a heard on both cycles through the driver-owned MCLK.
 - RPM leaves the ÷2 factor alone across vote transitions, though it does
   toggle `EN_CTL`.
-- **The current module is r182.**
+- **The current build is r183 `mclkpin-rc1`:** r182 plus gpio15 at HIGH
+  strength with no pull, as downstream and the Lumia's ACPI configure it.
+  It passes mclk-own 90/0 and C3a 2/2 (map section 7b).
 
 **0x314/0x30d on MCLK (r182 forced journal, map section 7a).** All 12 forced
 writes read back 00 with the codec on MCLK and CHIP_CTL `0a`, including the

@@ -1,0 +1,15 @@
+c3a-capture.py analyse, recording c3a-real-r183.wav (sha256 d8bde183d684af913c51b47d9f932ba974ad46644947bf9198e74c1c2be23c4b, archived in ~/c3a-evidence)
+run 20260901T003952Z (phone clock), C3A_CLOCK=mclk through the driver owner, gain field 00, module mclkpin-rc1 (r183: gpio15 MCLK pin at HIGH strength, no pull)
+Fresh boot, after the mclk-own gate (90/0, incl. gpio15 0xce42 = 05 no pull, 0xce45 = 03 CMOS HIGH). Heater off, earcup still. Operator heard cycle 1; analyser PASS 2/2.
+
+file                : c3a-real-r183.wav (120.0 s at 48000 Hz)
+floor at 1 kHz      : -91.4 dBFS (median over the recording)
+events found        : 2
+  [0] t=  55.660 s  PASS    contrast  28.9 dB
+       tone  -65.3  silence  -95.4  tone  -65.3  silence  -94.2  dBFS
+       peak 1000.01 / 999.99 Hz   narrowband 25.6 / 23.7 dB
+  [1] t= 100.750 s  PASS    contrast  25.3 dB
+       tone  -65.8  silence  -91.5  tone  -65.8  silence  -91.2  dBFS
+       peak 1000.01 / 999.92 Hz   narrowband 18.1 / 19.1 dB
+events_pass=2 events_weak=0 events_reject=0
+VERDICT: PASS (expected 2 tracking event(s), found 2)
