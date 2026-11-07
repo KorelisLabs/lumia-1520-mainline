@@ -1,0 +1,142 @@
+WCD9320 r178 on-chip HPHL voltmeter characterisation
+mode              : wcd9320-hphl-vm
+stamp             : 20260831T182729Z
+module            : vm-rc1 (expect vm-rc1, manifest)
+control function  : 217:a0:1:0
+design            : docs/audio/wcd9320-hphl-dc-vm-mapping.md section 9
+PA                : never enabled by this run
+
+=== step 5: on the RC oscillator the voltmeter refuses ===
+  PASS  measure on RCO is refused        yes
+  PASS  nothing ran                      0
+  PASS  the refusal was counted          1
+  PASS  the write set did not move       same
+
+=== the clock ===
+  PASS  divider on                       0
+  PASS  mclk vote                        0
+  PASS  switch to MCLK                   0
+  PASS  on_mclk                          1
+  PASS  cdc_alive                        1
+  ....  CHIP_CTL                         0a
+
+=== step 1: repeatability, 10 measurements at idle ===
+  run  rc  sta_z   sta_mb  span    mv10_mean  mv10_drift  restore_mismatch
+  1    0   -2186   -632    1554    6591       23          0
+  PASS  run 1 rc                         0
+  PASS  run 1 restore mismatches         0
+  PASS  run 1 span positive              span=1554
+  2    0   -2186   -634    1552    6600       70          0
+  PASS  run 2 rc                         0
+  PASS  run 2 restore mismatches         0
+  PASS  run 2 span positive              span=1552
+  3    0   -2184   -630    1554    6574       47          0
+  PASS  run 3 rc                         0
+  PASS  run 3 restore mismatches         0
+  PASS  run 3 span positive              span=1554
+  4    0   -2186   -634    1552    6607       47          0
+  PASS  run 4 rc                         0
+  PASS  run 4 restore mismatches         0
+  PASS  run 4 span positive              span=1552
+  5    0   -2184   -630    1554    6584       47          0
+  PASS  run 5 rc                         0
+  PASS  run 5 restore mismatches         0
+  PASS  run 5 span positive              span=1554
+  6    0   -2184   -632    1552    6598       46          0
+  PASS  run 6 rc                         0
+  PASS  run 6 restore mismatches         0
+  PASS  run 6 span positive              span=1552
+  7    0   -2182   -632    1550    6581       70          0
+  PASS  run 7 rc                         0
+  PASS  run 7 restore mismatches         0
+  PASS  run 7 span positive              span=1550
+  8    0   -2186   -632    1554    6609       46          0
+  PASS  run 8 rc                         0
+  PASS  run 8 restore mismatches         0
+  PASS  run 8 span positive              span=1554
+  9    0   -2184   -634    1550    6616       46          0
+  PASS  run 9 rc                         0
+  PASS  run 9 restore mismatches         0
+  PASS  run 9 span positive              span=1550
+  10   0   -2180   -632    1548    6565       70          0
+  PASS  run 10 rc                        0
+  PASS  run 10 restore mismatches        0
+  PASS  run 10 span positive             span=1548
+  ....  sta_z  mean / spread             -2184 / 6 counts
+  ....  sta_mb mean / spread             -632 / 4 counts
+  ....  span   mean / spread             1552 / 6 counts
+  ....  HPHL mv10 mean / spread          6592 / 51 (tenths of mV)
+  raw samples, run 1: -1616,-1618,-1618,-1618,-1616,-1616,-1616,-1618,-1618,-1616,-1616,-1618,-1616,-1616,-1616,-1618
+  fir bank as found:  06,06,06,06,06,06,06,06
+
+=== step 2: the mapped write set is restored ===
+  PASS  after 10 measurements            same
+  PASS  after the 1200 mV runs (CFILT1_VAL back to 80) same
+  PASS  back on RCO at the end, versus the start same
+  start: 110=65 128=40 129=80 131=16 133=02 14e=00 14f=80 150=f1 171=0c 174=38 1fe=44 3c0=00 3c1=00 3c3=03 3c6=45 3c7=04 3c8=78 3ce=c0 3cf=5d 3dc=00 
+  end:   110=65 128=40 129=80 131=16 133=02 14e=00 14f=80 150=f1 171=0c 174=38 1fe=44 3c0=00 3c1=00 3c3=03 3c6=45 3c7=04 3c8=78 3ce=c0 3cf=5d 3dc=00 
+
+=== step 3: self-consistency, CFILT1 at 1200 mV ===
+  PASS  1200 run 1 rc                    0
+  PASS  1200 run 1 micb_mv               1200
+  run 1: sta_z -2184 sta_mb -1148 span 1036
+  PASS  1200 run 2 rc                    0
+  PASS  1200 run 2 micb_mv               1200
+  run 2: sta_z -2184 sta_mb -1150 span 1034
+  PASS  1200 run 3 rc                    0
+  PASS  1200 run 3 micb_mv               1200
+  run 3: sta_z -2186 sta_mb -1148 span 1038
+  ....  span 1800 mV / 1200 mV           1552 / 1036 counts
+  ....  ratio (permille)                 667, expected 667 +/- 50
+  PASS  the span scales with the reference ratio 667 permille
+
+=== the 250 ms window at idle (the contract-run mode) ===
+  PASS  window rc                        0
+  ....  samples / gap                    26 / 8000 us
+  ....  mv10 mean / drift                6588 / 69
+  raw: -1614,-1616,-1616,-1616,-1614,-1614,-1614,-1618,-1616,-1618,-1614,-1614,-1614,-1616,-1614,-1616,-1616,-1616,-1616,-1612,-1616,-1614,-1614,-1616,-1616,-1618
+
+=== step 4: HPHL with the C3a DAC path up, PA off ===
+  PASS  DAC path established             0
+  ....  0x1b1 / 0x1ab                    c0 / 80
+  PASS  DAC-up run 1 rc                  0
+  run 1: sta_z -2184 span 1550 mv10 6603 raw -1616,-1614,-1614,-1616,-1614,-1618,-1616,-1616,-1618,-1614,
+  PASS  DAC-up run 2 rc                  0
+  run 2: sta_z -2184 span 1552 mv10 6592 raw -1616,-1614,-1614,-1616,-1616,-1614,-1614,-1614,-1616,-1616,
+  PASS  DAC-up run 3 rc                  0
+  run 3: sta_z -2184 span 1552 mv10 6595 raw -1614,-1616,-1614,-1616,-1618,-1616,-1616,-1616,-1618,-1614,
+  PASS  DAC-up window rc                 0
+  ....  DAC-up window mv10 mean / drift  6581 / 70
+  ....  HPHL mv10, idle vs DAC up        6592 vs 6596
+  ....  samples NOT equal to sta_z (idle / DAC up) 16 / 16 of 16
+
+=== safety ===
+  PASS  PA masked 00 at every sample     0
+  PASS  forced journal: this run's entries 4
+PA samples: start:00 rco-refusal:00 mclk:00 reps:00 alt:00 window:00 dac-up:00 dac-measured:00 dac-down:00 end:00
+
+-- dmesg, voltmeter lines --
+[   86.772200] wcd9320 217:a0:1:0: vm: refusing -- the codec is not on MCLK (downstream measures only with the external clock)
+[   88.881788] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2186 sta_mb -632, 204 write(s), 0 restore mismatch(es), rc 0
+[   89.101953] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2186 sta_mb -634, 408 write(s), 0 restore mismatch(es), rc 0
+[   89.322024] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -630, 612 write(s), 0 restore mismatch(es), rc 0
+[   89.541788] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2186 sta_mb -634, 816 write(s), 0 restore mismatch(es), rc 0
+[   89.763272] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -630, 1020 write(s), 0 restore mismatch(es), rc 0
+[   89.995509] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -632, 1224 write(s), 0 restore mismatch(es), rc 0
+[   90.221852] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2182 sta_mb -632, 1428 write(s), 0 restore mismatch(es), rc 0
+[   90.441855] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2186 sta_mb -632, 1632 write(s), 0 restore mismatch(es), rc 0
+[   90.661873] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -634, 1836 write(s), 0 restore mismatch(es), rc 0
+[   90.882774] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2180 sta_mb -632, 2040 write(s), 0 restore mismatch(es), rc 0
+[   92.071910] wcd9320 217:a0:1:0: vm: measure-1200, 16 sample(s), sta_z -2184 sta_mb -1148, 2245 write(s), 0 restore mismatch(es), rc 0
+[   92.292123] wcd9320 217:a0:1:0: vm: measure-1200, 16 sample(s), sta_z -2184 sta_mb -1150, 2450 write(s), 0 restore mismatch(es), rc 0
+[   92.515401] wcd9320 217:a0:1:0: vm: measure-1200, 16 sample(s), sta_z -2186 sta_mb -1148, 2655 write(s), 0 restore mismatch(es), rc 0
+[   93.879664] wcd9320 217:a0:1:0: vm: window, 26 sample(s), sta_z -2182 sta_mb -634, 2919 write(s), 0 restore mismatch(es), rc 0
+[   94.239829] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -634, 3123 write(s), 0 restore mismatch(es), rc 0
+[   94.462026] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -632, 3327 write(s), 0 restore mismatch(es), rc 0
+[   94.682095] wcd9320 217:a0:1:0: vm: measure, 16 sample(s), sta_z -2184 sta_mb -632, 3531 write(s), 0 restore mismatch(es), rc 0
+[   95.146623] wcd9320 217:a0:1:0: vm: window, 26 sample(s), sta_z -2182 sta_mb -632, 3795 write(s), 0 restore mismatch(es), rc 0
+
+=== verdict ===
+mode   : wcd9320-hphl-vm
+checks : 57 passed, 0 failed
+VERDICT: PASS (wcd9320-hphl-vm)

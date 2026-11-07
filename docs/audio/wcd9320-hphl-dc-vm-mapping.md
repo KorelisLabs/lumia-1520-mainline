@@ -260,6 +260,53 @@ against its own mic bias, at the internal HPHL node.
 - **Gate:** `tools/wcd9320-hphl-vm-evidence.sh`, section 9 steps 1-5 plus
   one window, PA never enabled.
 
+## 10b. r178 CHARACTERISATION RESULT (2026-11-07): instrument PASS, and a catch
+
+Evidence: `wcd9320-hphl-vm-20260831T182729Z.txt`, 57/0, from a fresh boot of
+`vm-rc1`. The PA was masked `00` at all ten samples; 4 forced entries (the
+DAC-path step).
+
+**The instrument works and is self-consistent:**
+
+| | result |
+|---|---|
+| refusal on RCO | refused, counted, wrote nothing |
+| `sta_z` over 10 runs | −2184, spread 6 counts |
+| `sta_mb` over 10 runs | −632, spread 4 counts |
+| span | 1552 ± 3 counts, so **1 count ≈ 1.16 mV** on the micbias channel |
+| **CFILT1 at 1200 mV** | span 1036. **Ratio 0.667, exactly 1200/1800** |
+| restore | the write set identical after every run, 0 mismatches in 18 calls |
+| clipping at 0 V | none: HPHL samples sit about 570 counts above `sta_z` |
+| samples within a run | ±2 counts |
+
+**The catch: the HPHL channel reads ≈ +659 mV, and that cannot be the node's
+voltage.**
+
+- At idle: mean `mv10` 6592. With the C3a DAC path up (PA off): 6596. A
+  window of 26 samples over 250 ms: drift 6.9 mV.
+- **The headset was plugged in**, confirmed by insert detect straight
+  after the run. The HPHL node therefore had a 32 Ω-class load to ground
+  with the PA off, and its true voltage was about 0 V. A real 659 mV
+  there would mean about 20 mA through the headphone, which the off PA
+  cannot source.
+- So the HPH input of the scaling mux has **its own offset**, and possibly
+  its own scale. The calibration taken on the micbias input (`0x02`) does
+  not transfer to the HPH input (`0xC0` / `0xF0`). That fits how downstream
+  uses L0: zdet never converts L0 to volts. It uses only count *ratios*
+  (L0 − L1) / (L0 − L2), with Taiko's own constants
+  (`taiko_compute_impedance`).
+
+**What can and cannot now be claimed:**
+
+- **Can:** the HPH channel is stable (±2 counts within a run, 51 tenths of
+  mV spread of means across ten runs) and does not move with the DAC
+  path. With the load fixing the node at 0 V, the PA-off reading **is the
+  channel's zero**. A PA-on reading minus it is the PA's DC offset, in HPH
+  counts.
+- **Cannot yet:** that difference in millivolts, with confidence. That
+  needs the HPH channel's scale, which the micbias calibration does not
+  give.
+
 ## 11. Open, and settled only on hardware
 
 - the ADC's input range, and the sign behaviour below 0 V (section 8)
