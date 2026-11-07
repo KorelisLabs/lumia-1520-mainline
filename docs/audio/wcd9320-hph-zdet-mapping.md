@@ -223,3 +223,64 @@ contract, qualified as on-chip.
 - **`read_bypassed_calls`:** 93 to 97 (snapshot and restore of each of the
   zdet's two tables).
 - **Gate:** `tools/wcd9320-hphl-zdet-evidence.sh`, section 7 steps 1-6.
+
+## 9. RESULT (2026-11-07): THE DC CONTRACT IS WITHIN, ON-CHIP. Gate 30/4, one side effect
+
+- **Evidence:** `wcd9320-hphl-zdet-20260831T191642Z.txt`, a fresh boot of
+  `zdet-rc1`, headset plugged in.
+- **The PA:** chip-verified `b0` (both channels) inside every zdet, `80`
+  after every one, and `00` (masked) at every sample outside it. No
+  forced writes.
+
+| | result |
+|---|---|
+| refusals | on RCO, and with the C3a prep up: both refused, nothing written |
+| **Zl / Zr** | **51.4 Ω / 56.0 Ω**, spread 0.5 / 0.4 Ω over five runs, L and R within 8.4 % |
+| **cross-check** | **PASS**: a plausible headset, consistent on both channels |
+| L0..R2 | repeatable to ±4 counts at navg 16 |
+| **sum or mean** | `(L2-L0)/(L2'-L0')` = **4.007**: **STA is a SUM** of navg samples |
+| **scale, navg 4** | **244 µV per count** (spread 5), 60 µV at navg 16 |
+
+**The answer:**
+
+- Option 1's PA-on shift of +59.6 counts at navg 4, times 244 µV per
+  count, is **14.5 mV. The contract allows 50 mV: WITHIN.**
+- Option 1's drift of at most 6 counts per 250 ms is **≤ 1.5 mV, inside
+  the 10 mV limit.**
+- `|Voff| ≤ 100 mV` is met by the physics, not by a reading. With the
+  headphone as the load and the PA off, the node is held at 0 V, and the
+  HPH channel has no absolute zero of its own (§10b of the voltmeter map).
+  That clause is the one part of §22 stated by argument rather than
+  measurement.
+
+**The micbias scale was about 4.75 times too coarse for this input.** The
+"≈ 69 mV, over the limit" reading from option 1 was an artefact of that
+assumption, which is why it was never taken as a verdict.
+
+**The four failures are ONE hardware side effect, not a restore defect:**
+
+- **What happened:** run 1 left `CDC_RX1_B6_CTL` (`0x2b5`) and
+  `CDC_RX2_B6_CTL` (`0x2bd`) reading `88` where the snapshot read `80`.
+  Writing `80` back does not clear bit 3.
+- **Why the other runs passed:** runs 2-5 snapshotted `88` and restored
+  `88`, so they restore cleanly. The two write-set comparisons that span
+  run 1 show the same two registers.
+- **Not new:** this project has seen `0x2b5 = 88` before. HANDOFF records
+  "`0x2b5` moved `hw=88 -> a8`" from the r165 era. So bit 3 is a state the
+  silicon sets itself (most likely when the RX interpolator or the PA
+  ramp path first runs) and does not clear on write. It belongs with
+  `0x1fd` as hardware-populated.
+- **Downstream:** it restores these registers the same way and never
+  reads them back, so it would leave the same bit set without noticing.
+- **Open:**
+  - classify the bit properly (volatile-or-not) before the regcache
+    tables next change
+  - confirm the C3a path still plays with it set, which r165-era runs
+    suggest
+
+**Tag consequence:** the §22 contract is now measured and within, on-chip:
+14.5 mV against 50, drift 1.5 mV against 10, both cross-checked. That
+meets the bar §10 of the voltmeter map set for
+`wcd9320-hphl-electrical-proven`, qualified as on-chip. **It is not
+awarded here.** The gate's verdict is FAIL on the side effect above, and
+the tag is the operator's call.

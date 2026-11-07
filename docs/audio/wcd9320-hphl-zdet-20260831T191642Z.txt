@@ -1,0 +1,103 @@
+WCD9320 r179 zdet: the HPH channel's scale
+mode              : wcd9320-hphl-zdet
+stamp             : 20260831T191642Z
+module            : zdet-rc1 (expect zdet-rc1, manifest)
+control function  : 217:a0:1:0
+design            : docs/audio/wcd9320-hph-zdet-mapping.md section 7
+stimulus          : downstream static PA on BOTH channels, ramp to ~50 mV for ~36 ms, inside hphl_zdet only
+
+=== 1. refusals ===
+  PASS  zdet on RCO is refused           yes
+  PASS  nothing ran on RCO               0
+  PASS  the write sets did not move on refusal same
+  PASS  C3a prep applied for the test    0
+  PASS  zdet with the prep up is refused yes
+  PASS  nothing ran with the prep up     0
+  PASS  both refusals counted            2
+
+=== the clock ===
+  PASS  divider on                       0
+  PASS  mclk vote                        0
+  PASS  switch to MCLK                   0
+  PASS  on_mclk                          1
+  PASS  cdc_alive                        1
+
+=== 2. repeatability, 5 measurements ===
+  run rc valid  L0     L1     L2     R0     R1     R2     L0'    L2'    Zl_mohm  Zr_mohm  uV/cnt16 uV/cnt4
+  1   1  1     -6236  5126   -5420  -6292  5028   -5544  -1560  -1354  51555    56031    61       242
+  FAIL  run 1 rc                         got=1 want=0
+  PASS  run 1 valid                      1
+  FAIL  run 1 restore mismatches         got=2 want=0
+  2   0  1     -6236  5118   -5420  -6294  5022   -5544  -1560  -1358  51518    55865    61       247
+  PASS  run 2 rc                         0
+  PASS  run 2 valid                      1
+  PASS  run 2 restore mismatches         0
+  3   0  1     -6240  5118   -5420  -6296  5024   -5544  -1560  -1354  51285    55735    60       242
+  PASS  run 3 rc                         0
+  PASS  run 3 valid                      1
+  PASS  run 3 restore mismatches         0
+  4   0  1     -6236  5120   -5422  -6288  5022   -5542  -1558  -1354  51651    56131    61       245
+  PASS  run 4 rc                         0
+  PASS  run 4 valid                      1
+  PASS  run 4 restore mismatches         0
+  5   0  1     -6238  5116   -5416  -6290  5026   -5542  -1556  -1354  51140    56013    60       247
+  PASS  run 5 rc                         0
+  PASS  run 5 valid                      1
+  PASS  run 5 restore mismatches         0
+  ....  Zl mean / spread (mohm)          51429 / 511
+  ....  Zr mean / spread (mohm)          55955 / 396
+  ....  scale navg16 mean / spread       60 / 1 uV per count
+  ....  scale navg4 mean / spread        244 / 5 uV per count
+
+=== 3. the cross-check: a plausible headset ===
+  PASS  Zl and Zr within 16000..64000 mohm Zl 51429 Zr 55955 mohm
+  PASS  Zl and Zr within 100 permille of each other differ by 84 permille
+
+=== 4. sum or mean ===
+  ....  (L2-L0) navg16 / (L2'-L0') navg4 4007 permille (~4000 if STA sums, ~1000 if it averages)
+
+=== 5. restore ===
+  FAIL  both write sets identical across the five runs got=MOVED want=same
+  FAIL  back on RCO, identical to the start got=MOVED want=same
+  PASS  0x1ab at the end                 80
+  PASS  no forced write by this run      0
+
+=== 6. THE ANSWER: option 1's PA-on shift in millivolts ===
+  ....  option 1 shift                   59.6 counts (navg 4)
+  ....  scale (navg 4)                   244 uV per count
+  ....  PA-on DC offset                  14.5 mV   (contract: <= 50 mV)
+  ....  cross-check                      PASS
+CONTRACT: |Von - Voff| = 14.5 mV <= 50 mV -- WITHIN, qualified as on-chip
+
+=== safety ===
+  PASS  PA masked 00 at every sample outside the zdet 0
+PA samples: start:00 mclk:00 prep-refusal:00 z1:00 z2:00 z3:00 z4:00 z5:00 end:00
+
+-- forced journal --
+forced_n=0 ring=16
+
+-- dmesg, zdet lines --
+[   87.725715] wcd9320 217:a0:1:0: zdet: refusing -- the codec is not on MCLK
+[   89.770489] wcd9320 217:a0:1:0: zdet: refusing -- the analog path is not idle (pa 0 prep 1 dac 0 rx1 0 comp1 0 clsh 0 prereq 0)
+[   91.900149] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[   92.003798] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[   92.022109] wcd9320 217:a0:1:0: zdet: ZDET RESTORE MISMATCH at 0x2bd: wrote 80, chip reads 88
+[   92.023982] wcd9320 217:a0:1:0: zdet: ZDET RESTORE MISMATCH at 0x2b5: wrote 80, chip reads 88
+[   92.039127] wcd9320 217:a0:1:0: zdet: valid 1 L -6236 5126 -5420 R -6292 5028 -5544 L0'/L2' -1560 -1354, 2 restore mismatch(es), rc -5
+[   92.104820] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[   92.206569] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[   92.232658] wcd9320 217:a0:1:0: zdet: valid 1 L -6236 5118 -5420 R -6294 5022 -5544 L0'/L2' -1560 -1358, 0 restore mismatch(es), rc 0
+[   92.294437] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[   92.396536] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[   92.422432] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5118 -5420 R -6296 5024 -5544 L0'/L2' -1560 -1354, 0 restore mismatch(es), rc 0
+[   92.483551] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[   92.583425] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[   92.615569] wcd9320 217:a0:1:0: zdet: valid 1 L -6236 5120 -5422 R -6288 5022 -5542 L0'/L2' -1558 -1354, 0 restore mismatch(es), rc 0
+[   92.677859] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[   92.778167] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[   92.803081] wcd9320 217:a0:1:0: zdet: valid 1 L -6238 5116 -5416 R -6290 5026 -5542 L0'/L2' -1556 -1354, 0 restore mismatch(es), rc 0
+
+=== verdict ===
+mode   : wcd9320-hphl-zdet
+checks : 30 passed, 4 failed
+VERDICT: FAIL (wcd9320-hphl-zdet)
