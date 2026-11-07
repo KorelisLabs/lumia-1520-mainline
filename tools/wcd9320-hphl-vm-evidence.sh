@@ -214,7 +214,7 @@ spread() { printf '%s\n' "$@" | awk 'NF{if(min==""||$1<min)min=$1; if(max==""||$
 
 	hdr "the clock"
 	check "divider factor (board state)" "$(rv "$DIV_ST" factor)" "2"
-	check "gpio15 on divclk (board state)" "$(rv "$DIV_ST" function)" "1"
+	check "gpio15 on divclk (board state)" "$(rv "$DIV_ST" function)" "2"
 	check "switch to MCLK" "$SW_RC" "0"
 	check "on_mclk" "$(rv "$CLK_ST" on_mclk)" "1"
 	check "cdc_alive" "$(rv "$CLK_ST" cdc_alive)" "1"

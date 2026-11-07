@@ -1,0 +1,15 @@
+c3a-capture.py analyse, recording c3a-real-r182.wav (sha256 dea66ab96eef9de14316085ca3d603e35a718665fa0cc7dc6eba97bf00ec7cf4, archived in ~/c3a-evidence)
+run 20260831T213202Z (phone clock), C3A_CLOCK=mclk through the r182 driver owner (one clk_source_test reference), gain field 00, module mclk-own-rc1 (r182)
+Same boot, after the mclk-own gate (88/0), vm (57/0) and zdet (34/0). Operator HEARD BOTH tones. Cycle 1 PASS (-67.0 dBFS, 1000.00 Hz, contrast 24.9 dB). Cycle 2 REJECT: the 1 kHz tone rose +26..32 dB to -66.4 dBFS (same level as cycle 1), but broadband components (510 Hz, 2.2-4 kHz, -88..-100 dBFS) rose ~40 dB in one segment; no 2/3 kHz content. The operator reports moving the headset slightly during cycle 2. Accepted by the operator on ear plus measurement.
+
+file                : c3a-real-r182.wav (122.8 s at 48000 Hz)
+floor at 1 kHz      : -91.8 dBFS (median over the recording)
+events found        : 2
+  [0] t=  65.220 s  PASS    contrast  24.9 dB
+       tone  -67.0  silence  -92.8  tone  -66.9  silence  -91.9  dBFS
+       peak 1000.00 / 999.91 Hz   narrowband 21.6 / 23.3 dB
+  [1] t= 107.550 s  REJECT  contrast  19.7 dB
+       tone  -66.4  silence  -86.1  tone  -66.5  silence  -91.6  dBFS
+       peak 999.86 / 1000.04 Hz   narrowband 16.9 / 13.8 dB   -- another component rose more than 1 kHz did
+events_pass=1 events_weak=0 events_reject=1
+VERDICT: FAIL (expected 2 tracking event(s), found 1)

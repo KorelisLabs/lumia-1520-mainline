@@ -11,7 +11,8 @@
 #
 # This run asks five things:
 #
-#   1  board state at boot: factor 2, gpio15 function 1, codec on RCO, no users
+#   1  board state at boot: factor 2, gpio15 src_sel 2 (FUNC1 = DIV_CLK; the
+#      PMIC encoding is 0 normal, 1 paired, 2 func1), codec on RCO, no users
 #   2  the count: get, get, put, put -- only 0 -> 1 and 1 -> 0 switch, and the
 #      codec is on MCLK (CHIP_CTL declaring 9.6 MHz) exactly while users > 0
 #   3  THE UNTESTED HAZARD: the factor survives every RPM vote transition.
@@ -128,7 +129,7 @@ chip_ctl_on() { printf '%02x' $(( (0x$1 & 0xf9) | 0x02 )); }
 	say "  $(printf '%s' "$D0" | tr '\n' ' ')"
 	check "divider applied at probe"      "$(rv "$D0" applied)" "1"
 	check "DIV_CTL1 factor 2 (XO/2)"      "$(rv "$D0" factor)" "2"
-	check "gpio15 function 1 (DIV_CLK)"   "$(rv "$D0" function)" "1"
+	check "gpio15 src_sel 2 (FUNC1 = DIV_CLK)" "$(rv "$D0" function)" "2"
 	check "codec on RCO"                  "$(rv "$S0" source)" "RCO"
 	check "on_mclk 0"                     "$(rv "$S0" on_mclk)" "0"
 	check "mclk_users 0"                  "$(rv "$S0" mclk_users)" "0"
@@ -177,7 +178,7 @@ chip_ctl_on() { printf '%02x' $(( (0x$1 & 0xf9) | 0x02 )); }
 		check "c$k CHIP_CTL restored"         "$(rv "$S" chip_ctl_0x000)" "$C0"
 		check "c$k restored once"             "$(rv "$S" restores)" "$((RS0 + 1))"
 		check "c$k factor after vote OFF"     "$(rv "$D" factor)" "2"
-		check "c$k gpio15 still DIV_CLK"      "$(rv "$D" function)" "1"
+		check "c$k gpio15 still DIV_CLK"      "$(rv "$D" function)" "2"
 		if [ -n "$CLKS" ]; then
 			check "c$k rpm clock count back to start" "$(clk_sum)" "$K0"
 		fi

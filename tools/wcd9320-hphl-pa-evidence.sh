@@ -254,14 +254,15 @@ c3_hph_status() {	# the two headphone status registers, chip reads
 c3_clock_up() {
 	[ "$CLOCK" = "mclk" ] || return 0
 	# r182: the PM8941 divider is board state, applied at probe. Read it,
-	# refuse if it is not XO/2 on gpio15, and take ONE reference through the
+	# refuse unless XO/2 with gpio15 at src_sel 2
+	# (FUNC1 = DIV_CLK), and take ONE reference through the
 	# driver's owner, which casts the RPM vote and runs the r169 switch.
 	_ck_dv=""
 	for _ck_d in /sys/bus/platform/devices/*mclk-divider-experiment*; do
 		[ -e "$_ck_d/mclk_div_state" ] && { _ck_dv=$(cat "$_ck_d/mclk_div_state" 2>/dev/null); break; }
 	done
 	jrn "clock: board state: div_ctl1=$(rv "$_ck_dv" div_ctl1) factor=$(rv "$_ck_dv" factor) gpio15_function=$(rv "$_ck_dv" function)"
-	if [ "$(rv "$_ck_dv" factor)" != "2" ] || [ "$(rv "$_ck_dv" function)" != "1" ]; then
+	if [ "$(rv "$_ck_dv" factor)" != "2" ] || [ "$(rv "$_ck_dv" function)" != "2" ]; then
 		jrn "clock: the PM8941 divider is not XO/2 on gpio15 -- refusing"
 		return 1
 	fi

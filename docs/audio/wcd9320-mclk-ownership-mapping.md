@@ -226,7 +226,7 @@ put:  lock; if (!mclk_users) { warn; return -EINVAL }
 3. **Ordering between the two drivers.** The first `get` comes from user
    space, long after both drivers in the module have probed, so no deferral
    machinery is added. **The gate checks `mclk_div_state` (factor 2, gpio15
-   function 1) before the first `get`.**
+   src_sel 2 = FUNC1) before the first `get`.**
 4. **A failed switch must not leak the vote.** A synthetic selftest forces
    the switch to fail and checks two things: `mclk_users` returns to 0, and
    the RPM clock's enable count returns to its starting value.
@@ -252,7 +252,8 @@ Fences first, then driver, then selftests, then runner (the project rule).
    selftest (`wcd9320-hphl-pa-expect.sh`) with the one-write clock up/down.
 4. **New gate** `tools/wcd9320-mclk-own-evidence.sh`, digital only, PA never
    enabled:
-   - **Boot:** factor 2, function 1, `source=RCO`, `mclk_users=0`.
+   - **Boot:** factor 2, gpio15 src_sel 2 (FUNC1), `source=RCO`,
+     `mclk_users=0`.
    - **Then three cycles of** `get -> get -> put -> put`, checking all of:
      - `on_mclk`, `cdc_alive` and `chip_ctl` (`0a` on MCLK, `08` after);
      - `mclk_users` at each step;
@@ -318,12 +319,61 @@ Fences first, then driver, then selftests, then runner (the project rule).
   and the only failures left are the five that need the built module.
 - **Runners:** `c3_clock_up`/`c3_clock_down` in the C3a runner, and the clock
   steps of the vm gate, the zdet gate and the rxb6 trace, are now:
-  - read the board state (refuse unless factor 2 and gpio15 function 1);
+  - read the board state (refuse unless factor 2 and gpio15 src_sel 2 (FUNC1));
   - one `mclk`, holding the reference only if it succeeded;
   - one `rco`.
 - **Check counts:** the vm and zdet gates keep 57 and 34. The "divider on" and
-  "mclk vote" checks became "factor 2" and "gpio15 function 1".
+  "mclk vote" checks became "factor 2" and "gpio15 src_sel 2 (FUNC1)".
 - **Selftests:** PA 130/0; the evidence lib behaves as expected.
 - **New gate:** `tools/wcd9320-mclk-own-evidence.sh`, three cycles by default.
 - **Retired:** `wcd9320-mclk-evidence.sh`, `-clk-source-evidence.sh` and
   `-conjunction-evidence.sh` get a header note and are otherwise untouched.
+
+## 7. r182 RESULT (2026-11-07): the driver owns the MCLK, and it plays
+
+**Build:** verify-artifact 329/0, all 28 checks in 5h included.
+
+All runs below are on one fresh boot, in order.
+
+| Run | Result |
+|---|---|
+| `mclk-own` `212645Z` | FAIL 84/4. A **gate defect**, not a driver one: the gate expected gpio15 `function=1`. The PMIC encodes `src_sel` as 0 normal, 1 paired, **2 func1**, and r168 recorded "gpio15 function 2" for the working state. The same wrong `1` was also in the C3a runner and the vm and zdet gates, and every copy was fixed before the runs below. |
+| `mclk-own` `212826Z` | **PASS 88/0** |
+| vm `212833Z` | **PASS 57/0** |
+| zdet `212851Z` | **PASS 34/0**. Zl 51.3 Ω, Zr 56.2 Ω, DC 14.4 mV within 50. |
+| C3a acoustic `213202Z` | **Heard, both cycles.** Cycle 1 analyser PASS (−67.0 dBFS, 1000.00 Hz, 24.9 dB). Cycle 2: the tone was present at −66.4 dBFS, but the analyser REJECTED it on a broadband rise at the mic; the operator had moved the headset. Accepted by the operator. |
+
+**What the gate settled:**
+
+- **Hazard 1 is answered: RPM never touched the factor.** `DIV_CTL1` read
+  `02` after every vote on and every vote off, over six transitions across the
+  two gate runs.
+- **RPM does write the peripheral, though.** `EN_CTL` read `80` at boot (left
+  on by the boot chain) and `00` after the first run's vote-off. So RPM
+  touches the divider's enable bit on vote transitions and leaves the factor
+  alone. Downstream's static-factor model holds on this board.
+- **The vote is the active-only clock.** `div_clk1_a` went `0 -> 1 -> 0` with
+  each get and put; `div_clk1` stayed 0.
+- **The counts behave.** Only `0 -> 1` and `1 -> 0` switched. A put with no
+  reference was refused and changed nothing.
+- **Clean end state.** `cache_check` 0. The forced journal was untouched by
+  the gate (the vm DAC step used its usual 4).
+- **The C3a journal shows the new path end to end:**
+
+  ```
+  clock: board state: div_ctl1=02 factor=2 gpio15_function=2
+  clock: mclk_users=1 on_mclk=1 cdc_alive=1 chip_ctl_0x000=0a ...
+  ...
+  clock: RESTORED to RCO: mclk_users=0 on_mclk=0 cdc_alive=1 chip_ctl_0x000=08
+  ```
+
+  Phone telemetry in both cycles matched r181: `0x1ab=a0`, `1b3=08`, port 16
+  clean, OCP 0.
+
+**Status:** "MCLK into the driver" is done up to the DAPM hand-off. When the
+card arrives, its `MCLK` supply calls `wcd9320_mclk_get/_put` from `PRE_PMU`
+and `POST_PMD`.
+
+**Still open:**
+- the pin's drive strength (downstream sets "medium" explicitly);
+- the 0x314/0x30d recheck on MCLK.

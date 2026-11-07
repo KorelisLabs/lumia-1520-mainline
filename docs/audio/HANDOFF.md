@@ -1010,8 +1010,8 @@ the left headphone PA, an autonomous button-driven runner for a run that has no
 ssh, and the fences that bound the first two writes this project has ever made
 to `0x1ab`. Everything offline passes. Nothing has touched hardware.
 
-**CURRENT MODULE: r181 `clshk-rc1` (2026-11-07). The HPHL DC contract is
-MEASURED and WITHIN, on-chip.** No scope was needed; the MBHC voltmeter did it.
+**THE HPHL DC CONTRACT IS MEASURED and WITHIN, on-chip** (r178 to r181,
+re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
 - **r178 `vm-rc1`:** the MBHC voltmeter (`hphl_vm`, gate
   `tools/wcd9320-hphl-vm-evidence.sh`, 57/0). It reads in counts; the HPH mux
   has its own offset, so the micbias calibration does not give the scale.
@@ -1038,15 +1038,22 @@ coincident thump at the mic, not on the tone). An earlier run on a boot that
 had already run vm, zdet and the trace was lost to a fan heater (floor -75
 dBFS), not to the driver.
 
-**r182 `mclk-own-rc1` STAGED, NOT BUILT:** MCLK ownership moves into the
-driver. The PM8941 divider is board state applied at probe, and one
+**r182 `mclk-own-rc1` RAN AND PASSES (2026-11-07, map section 7):**
+- mclk-own gate 88/0, vm 57/0, zdet 34/0, `cache_check` 0.
+- C3a heard on both cycles through the driver-owned MCLK.
+- RPM leaves the ÷2 factor alone across vote transitions, though it does
+  toggle `EN_CTL`.
+- **The current module is r182.**
+
+MCLK ownership moves into the driver. The PM8941 divider is board state applied at probe, and one
 refcounted `wcd9320_mclk_get/_put` holds the RPM vote around the unchanged
 r169 switch (`clk_source_test` `mclk`/`rco`). `mclk_test` and `mclk_div_test`
 are gone. New gate: `tools/wcd9320-mclk-own-evidence.sh`. Map and as-staged
 notes: [wcd9320-mclk-ownership-mapping.md](wcd9320-mclk-ownership-mapping.md).
 
 **Forced-write budget:** the forced log holds 16 entries per boot. A C3a
-listening cycle uses 4; vm plus zdet together 4; the rxb6 trace 4 (measured).
+listening cycle uses 4; vm plus zdet together 4; the rxb6 trace 4; the r182
+mclk-own gate 0 (measured).
 Plan runs per boot around that, or the last run is refused.
 
 **C3a ACOUSTIC: PASS, 4/4 -- SOUND, ON THE 9.6 MHz MCLK (2026-11-07).** With
