@@ -324,6 +324,43 @@ So:
   - rx1-digital and comp1-observable: the chain is checked as bit 5, not
     an exact `a0`/`80`
 
+### 9b. r180 regression, and the second stale-cache register (r181)
+
+On a fresh boot of `rxb6-rc1`:
+
+- **The voltmeter gate passed 57/0** (span ratio 0.665).
+- **The zdet gate passed 34/0:** Zl 51.5 Ω, Zr 55.9 Ω, sum ratio 3.99,
+  PA-on DC **14.5 mV, WITHIN**. The RX_B6 side effect is gone.
+- **The rxb6 trace:** cache and chip now agree on `0x2b5`/`0x2bd` through
+  RX1 on/off, a stream and a zdet. The RX1 write's own readback now shows
+  the real `a8`/`88`.
+
+The `cache_check` after the gates still showed **2 mismatches**, the first
+`0x328` (cache `00`, chip `08`).
+
+- **What it is:** `CDC_CLSH_K_ADDR`, the class-H K-table **index, which
+  auto-increments** as the eight K entries are pushed through `K_DATA`
+  (`0x329`). The voltmeter gate's DAC-path step ran class-H on that boot.
+  The idle-time regcache certification never ran class-H.
+- **The second mismatch** is almost certainly `K_DATA` itself:
+  `cache_check` names only the first. A data port returns the indexed
+  entry, not the last value written. `taiko_volatile()` covers the IIR
+  and ANC coefficient ports for exactly that reason, and misses this one.
+- **One process failure, recorded:** the first trace run was a 0-byte
+  script. It was copied into place without a `sync` and then the phone
+  was hard-power-cycled. The gates themselves were verified intact by
+  sha256.
+
+**r181 (`clshk-rc1`):**
+
+- **Cache tables:** `0x328` joins `HW_POPULATED` (measured) and `0x329`
+  joins `SEMANTIC_VOLATILE` (the data port), regenerated. The diff is two
+  volatile bits and two defaults: volatile 405, defaults 456, zero
+  defaults 229, `cache_check` 456 / 213.
+- **Gates:** the five count checks are updated again.
+- **Trace:** gains a C3a DAC-path step, so class-H is exercised under
+  `cache_check`.
+
 **Tag consequence:** the §22 contract is now measured and within, on-chip:
 14.5 mV against 50, drift 1.5 mV against 10, both cross-checked. That
 meets the bar §10 of the voltmeter map set for

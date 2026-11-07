@@ -259,7 +259,7 @@ LIVE_MASK=$(sed -n 's/^status=[0-9a-f]* [0-9a-f]* [0-9a-f]* [0-9a-f]* mask=\([0-
 		_cc="/tmp/.wcd9320-cc-$$"
 		cat "$PGD/cache_check" > "$_cc" 2>/dev/null
 		check "codec cache mismatches" "$(kv "$_cc" mismatches)" "0"
-		check "codec cacheable checked" "$(kv "$_cc" cacheable_checked)" "${EXPECT_CACHEABLE:-458}"
+		check "codec cacheable checked" "$(kv "$_cc" cacheable_checked)" "${EXPECT_CACHEABLE:-456}"
 		rm -f "$_cc"
 	fi
 	check "masks undisturbed" "$LIVE_MASK" "$MASK_ALL"

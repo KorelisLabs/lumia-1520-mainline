@@ -385,7 +385,7 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 13:24:58.124131100 -0500
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 13:41:58.020033561 -0500
 @@ -0,0 +1,10766 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
@@ -1079,9 +1079,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * readable : 669 of 1024
 + *            351 undocumented map holes rejected
 + *            4 write-only (INTR_CLEAR) rejected
-+ * volatile : 403 (taiko_volatile + 0x1fd, 0x2b5, 0x2bd measured)
-+ * defaults : 458 -- every eligible cacheable register,
-+ *            including the 230 whose
++ * volatile : 405 (taiko_volatile + 0x1fd, 0x2b5, 0x2bd, 0x328 measured)
++ * defaults : 456 -- every eligible cacheable register,
++ *            including the 229 whose
 + *            reset value is zero, because reg_defaults takes part in
 + *            sync decisions and an absent entry is not the same as a
 + *            registered zero.
@@ -1117,6 +1117,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + *   0x1fd              RC_OSC_TUNER, moved 14 -> 15 with no write
 + *   0x2b5, 0x2bd       CDC_RX1/RX2_B6_CTL: bit 3 is a sticky status the
 + *                      chip sets when the chain runs (r179 rxb6 trace)
++ *   0x328              CDC_CLSH_K_ADDR: the K-table index auto-increments
++ *   0x329              CDC_CLSH_K_DATA: the data port behind it (semantic)
 + * and status registers taiko_volatile() misses, on semantics:
 + *   SAR_ERR, RX_LINE/EAR_STATUS, SPKR_DRV/PROT status, RC_OSC_STATUS,
 + *   VBAT_GAIN_UPD_MON, and COMP0/1/2_SHUT_DOWN_STATUS -- the last three
@@ -1131,7 +1133,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	0x00, 0x18, 0x60, 0x30, 0xfc, 0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02,
 +	0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0xff, 0x00, 0xfc, 0x00, 0x00, 0x00,
 +	0x00, 0x00, 0xa0, 0xa0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00, 0x0c,
-+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfc, 0xff, 0x0f,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0xfc, 0xff, 0x0f,
 +	0x00, 0x40, 0x40, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 +	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 +};
@@ -1497,8 +1499,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ 0x325, 0x0c },	/* TAIKO_A_CDC_CLSH_IDLE_EAR_THSD */
 +	{ 0x326, 0x18 },	/* TAIKO_A_CDC_CLSH_FCLKONLY_HPH_THSD */
 +	{ 0x327, 0x23 },	/* TAIKO_A_CDC_CLSH_FCLKONLY_EAR_THSD */
-+	{ 0x328, 0x00 },	/* TAIKO_A_CDC_CLSH_K_ADDR */
-+	{ 0x329, 0xa4 },	/* TAIKO_A_CDC_CLSH_K_DATA */
 +	{ 0x32a, 0xd7 },	/* TAIKO_A_CDC_CLSH_I_PA_FACT_HPH_L */
 +	{ 0x32b, 0x05 },	/* TAIKO_A_CDC_CLSH_I_PA_FACT_HPH_U */
 +	{ 0x32c, 0x60 },	/* TAIKO_A_CDC_CLSH_I_PA_FACT_EAR_L */
@@ -11150,7 +11150,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("rxb6-rc1");
++MODULE_VERSION("clshk-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

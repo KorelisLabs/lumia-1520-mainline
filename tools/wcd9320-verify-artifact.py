@@ -33,9 +33,11 @@ EXPECT = {
     "readable": 669,
     # r180: 401 -> 403 and 460 -> 458: 0x2b5 / 0x2bd became volatile (bit 3
     # is chip-set, measured by the r179 rxb6 trace) and lost their defaults.
-    "volatile": 403,
-    "defaults": 458,
-    "zero_defaults": 230,
+    # r181: 403 -> 405, 458 -> 456, 230 -> 229: CLSH_K_ADDR (0x328, measured
+    # auto-increment) and CLSH_K_DATA (0x329, its data port) became volatile.
+    "volatile": 405,
+    "defaults": 456,
+    "zero_defaults": 229,
     "bypass_calls": 10,      # five bypass(true)/bypass(false) pairs
     # C2b reads the CHIP instead of the cache. Every register that branch
     # touches -- 0x1a2, 0x1ab, 0x1ae, 0x1b1, 0x1b4, 0x30d, 0x3b0 and the 0x370
@@ -434,6 +436,11 @@ def main():
           "measured hardware-populated (bit 3)")
     check("0x2bd CDC_RX2_B6_CTL volatile", 0x2bd in volatile,
           "measured hardware-populated (bit 3)")
+    # r181: the class-H K table is an indirect port; the index auto-increments.
+    check("0x328 CDC_CLSH_K_ADDR volatile", 0x328 in volatile,
+          "measured auto-incrementing index")
+    check("0x329 CDC_CLSH_K_DATA volatile", 0x329 in volatile,
+          "the data port behind it")
     check("0x14b MBHC_INSERT_DET_STATUS volatile", 0x14b in volatile)
     check("INTR_CLEAR 0x09c-0x09f not readable",
           not (set(range(0x9c, 0xa0)) & readable))

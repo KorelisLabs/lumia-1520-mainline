@@ -67,7 +67,13 @@ WRITE_ONLY = set(range(0x09C, 0x0A0))       # INTR_CLEAR0-3, write-1-to-clear
 #
 # RX3-RX7 B6 almost certainly share the bit, but this driver never enables
 # those chains, so it is unmeasured and they stay cacheable.
-HW_POPULATED = {0x1FD, 0x2B5, 0x2BD}
+#
+#   0x328  CDC_CLSH_K_ADDR  the class-H K-table index AUTO-INCREMENTS as
+#                           K_DATA is written: the class-H enable writes index
+#                           0 and pushes eight entries, and the chip then reads
+#                           08 against a cached 00 (r180 regression,
+#                           cache_check after the C3a DAC path, 2026-11-07).
+HW_POPULATED = {0x1FD, 0x2B5, 0x2BD, 0x328}
 
 # Status registers taiko_volatile() does not cover.
 #
@@ -91,6 +97,11 @@ SEMANTIC_VOLATILE = {
     0x1FC,                           # RC_OSC_STATUS
     0x2FA,                           # CDC_VBAT_GAIN_UPD_MON
     0x36E, 0x376, 0x37E,             # CDC_COMP0/1/2_SHUT_DOWN_STATUS -- measured moving
+    # CDC_CLSH_K_DATA: the data port behind K_ADDR's auto-incrementing index.
+    # A read returns the entry at the current index, not the last value
+    # written -- the same reason taiko_volatile() covers the IIR and ANC
+    # coefficient ports, and the one indirect port it misses. (r181)
+    0x329,
 }
 
 
@@ -196,7 +207,7 @@ def main():
     print(f' * readable : {len(readable)} of {MAX_REGISTER + 1}')
     print(f' *            {len(holes)} undocumented map holes rejected')
     print(f' *            {len(WRITE_ONLY)} write-only (INTR_CLEAR) rejected')
-    print(f' * volatile : {len(vol)} (taiko_volatile + 0x1fd, 0x2b5, 0x2bd measured)')
+    print(f' * volatile : {len(vol)} (taiko_volatile + 0x1fd, 0x2b5, 0x2bd, 0x328 measured)')
     print(f' * defaults : {len(defaults)} -- every eligible cacheable register,')
     print(f' *            including the {sum(1 for _, v in defaults if v == 0)} whose')
     print(' *            reset value is zero, because reg_defaults takes part in')
@@ -231,6 +242,8 @@ def main():
     print(' *   0x1fd              RC_OSC_TUNER, moved 14 -> 15 with no write')
     print(' *   0x2b5, 0x2bd       CDC_RX1/RX2_B6_CTL: bit 3 is a sticky status the')
     print(' *                      chip sets when the chain runs (r179 rxb6 trace)')
+    print(' *   0x328              CDC_CLSH_K_ADDR: the K-table index auto-increments')
+    print(' *   0x329              CDC_CLSH_K_DATA: the data port behind it (semantic)')
     print(' * and status registers taiko_volatile() misses, on semantics:')
     print(' *   SAR_ERR, RX_LINE/EAR_STATUS, SPKR_DRV/PROT status, RC_OSC_STATUS,')
     print(' *   VBAT_GAIN_UPD_MON, and COMP0/1/2_SHUT_DOWN_STATUS -- the last three')

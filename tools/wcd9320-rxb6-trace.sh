@@ -76,6 +76,15 @@ rm -f /tmp/.b6-$$
 snap "3 rx1 on, after stream"
 echo rx1-off > "$PGD/rx1_digital_test"; snap "3 rx1 off"
 
+# r181: the C3a DAC path -- class-H pushes its K table through CLSH_K_ADDR /
+# K_DATA here, which is what exposed 0x328 in the r180 regression. PA off.
+echo prep > "$PGD/hphl_pa_test"; echo on > "$PGD/cdc_clk_prereq"
+echo rx1-on > "$PGD/rx1_digital_test"; echo dac-on-reggain > "$PGD/hphl_dac_test"
+snap "3b DAC path up (PA off)"
+echo dac-off-reggain > "$PGD/hphl_dac_test"; echo off > "$PGD/cdc_clk_prereq"
+echo rx1-off > "$PGD/rx1_digital_test"; echo unprep > "$PGD/hphl_pa_test"
+snap "3b DAC path down"
+
 echo measure > "$PGD/hphl_zdet"; say "  zdet rc=$?"
 snap "4 after one zdet"
 say "  zdet: $(cat "$PGD/hphl_zdet" | tr '\n' ' ')"
