@@ -1016,6 +1016,19 @@ mapping). That waiver covers C3a only. Before any final build, HPHL DC must be
 measured with the PA off and on -- by scope, or by the on-chip MBHC voltmeter
 planned as r176.
 
+**C3a ACOUSTIC RESULT SO FAR: SILENCE, AND A LEAD (2026-11-06).** Three
+acoustic runs heard nothing, the last at maximum gain with the earcup sealed:
+at least about 28 dB below the PC-headset level, or nothing at all. Read-only
+afterwards, the codec's SLIMbus RX port 16 had **OVERFLOW** latched
+(interface `0x034 = 01`, `0x060 = 05`) with every port interrupt enable at
+`00`. That is the first receiver-side observable this project has had: it
+suggests the bytes arrive and the RX path never takes them out. **r177
+`port-flow-rc1` is STAGED**: one attribute, `slim_port_status` (read, plus
+`clear` = one write to `0x038`), and a six-row digital-only gate,
+`tools/wcd9320-port-flow-evidence.sh`, with the PA never enabled. Design,
+predictions and the meaning of each outcome:
+[wcd9320-rx-port-flow-mapping.md](wcd9320-rx-port-flow-mapping.md).
+
 **Do not reopen the MCLK branch** (closed at r169) and **do not reintroduce
 readback expectations for `0x314` or `0x30d`** (they are permanently
 write-effect-unverifiable, inverse-write-mandatory).
