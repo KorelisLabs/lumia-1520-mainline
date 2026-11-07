@@ -125,6 +125,19 @@ CYCLES="${CYCLES:-2}"
 # CONTROL "pa-off" runs everything identically except the PA is never enabled.
 #
 INSTRUMENT="${C3A_INSTRUMENT:-scope}"
+#
+# THE CODEC CLOCK FOR THE RUN (r177).
+#
+#   rco   the internal RC oscillator -- every C3a run before r177
+#   mclk  the external 9.6 MHz clock from the PM8941 divider, selected through
+#         the r169 switch (proven reversible three times), which also declares
+#         9.6 MHz in CHIP_CTL while running on it. That is how the working
+#         Xperia Z2 mainline driver runs this codec, and it reports the
+#         headphone status registers 0x1b3/0x1b9 reading 04 without a master
+#         clock and 08 with one while a tone plays. Switched once before
+#         cycle 1, restored after the last cycle and on every abort.
+#
+CLOCK="${C3A_CLOCK:-rco}"
 DC_WAIVER="${C3A_DC_WAIVER:-}"
 CONTROL="${C3A_CONTROL:-}"
 if [ "$CONTROL" = "pa-off" ]; then
@@ -205,6 +218,59 @@ c3_find_codec() {
 
 # rv <text> <key>
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
+
+# ------------------------------------------------------------- the clock --
+#
+# r177. Both are no-ops unless C3A_CLOCK=mclk. The switch refuses inside the
+# driver if the PA is on, so these run only where the PA is off: before cycle
+# 1, and after the teardown. The restore can never be blocked by a guard --
+# getting the codec back onto a working clock matters more than any check.
+CLOCK_UP=0
+c3_hph_status() {	# the two headphone status registers, chip reads
+	# 0x1b3 and 0x1b9 are volatile in this driver's regmap, so the debugfs
+	# register file reads them from the chip, never from the cache.
+	# ONE pass for both: a read of this file costs about 190 ms measured on
+	# the phone, and it has to land inside a 1.1 s tone.
+	_hs_r="/sys/kernel/debug/regmap/${PGD_NAME:-none}/registers"
+	_hs_v=$(grep -m2 -E '^(1b3|1b9):' "$_hs_r" 2>/dev/null | tr -d ' ' | tr '\n' ' ')
+	printf '%s' "${_hs_v:-unreadable}" | sed 's/:/=/g; s/ *$//'
+}
+c3_clock_up() {
+	[ "$CLOCK" = "mclk" ] || return 0
+	_ck_div=""
+	for _ck_d in /sys/bus/platform/devices/*mclk-divider-experiment*; do
+		[ -d "$_ck_d" ] && { _ck_div="$_ck_d/mclk_div_test"; break; }
+	done
+	[ -n "$_ck_div" ] || { jrn "clock: the PM8941 divider device is missing"; return 1; }
+	CLOCK_DIV="$_ck_div"
+	jrn "clock: before the switch: $(c3_hph_status)"
+	echo on > "$CLOCK_DIV" 2>/dev/null || { jrn "clock: divider on REFUSED"; return 1; }
+	echo on > "$PGD/mclk_test" 2>/dev/null || {
+		jrn "clock: mclk vote REFUSED"; echo off > "$CLOCK_DIV" 2>/dev/null; return 1; }
+	CLOCK_UP=1
+	if ! echo mclk > "$PGD/clk_source_test" 2>/dev/null; then
+		jrn "clock: the switch to MCLK FAILED (the driver restores RCO itself)"
+		return 1
+	fi
+	_ck_st=$(cat "$PGD/clk_source_state" 2>/dev/null)
+	jrn "clock: on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000) chip_ctl_latched=$(rv "$_ck_st" chip_ctl_latched) buff1_0x108=$(rv "$_ck_st" buff1_0x108) rcosc_0x1fa=$(rv "$_ck_st" rcosc_0x1fa)"
+	if [ "$(rv "$_ck_st" on_mclk)" != "1" ] || [ "$(rv "$_ck_st" cdc_alive)" != "1" ]; then
+		jrn "clock: the codec is NOT running on MCLK -- refusing to continue"
+		return 1
+	fi
+	jrn "clock: codec on the external 9.6 MHz clock; $(c3_hph_status)"
+	return 0
+}
+c3_clock_down() {
+	[ "$CLOCK_UP" = "1" ] || return 0
+	echo rco > "$PGD/clk_source_test" 2>/dev/null ||
+		jrn "clock: the restore to RCO reported an error -- see dmesg"
+	echo off > "$PGD/mclk_test" 2>/dev/null
+	echo off > "$CLOCK_DIV" 2>/dev/null
+	CLOCK_UP=0
+	_ck_st=$(cat "$PGD/clk_source_state" 2>/dev/null)
+	jrn "clock: RESTORED to RCO: on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000)"
+}
 
 # ------------------------------------------------------------------- abort --
 ABORTED=0
@@ -387,6 +453,10 @@ c3_preflight() {	# c3_preflight <arming?>
 
 	[ -n "$GATE" ] || _pf_bad="$_pf_bad no-input-gate"
 	[ -n "$TONE" ] || _pf_bad="$_pf_bad no-pcm-tone"
+	case "$CLOCK" in
+	rco|mclk) ;;
+	*) _pf_bad="$_pf_bad unknown-clock=$CLOCK" ;;
+	esac
 	[ -n "$SETCTL" ] || _pf_bad="$_pf_bad no-alsa-setctl"
 	[ -f "$TEARDOWN" ] || _pf_bad="$_pf_bad no-teardown-script"
 
@@ -413,7 +483,7 @@ c3_preflight() {	# c3_preflight <arming?>
 		say "INVALID SETUP: unknown approval mode '$APPROVE'"
 		return 1 ;;
 	esac
-	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT  approvals $APPROVE"
+	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT  approvals $APPROVE  clock $CLOCK"
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		jrn "DC CONTRACT NOT MEASURED: waived by the operator ($DC_WAIVER)."
 		jrn "  The waveform verdict is the PC-side recording, not this run."
@@ -491,6 +561,15 @@ c3_preflight() {	# c3_preflight <arming?>
 	[ "$(rv "$DPRE" on)" = "0" ]           || _pf_bad="$_pf_bad dac_already_on"
 	[ "$(rv "$DPRE" dac_0x1b1)" = "00" ]   || _pf_bad="$_pf_bad dac_0x1b1_dirty"
 	[ "$(rv "$DPRE" dsm_0x3b0)" = "00" ]   || _pf_bad="$_pf_bad dsm_0x3b0_dirty"
+	if [ "$CLOCK" = "mclk" ]; then
+		[ -e "$PGD/clk_source_test" ] && [ -e "$PGD/mclk_test" ] ||
+			_pf_bad="$_pf_bad mclk-switch-missing"
+		_pf_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
+		[ "$(rv "$_pf_cs" on_mclk)" = "0" ] ||
+			_pf_bad="$_pf_bad codec-not-starting-on-rco"
+		ls -d /sys/bus/platform/devices/*mclk-divider-experiment* >/dev/null 2>&1 ||
+			_pf_bad="$_pf_bad no-mclk-divider-device"
+	fi
 
 	if [ -n "$_pf_bad" ]; then
 		say "INVALID SETUP: the analog baseline is not pristine:$_pf_bad"
@@ -712,7 +791,14 @@ c3_cycle() {	# c3_cycle <n>
 	if [ -e "$_pt_ps" ]; then
 		sleep 0.3
 		echo clear > "$_pt_ps" 2>/dev/null
-		sleep 0.5
+	else
+		sleep 0.3
+	fi
+	# the HPH status inside the tone: ~0.3 to ~0.5 s of a 1.1 s stream
+	_pt_hs=$(c3_hph_status)
+	eval "C${_cy}_HS=\"\$_pt_hs\""
+	if [ -e "$_pt_ps" ]; then
+		sleep 0.3
 		_pt_out=$(cat "$_pt_ps" 2>/dev/null)
 		_pt_sum="pending=$(rv "$_pt_out" pending) src=$(rv "$_pt_out" src) overflow=$(rv "$_pt_out" overflow) read_rc=$(rv "$_pt_out" read_rc)"
 		eval "C${_cy}_PORT=\"\$_pt_sum\""
@@ -721,6 +807,7 @@ c3_cycle() {	# c3_cycle <n>
 	eval "C${_cy}_TONE_RC=\$?"
 	eval "jrn \"tone finished rc=\$C${_cy}_TONE_RC\""
 	eval "jrn \"port 16 during the tone: \$C${_cy}_PORT\""
+	eval "jrn \"hph status during the tone: \$C${_cy}_HS (Xperia: 04 = no master clock, 08 = clocked)\""
 
 	eval "C${_cy}_POST=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "_cy_st=\$C${_cy}_POST"
@@ -817,7 +904,7 @@ launch)
 	CMD="$CMD --setenv=HOLD_ARM=$HOLD_ARM --setenv=CYCLES=$CYCLES"
 	CMD="$CMD --setenv=C3A_INSTRUMENT=$INSTRUMENT"
 	CMD="$CMD --setenv=C3A_DC_WAIVER=$DC_WAIVER --setenv=C3A_CONTROL=$CONTROL"
-	CMD="$CMD --setenv=C3A_APPROVE=$APPROVE"
+	CMD="$CMD --setenv=C3A_APPROVE=$APPROVE --setenv=C3A_CLOCK=$CLOCK"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "The run detaches into a transient unit so it survives losing ssh."
 	say ""
@@ -861,7 +948,7 @@ jrn "stimulus $DBFS dBFS, $CYCLES cycle(s)"
 # THE TRAP IS INSTALLED BEFORE ANYTHING IS TOUCHED. If this script is killed
 # from here on, the teardown runs.
 #
-trap 'jrn "SIGNAL -- running the teardown"; c3_abort signal; exit 3' \
+trap 'jrn "SIGNAL -- running the teardown"; c3_abort signal; c3_clock_down; exit 3' \
 	INT TERM HUP
 
 if ! c3_preflight arm; then
@@ -920,6 +1007,14 @@ c3_watch_start || exit 2
 "$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 >/dev/null 2>&1
 jrn "front-end mixer enabled"
 
+jrn "clock for this run: $CLOCK"
+if ! c3_clock_up; then
+	c3_clock_down
+	c3_watch_stop
+	jrn "the clock could not be established -- nothing was armed beyond the clock, which is restored"
+	exit 2
+fi
+
 RC=0
 n=1
 while [ "$n" -le "$CYCLES" ]; do
@@ -932,6 +1027,7 @@ done
 
 c3_failsafe_disarm
 c3_watch_stop
+c3_clock_down
 
 POST=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 DPOST=$(cat "$PGD/hphl_dac_state" 2>/dev/null)
@@ -956,6 +1052,12 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	say "stimulus    : $DBFS dBFS, 1 kHz, tone/silence/tone/silence, one stream"
 	say "gain field  : $WCD9320_PA_GAIN_FIELD  (0x1ae[4:0]; 14 = minimum, 00 = maximum)"
 	say "instrument  : $INSTRUMENT"
+	say "codec clock : $CLOCK"
+	c=1
+	while [ "$c" -lt "$n" ]; do
+		eval "say \"cycle \$c tone : port \${C${c}_PORT:-?} | hph \${C${c}_HS:-?}\""
+		c=$((c + 1))
+	done
 	say "control     : ${CONTROL:-none (the PA is enabled)}"
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		say "DC contract : NOT MEASURED -- waived by the operator ($DC_WAIVER)"
