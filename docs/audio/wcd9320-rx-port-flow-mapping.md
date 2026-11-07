@@ -258,7 +258,81 @@ the DSM mux, the RDAC clock `0x30d`, the DAC, the PA's supplies, or the
 board wiring to the jack. The port's bistability is real, but it is not why
 the headphone is silent.
 
-### The next measurement, small (as planned before the run)
+## SOUND: THE CODEC NEEDS ITS MASTER CLOCK (2026-11-07, PASS 4/4)
+
+**The lead came from outside this project.** The Sony Xperia Z2 mainline
+port (`RobLymm/xperia-sirius-linux`) has the same SoC, the same WCD9320 and
+a 6.16 kernel, and reports headphone playback heard. Its driver runs the
+codec only on the PM8941 9.6 MHz MCLK, and never on the RC oscillator. It
+writes `CHIP_CTL = 0x02` and `CDC_CLK_POWER_CTL = 0x03` at init. Its notes
+say that without the master clock "every register write lands, and every
+DAPM widget reports itself powered", and nothing comes out. They give one
+check: `0x1b3`/`0x1b9` read `04` without a master clock and `08` with one
+while a tone plays. Every C3a run on this project had been on the RC
+oscillator, and `0x1b3` had always read `04`.
+
+**The run.** No driver change; r177 `port-flow-rc1`, on a fresh boot.
+`C3A_CLOCK=mclk` turns on the PM8941 divider and the mclk vote, then calls
+the r169 switch, which also declares 9.6 MHz in `CHIP_CTL` while on MCLK.
+It required on_mclk=1 and a live CDC block before cycle 1, and restored RCO
+afterwards. Otherwise identical to the silent runs: gain field `00`,
+−40 dBFS, four cycles, left earcup sealed.
+
+| | before | on MCLK |
+|---|---|---|
+| on_mclk / cdc_alive | 0 / 1 | **1 / 1** |
+| `CHIP_CTL` 0x000 | `08` | **`0a`**, latched |
+| `RC_OSC` 0x1fa | `c6` | `46` (oscillator off) |
+| `CLK_BUFF_EN1` 0x108 | `0d` | `05` |
+
+| cycle | port 16 | `0x1b3` / `0x1b9` during the tone | analyser | operator |
+|---|---|---|---|---|
+| 1 | clean | **`08`** / `04` | PASS, 32.8 dB, 1000.00 Hz | **heard it** |
+| 2 | clean | **`08`** / `04` | PASS, 32.7 dB | heard it |
+| 3 | clean | **`08`** / `04` | PASS, 28.4 dB | heard it |
+| 4 | clean | **`08`** / `04` | PASS, 32.0 dB | heard it |
+
+Tone segments measured −67 to −68 dBFS at the mic and silences −96 to
+−103: the tone/silence/tone/silence pattern, narrowband, at
+1000.00 ± 0.06 Hz. The level matches the calibration, where the PC at
+−40 dBFS through this headset gave −66.5 dBFS. The PA was chip-verified
+`a0` during every tone with no OCP, and `80` after. The clock was restored
+to RCO at the end (`CHIP_CTL` back to `08`).
+
+Evidence:
+
+- `wcd9320-hphl-pa-acoustic-mclk-20260831T173329Z.txt`
+- `wcd9320-hphl-pa-acoustic-mclk-journal-20260831T173329Z.txt`
+- `wcd9320-hphl-pa-acoustic-mclk-analysis-20260831T173329Z.txt`
+- recording sha256 `d778e075...`, in `~/c3a-evidence`
+
+### What it settles
+
+1. **The silence was the clock.** On the RC oscillator the codec accepts
+   samples and every register and widget reads "on", but the headphone
+   path's status stays `04` and nothing comes out. On the 9.6 MHz MCLK, with
+   the rate declared, `0x1b3` reads `08` and the tone is there. Same build,
+   same gain, same stimulus; one variable changed.
+2. **`0x1b3` bit 3 is a usable "the HPHL path is clocked" observable**,
+   readable from the chip. It belongs in every future gate.
+3. **The port bistability looks like an RCO artefact.** Port 16 was clean in
+   4 of 4 cycles on MCLK, against 6 of 15 on RCO. That is suggestive, not
+   proven: four is a small sample.
+4. **The r169 lesson needs restating.** "MCLK is closed" was right about
+   `0x314` readback and wrong as a project direction: the external clock is
+   not optional for audio. The final driver must run the codec on MCLK, as
+   downstream and the Xperia port do.
+
+### What it does not settle
+
+- **HPHL DC is still unmeasured.** `wcd9320-hphl-electrical-proven` stays
+  open, and the final-build blocker in §28 of the C3 mapping stands.
+- Whether `0x314` and `0x30d` matter on MCLK. They were forced on as in
+  every C3a run, so this run cannot separate them.
+- The RCO path stays mapped and proven reversible, but it is now known to be
+  silent for playback. It should not be the default anywhere.
+
+### The next measurement, small (as planned before the run, now superseded)
 
 Record port 16's state inside each acoustic tone cycle: clear at tone start,
 read at tone end. A cycle with a **clean** port and silence at the mic puts

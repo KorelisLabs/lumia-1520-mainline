@@ -1016,7 +1016,18 @@ mapping). That waiver covers C3a only. Before any final build, HPHL DC must be
 measured with the PA off and on -- by scope, or by the on-chip MBHC voltmeter
 planned as r176.
 
-**C3a ACOUSTIC RESULT SO FAR: SILENCE, AND A LEAD (2026-11-06).** Three
+**C3a ACOUSTIC: PASS, 4/4 -- SOUND, ON THE 9.6 MHz MCLK (2026-11-07).** With
+the codec switched to the external PM8941 clock and 9.6 MHz declared in
+`CHIP_CTL` (`C3A_CLOCK=mclk`, the r169 switch), all four cycles were heard by
+the operator and passed the analyser. Each was 1000.00 Hz at −67 to −68 dBFS
+at the mic, with about 30 dB contrast, and `0x1b3` read `08` during every
+tone (`04` on the RC oscillator). **Every earlier C3a run was on the RC
+oscillator, and that is why they were silent.** The final driver must run the
+codec on MCLK. Full write-up:
+[wcd9320-rx-port-flow-mapping.md](wcd9320-rx-port-flow-mapping.md), section
+"SOUND". The DC contract (below) is still open.
+
+**Earlier the same week: silence, and a lead (2026-11-06).** Three
 acoustic runs heard nothing, the last at maximum gain with the earcup sealed:
 at least about 28 dB below the PC-headset level, or nothing at all. Read-only
 afterwards, the codec's SLIMbus RX port 16 had **OVERFLOW** latched

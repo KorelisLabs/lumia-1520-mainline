@@ -1,0 +1,22 @@
+c3a-capture.py analyse, recording c3a-real-r177-mclk.wav (sha256 d778e075f6cfb75fb829c5cce6aae4cd839842a858ba1813af7a29a5f5bd70b7, archived in ~/c3a-evidence)
+run 20260831T173329Z (phone clock), C3A_CLOCK=mclk, gain field 00, -40 dBFS, left earcup sealed on the DGM20 mic
+file                : c3a-real-r177-mclk.wav (237.1 s at 48000 Hz)
+floor at 1 kHz      : -100.1 dBFS (median over the recording)
+events found        : 5
+  [0] t=  72.700 s  PASS    contrast  32.8 dB
+       tone  -68.0  silence -100.7  tone  -67.9  silence -101.7  dBFS
+       peak 999.99 / 1000.00 Hz   narrowband 26.5 / 29.5 dB
+  [1] t= 124.140 s  REJECT  contrast  16.8 dB
+       tone  -79.8  silence  -98.8  tone  -81.6  silence  -98.4  dBFS
+       peak 987.61 / 904.71 Hz   narrowband -6.8 / 0.9 dB   -- broadband (narrow -6.8 dB); frequency 987.61,904.71
+  [2] t= 132.400 s  PASS    contrast  32.7 dB
+       tone  -67.3  silence -100.1  tone  -67.3  silence -100.4  dBFS
+       peak 999.99 / 999.97 Hz   narrowband 28.7 / 28.5 dB
+  [3] t= 176.010 s  PASS    contrast  28.4 dB
+       tone  -67.2  silence  -96.1  tone  -67.1  silence  -95.6  dBFS
+       peak 1000.01 / 1000.06 Hz   narrowband 26.5 / 28.4 dB
+  [4] t= 219.650 s  PASS    contrast  32.0 dB
+       tone  -68.4  silence -102.9  tone  -68.3  silence -100.4  dBFS
+       peak 999.98 / 999.98 Hz   narrowband 27.8 / 28.0 dB
+events_pass=4 events_weak=0 events_reject=1
+VERDICT: PASS (expected 4 tracking event(s), found 4)
