@@ -42,7 +42,11 @@ rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
 
 [ "$(id -u)" = "0" ] || { say "need root"; exit 2; }
 [ -e "$PGD/hphl_zdet" ] || { say "need zdet-rc1"; exit 2; }
-[ "$(rv "$(cat "$PGD/hphl_zdet")" runs)" = "0" ] || { say "not a fresh boot (zdet already ran)"; exit 2; }
+# r180: the classification question (WHEN bit 3 sets) needed a fresh boot and
+# was answered on r179. From r180 the registers are volatile, and the question
+# is only whether cache_check stays at 0 mismatches through RX activity, which
+# does not depend on the bit's history. So no fresh-boot precondition.
+say "zdet runs so far this boot: $(rv "$(cat "$PGD/hphl_zdet")" runs)"
 
 snap() {	# snap <label>
 	_cc=$(cat "$PGD/cache_check" 2>/dev/null | tr '\n' ' ')
