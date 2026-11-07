@@ -385,8 +385,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-05 17:08:06.218422534 -0500
-@@ -0,0 +1,9485 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 07:52:18.559628000 -0500
+@@ -0,0 +1,9648 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1630,6 +1630,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	((WCD9320_PORT_WM_12BYTES << WCD9320_PORT_WM_SHIFT) | WCD9320_PORT_ENABLE)
 +#define WCD9320_PORT_CFG_DISABLED	0x00
 +
++/*
++ * r177: the port-interrupt block, from wcd9320_registers.h and
++ * taiko_slimbus_irq(). Status bit j of RX_0/RX_1 is RX port 16 + j; its
++ * source register says which event latched; writing 1 << (j % 8) to the
++ * clear register at 0x038 + j / 8 clears it. MEASURED on this part: the
++ * status latches with every enable at 00, so polling needs no enable -- and
++ * this driver never writes one. See docs/audio/wcd9320-rx-port-flow-mapping.md.
++ */
++#define WCD9320_IFD_PORT_INT_STATUS_RX_0	0x034
++#define WCD9320_IFD_PORT_INT_STATUS_COUNT	4	/* RX_0, RX_1, TX_0, TX_1 */
++#define WCD9320_IFD_PORT_INT_CLR_RX_0		0x038
++#define WCD9320_IFD_PORT_INT_RX_SOURCE0	0x060
++#define WCD9320_PORT_IRQ_OVERFLOW	0x01
++#define WCD9320_PORT_IRQ_UNDERFLOW	0x02
++#define WCD9320_PORT_IRQ_CLOSED		0x04
++
 +static bool wcd9320_ifd_readable_reg(struct device *dev, unsigned int reg)
 +{
 +	/* port interrupt block */
@@ -1870,6 +1886,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* negative control: suppress the physical transport only */
 +	bool slim_transport_off;
 +	unsigned int slim_transport_suppressed;
++	/* r177: RX port status, polled and cleared; never enabled */
++	unsigned int port_status_clears;
++	int port_status_clear_rc;
 +
 +	/* ---- RX1 digital path (Branch C) ---- */
 +	bool rx1_digital_on;
@@ -4753,6 +4772,149 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  wcd->slim_transport_suppressed);
 +}
 +static DEVICE_ATTR_RW(slim_transport);
++
++/* -------------------------------------------- r177: RX port status -- */
++
++/*
++ * The first receiver-side observable on this part.
++ *
++ * Downstream's taiko_slimbus_irq() reads a per-port status block on the
++ * interface function: OVERFLOW, UNDERFLOW and PORT_CLOSED for every slave
++ * port. This driver never looked at it, and the project recorded that the
++ * codec had no receiver-side counter -- which was wrong. After the r176
++ * retry, read-only, RX port 16 showed OVERFLOW | PORT_CLOSED latched with
++ * every interrupt enable at 00.
++ *
++ * For a sink port, OVERFLOW reads as "bytes arrived and were not taken
++ * out". Whether that happens in a steady stream, rather than in a transient
++ * at start or stop, is the r177 question: clear while streaming, wait, read.
++ *
++ * Deliberately polled. No enable is written, so nothing reaches the codec's
++ * main interrupt line, whose mask set is certified and is not this
++ * experiment's to change. The only write is the clear.
++ */
++static struct wcd9320 *wcd9320_port_status_ifd(void)
++{
++	struct wcd9320 *ifd = wcd9320_ifd_instance;
++
++	if (!ifd || !ifd->regmap || !ifd->online)
++		return NULL;
++	return ifd;
++}
++
++/*
++ * The four status bytes, then the source register of one RX port. The
++ * interface regmap is REGCACHE_NONE, so all of these reach the chip.
++ * Caller holds wcd9320_ifd_lock.
++ */
++static int wcd9320_port_status_read(struct wcd9320 *ifd, unsigned int port,
++				    u8 *st, u8 *src)
++{
++	unsigned int i, v, j = port - WCD9320_RX_PORT_FIRST;
++	int ret;
++
++	for (i = 0; i < WCD9320_IFD_PORT_INT_STATUS_COUNT; i++) {
++		ret = regmap_read(ifd->regmap,
++				  WCD9320_IFD_PORT_INT_STATUS_RX_0 + i, &v);
++		if (ret)
++			return ret;
++		st[i] = v;
++	}
++	ret = regmap_read(ifd->regmap, WCD9320_IFD_PORT_INT_RX_SOURCE0 + j, &v);
++	if (ret)
++		return ret;
++	*src = v;
++	return 0;
++}
++
++/* One write, 0x038 + j / 8 <- 1 << (j % 8), exactly as downstream clears. */
++static int wcd9320_port_status_clear(struct wcd9320 *wcd, unsigned int port)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int j = port - WCD9320_RX_PORT_FIRST;
++	u8 st[WCD9320_IFD_PORT_INT_STATUS_COUNT] = { 0 }, src = 0;
++	struct wcd9320 *ifd;
++	int ret;
++
++	if (wcd->is_ifd || !wcd->online)
++		return -ENODEV;
++	if (port < WCD9320_RX_PORT_FIRST ||
++	    port >= WCD9320_RX_PORT_FIRST + WCD9320_RX_PORT_COUNT)
++		return -EINVAL;
++
++	mutex_lock(&wcd9320_ifd_lock);
++	ifd = wcd9320_port_status_ifd();
++	if (!ifd) {
++		ret = -ENODEV;
++		goto out;
++	}
++	ret = regmap_write(ifd->regmap, WCD9320_IFD_PORT_INT_CLR_RX_0 + j / 8,
++			   1U << (j % 8));
++	wcd->port_status_clear_rc = ret;
++	if (ret) {
++		dev_err(dev, "port-status: clear of port %u failed: %d\n",
++			port, ret);
++		goto out;
++	}
++	wcd->port_status_clears++;
++	ret = wcd9320_port_status_read(ifd, port, st, &src);
++	if (!ret)
++		dev_info(dev,
++			 "port-status: CLEARED port %u (#%u), now rx %02x %02x src %02x\n",
++			 port, wcd->port_status_clears, st[0], st[1], src);
++out:
++	mutex_unlock(&wcd9320_ifd_lock);
++	return ret;
++}
++
++/*
++ *   cat slim_port_status          port 16, read from the chip
++ *   echo clear > slim_port_status clear port 16, then read back
++ */
++static ssize_t slim_port_status_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int port = WCD9320_RX_PORT_FIRST;
++	unsigned int j = port - WCD9320_RX_PORT_FIRST;
++	u8 st[WCD9320_IFD_PORT_INT_STATUS_COUNT] = { 0 }, src = 0;
++	struct wcd9320 *ifd;
++	int ret;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	mutex_lock(&wcd9320_ifd_lock);
++	ifd = wcd9320_port_status_ifd();
++	ret = ifd ? wcd9320_port_status_read(ifd, port, st, &src) : -ENODEV;
++	mutex_unlock(&wcd9320_ifd_lock);
++
++	return sysfs_emit(buf,
++			  "read_rc=%d port=%u rx0=%02x rx1=%02x tx0=%02x tx1=%02x pending=%u src=%02x overflow=%u underflow=%u closed=%u clears=%u clear_rc=%d\n",
++			  ret, port, st[0], st[1], st[2], st[3],
++			  (st[j / 8] >> (j % 8)) & 1, src,
++			  (src & WCD9320_PORT_IRQ_OVERFLOW) ? 1 : 0,
++			  (src & WCD9320_PORT_IRQ_UNDERFLOW) ? 1 : 0,
++			  (src & WCD9320_PORT_IRQ_CLOSED) ? 1 : 0,
++			  wcd->port_status_clears, wcd->port_status_clear_rc);
++}
++
++static ssize_t slim_port_status_store(struct device *dev,
++				      struct device_attribute *attr,
++				      const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!sysfs_streq(buf, "clear"))
++		return -EINVAL;
++
++	ret = wcd9320_port_status_clear(wcd, WCD9320_RX_PORT_FIRST);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(slim_port_status);
 +
 +/* ------------------------------------ RX1 digital path (Branch C) -- */
 +
@@ -8860,6 +9022,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_slim_stream_test.attr,
 +	&dev_attr_slim_stream_state.attr,
 +	&dev_attr_slim_transport.attr,
++	&dev_attr_slim_port_status.attr,
 +	&dev_attr_rx1_digital_test.attr,
 +	&dev_attr_rx1_digital_state.attr,
 +	&dev_attr_comp1_test.attr,
@@ -9869,7 +10032,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("pa-rc2");
++MODULE_VERSION("port-flow-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

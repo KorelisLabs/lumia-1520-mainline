@@ -864,6 +864,28 @@ fi
 jrn "gain field $WCD9320_PA_GAIN_FIELD set and read back"
 
 #
+# THE FORCED-WRITE JOURNAL, MEASURED AT THE START OF THIS RUN.
+#
+# The report used to assume the journal began empty, which is true only on the
+# first run of a boot. A control run followed by a real run on the same boot --
+# exactly the sequence the acoustic plan uses -- would see 4 + 8 entries and
+# fail a correct run. So this run's entries are checked from where the journal
+# stood when it started: baseline-relative, like every other expectation here.
+#
+# The driver's ring holds 16 entries. If this run's would not all fit, the
+# entries could not be checked at all, so the run refuses before arming.
+#
+FORCED_START=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
+FORCED_START=${FORCED_START:-0}
+FORCED_RING=$(sed -n 's/.*ring=\([0-9]*\).*/\1/p' "$PGD/forced_log" 2>/dev/null | head -n1)
+FORCED_RING=${FORCED_RING:-16}
+if [ $(( FORCED_START + WCD9320_PA_FORCED_PER_CYCLE * CYCLES )) -gt "$FORCED_RING" ]; then
+	jrn "the forced-write journal holds $FORCED_START of $FORCED_RING -- this run's entries would not fit; power cycle first. Nothing was armed."
+	exit 2
+fi
+jrn "forced-write journal starts this run at $FORCED_START of $FORCED_RING"
+
+#
 # The approval drop-box. Emptied at the start of every run, and each gate also
 # deletes its own file as it opens, so nothing written before can count.
 #
@@ -977,7 +999,9 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 
 	say ""
 	say "-- the forced writes, both directions, every cycle --"
-	check "forced operations" "$(rv "$FLOG" forced_n)" \
+	note "journal start" "this run's entries begin at f$FORCED_START"
+	check "forced operations this run" \
+	      "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" \
 	      "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))"
 	_i=0
 	while [ "$_i" -lt "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))" ]; do
@@ -987,8 +1011,9 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 		2) _wr=30d; _wd=clear ;;
 		3) _wr=314; _wd=clear ;;
 		esac
-		check "f$_i register" "$(rv "$FLOG" "f${_i}_reg")" "$_wr"
-		check "f$_i direction" "$(rv "$FLOG" "f${_i}_dir")" "$_wd"
+		_j=$(( FORCED_START + _i ))
+		check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$_wr"
+		check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$_wd"
 		_i=$((_i + 1))
 	done
 

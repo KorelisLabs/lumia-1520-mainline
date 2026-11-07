@@ -1020,6 +1020,86 @@ def main():
               len(tables) == ntable,
               "%d (want %d)" % (len(tables), ntable))
 
+    # ==================================================================
+    # 5e. r177: THE PORT-STATUS FENCE.
+    #
+    # r177 adds the first write this driver has ever made to the SLIMbus
+    # port-interrupt block on the interface function: one clear, 0x038 <- 01,
+    # so that RX port 16's OVERFLOW/UNDERFLOW status can be watched during a
+    # steady stream. See docs/audio/wcd9320-rx-port-flow-mapping.md.
+    #
+    # Bounded four ways:
+    #
+    #   1. the three addresses and the three source bits pinned by value
+    #   2. exactly one write site naming the clear register, in one function,
+    #      on the interface regmap -- never the control function's
+    #   3. no write anywhere naming PORT_INT_EN: enabling a source would route
+    #      into the codec's main interrupt line, whose mask set is certified
+    #   4. the reader writes nothing, and the store accepts "clear" only
+    # ==================================================================
+    print()
+    print("=== 5e. the r177 port-status fence ===")
+    for sym, want in (("WCD9320_IFD_PORT_INT_STATUS_RX_0", "0x034"),
+                      ("WCD9320_IFD_PORT_INT_CLR_RX_0", "0x038"),
+                      ("WCD9320_IFD_PORT_INT_RX_SOURCE0", "0x060"),
+                      ("WCD9320_PORT_IRQ_OVERFLOW", "0x01"),
+                      ("WCD9320_PORT_IRQ_UNDERFLOW", "0x02"),
+                      ("WCD9320_PORT_IRQ_CLOSED", "0x04")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+
+    ps_clear = func_body("wcd9320_port_status_clear")
+    ps_read = func_body("wcd9320_port_status_read")
+    ps_store = func_body("slim_port_status_store")
+    ps_show = func_body("slim_port_status_show")
+    for nm, bd in (("wcd9320_port_status_clear", ps_clear),
+                   ("wcd9320_port_status_read", ps_read),
+                   ("slim_port_status_store", ps_store),
+                   ("slim_port_status_show", ps_show)):
+        check("%s found in source" % nm, len(bd) > 0,
+              "%d bytes of body" % len(bd))
+
+    clr_sites = write_sites("WCD9320_IFD_PORT_INT_CLR")
+    check("the clear register has exactly one write site", len(clr_sites) == 1,
+          "%d write call(s) naming WCD9320_IFD_PORT_INT_CLR" % len(clr_sites))
+    clr_in_fn = re.findall(
+        r"regmap_write\(\s*ifd->regmap,\s*WCD9320_IFD_PORT_INT_CLR_RX_0\b",
+        ps_clear)
+    check("that write is in wcd9320_port_status_clear, on the interface regmap",
+          len(clr_in_fn) == 1,
+          "%d regmap_write(ifd->regmap, CLR_RX_0 ...) inside the function"
+          % len(clr_in_fn))
+    nwr = sum(ps_clear.count(c + "(") for c in CALLS)
+    check("wcd9320_port_status_clear makes no other write", nwr == 1,
+          "%d write call(s) in the body (want 1)" % nwr)
+    check("wcd9320_port_status_clear never touches the control regmap",
+          "wcd->regmap" not in ps_clear and "forced_write" not in ps_clear,
+          "the codec register file is not this function's business")
+    en_writes = [ln for ln in added
+                 if "PORT_INT_EN" in ln and any(c in ln for c in CALLS)]
+    check("no write names PORT_INT_EN", not en_writes,
+          "%d write call(s) -- the interrupt enables stay at reset"
+          % len(en_writes))
+    rd_writes = [c for c in CALLS if c + "(" in ps_read + ps_show]
+    check("the status reader and show path write nothing", not rd_writes,
+          "write calls found: %s" % (rd_writes or "none"))
+    check('slim_port_status accepts "clear" and nothing else',
+          '"clear"' in ps_store and ps_store.count("sysfs_streq") == 1
+          and "wcd9320_port_status_clear" in ps_store,
+          "one verb, one helper")
+    check("slim_port_status is registered",
+          "&dev_attr_slim_port_status.attr" in ptext_all,
+          "listed in wcd9320_attrs[]")
+    check("dev_attr_slim_port_status present", "dev_attr_slim_port_status" in e.syms,
+          "the sysfs attribute the r177 gate drives")
+    check("port-status witness literal shipped",
+          e.code_present("wcd9320_port_status_clear",
+                         "port-status: CLEARED port %u"),
+          "the clear helper, symbol or witness")
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")
