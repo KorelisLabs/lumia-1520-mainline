@@ -231,6 +231,35 @@ A pass earns `wcd9320-hphl-electrical-proven`, **qualified as on-chip**: the
 evidence states that the instrument is the codec's own ADC, calibrated
 against its own mic bias, at the internal HPHL node.
 
+## 10a. r178 AS BUILT (`vm-rc1`, pkgrel 178)
+
+- **Driver:** `hphl_vm` (RW, control function), with three verbs:
+  `measure` (16 samples back to back), `window` (26 samples about 10 ms
+  apart, the 250 ms window) and `measure-1200` (characterisation).
+  `wcd9320_hphl_vm()` is S0-S6 above. `wcd9320_vm_wr()` is the only write
+  path and refuses anything outside `wcd9320_vm_regs[]` plus the FIR data
+  port.
+- **Deviations from the map, both deliberate:**
+  - The **mb** point uses the same polled STA routine as z and L0
+    (`__wcd9xxx_codec_sta_dce`), not the raw EN_CTL sequence
+    `wcd9xxx_mbhc_cal()` uses for mb. All three readings then go through one
+    code path with identical timing.
+  - The FIR bank is read back per index through `FIR_B1_CFG`. Whether
+    `FIR_B2_CFG` reads reflect the indexed slot is **unverified**. The
+    gate prints the bank as found; the coefficients serve only MBHC button
+    detection, which this port does not run.
+- **Order of work, said plainly:** the driver was drafted before the fence
+  this time. The fence was then written against the map, not the code, and
+  proven to fail r177 in 61 places before anything was staged. Two of its
+  checks were wrong on first contact and were corrected, not loosened:
+  - a "no 0xf8" grep that caught a `CDC_MBHC_B1_CTL` field mask; it now
+    parses the mux writes
+  - section 5d's guard-expectation check, which now admits `pa_expect`
+    only from inside the voltmeter
+- **`read_bypassed_calls`:** 90 to 93, the three loops.
+- **Gate:** `tools/wcd9320-hphl-vm-evidence.sh`, section 9 steps 1-5 plus
+  one window, PA never enabled.
+
 ## 11. Open, and settled only on hardware
 
 - the ADC's input range, and the sign behaviour below 0 V (section 8)

@@ -136,7 +136,13 @@ EXPECT = {
     #
     # The subtraction is gone. A future delta computed from a bare grep will
     # be two out, and now the reason is written down.
-    "read_bypassed_calls": 90,
+    #
+    # r177: 90, unchanged -- slim_port_status reads the interface regmap,
+    #            which is REGCACHE_NONE, with plain regmap_read().
+    # r178: 93 = 86 + 7. The +3 is the voltmeter, one call site each: the
+    #            precondition loop, the S1 snapshot loop and the S5
+    #            restore-verify loop in wcd9320_hphl_vm().
+    "read_bypassed_calls": 93,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -764,6 +770,17 @@ def main():
     GEXP = re.compile(
         r"wcd9320_pa_guard_expect\(\s*wcd,[^;]*?,\s*([A-Za-z0-9_]+)\s*\)")
     nz_all = [v for v in GEXP.findall(ptext_all) if v not in ("0", "where")]
+    # r178: the voltmeter samples the guard against the state the mapped PA
+    # sequence left -- pa_expect = hphl_pa_on ? HPHL : 0, pinned in 5f. It
+    # introduces no new expected state, so it is excluded here by name, and
+    # only for the occurrences that are inside wcd9320_hphl_vm().
+    vm_pa = [v for v in GEXP.findall(func_body("wcd9320_hphl_vm"))
+             if v == "pa_expect"]
+    named = [v for v in nz_all if v == "pa_expect"]
+    check("pa_expect is used only inside the voltmeter",
+          len(named) == len(vm_pa),
+          "%d in the driver, %d inside wcd9320_hphl_vm" % (len(named), len(vm_pa)))
+    nz_all = [v for v in nz_all if v != "pa_expect"]
     nz_pa = [v for v in GEXP.findall(pa_path) if v != "0"]
     check("the only non-zero guard expectation is HPHL",
           nz_all and all(v == "WCD9320_HPH_PA_HPHL" for v in nz_all),
@@ -1099,6 +1116,213 @@ def main():
           e.code_present("wcd9320_port_status_clear",
                          "port-status: CLEARED port %u"),
           "the clear helper, symbol or witness")
+
+    # ==================================================================
+    # 5f. r178: THE VOLTMETER FENCE.
+    #
+    # The first writes this driver makes to the MBHC measurement engine, the
+    # mic-bias block and the HPH-to-MBHC path. Mapped in
+    # docs/audio/wcd9320-hphl-dc-vm-mapping.md. Bounded five ways:
+    #
+    #   1. every address pinned by value, and the mux value is HPHL WITHOUT
+    #      ical (0xf0); 0xf8, the current-injecting variant, appears nowhere
+    #   2. one write path, wcd9320_vm_wr(), which refuses at runtime any
+    #      register outside the closed table, and the table is exactly the
+    #      mapped set
+    #   3. no voltmeter function names the PA, insert detect, the interrupt
+    #      masks, the PA ramp or the two forced registers in a write
+    #   4. preconditions refuse rather than supply: MCLK, insert detect off,
+    #      the certified masks, the 1800 mV reference path
+    #   5. every snapshotted register is restored and read back from the chip
+    # ==================================================================
+    print()
+    print("=== 5f. the r178 voltmeter fence ===")
+    VM_ADDR = (("WCD9320_A_LDO_H_MODE_1", "0x110"),
+               ("WCD9320_A_MICB_CFILT_1_CTL", "0x128"),
+               ("WCD9320_A_MICB_CFILT_1_VAL", "0x129"),
+               ("WCD9320_A_MICB_2_CTL", "0x131"),
+               ("WCD9320_A_MICB_2_MBHC", "0x133"),
+               ("WCD9320_A_MICB_4_MBHC", "0x13f"),
+               ("WCD9320_A_MBHC_SCALING_MUX_1", "0x14e"),
+               ("WCD9320_A_MBHC_SCALING_MUX_2", "0x14f"),
+               ("WCD9320_A_MAD_ANA_CTRL", "0x150"),
+               ("WCD9320_A_TX_7_MBHC_EN", "0x171"),
+               ("WCD9320_A_TX_7_MBHC_TEST_CTL", "0x174"),
+               ("WCD9320_A_MBHC_HPH", "0x1fe"),
+               ("WCD9320_A_CDC_MBHC_EN_CTL", "0x3c0"),
+               ("WCD9320_A_CDC_MBHC_FIR_B1_CFG", "0x3c1"),
+               ("WCD9320_A_CDC_MBHC_FIR_B2_CFG", "0x3c2"),
+               ("WCD9320_A_CDC_MBHC_TIMER_B1_CTL", "0x3c3"),
+               ("WCD9320_A_CDC_MBHC_TIMER_B4_CTL", "0x3c6"),
+               ("WCD9320_A_CDC_MBHC_TIMER_B5_CTL", "0x3c7"),
+               ("WCD9320_A_CDC_MBHC_TIMER_B6_CTL", "0x3c8"),
+               ("WCD9320_A_CDC_MBHC_B2_STATUS", "0x3ca"),
+               ("WCD9320_A_CDC_MBHC_B3_STATUS", "0x3cb"),
+               ("WCD9320_A_CDC_MBHC_B1_CTL", "0x3ce"),
+               ("WCD9320_A_CDC_MBHC_B2_CTL", "0x3cf"),
+               ("WCD9320_A_CDC_MBHC_CLK_CTL", "0x3dc"),
+               ("WCD9320_VM_MUX2_HPHL_NO_ICAL", "0xf0"),
+               ("WCD9320_VM_CFILT_VAL_1800", "0x80"),
+               ("WCD9320_VM_CFILT_VAL_1200", "0x50"))
+    for sym, want in VM_ADDR:
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym),
+                         re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+    for sym, want in (("WCD9320_VM_MICB_MV", "1800"),
+                      ("WCD9320_VM_MICB_MV_ALT", "1200"),
+                      ("WCD9320_VM_N_READY", "68"),
+                      ("WCD9320_VM_N_CIC", "47"),
+                      ("WCD9320_VM_NAVG", "4"),
+                      ("WCD9320_VM_T_STA_US", "316"),
+                      ("WCD9320_VM_T_STA_DCE_US", "1778")):
+        pat = re.compile(r"^#define\s+%s\s+(\d+)\b" % re.escape(sym), re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+
+    vm_wr = func_body("wcd9320_vm_wr")
+    vm_sta = func_body("wcd9320_vm_sta")
+    vm_main = func_body("wcd9320_hphl_vm")
+    vm_store = func_body("hphl_vm_store")
+    vm_show = func_body("hphl_vm_show")
+    vm_allowed = func_body("wcd9320_vm_reg_allowed")
+    for nm, bd in (("wcd9320_vm_wr", vm_wr), ("wcd9320_vm_sta", vm_sta),
+                   ("wcd9320_hphl_vm", vm_main), ("hphl_vm_store", vm_store),
+                   ("hphl_vm_show", vm_show),
+                   ("wcd9320_vm_reg_allowed", vm_allowed)):
+        check("%s found in source" % nm, len(bd) > 0,
+              "%d bytes of body" % len(bd))
+
+    # ---- the closed table is exactly the mapped write set -----------
+    m = re.search(r"static const u16 wcd9320_vm_regs\[\] = \{(.*?)\};",
+                  ptext_all, re.S)
+    table = re.findall(r"(WCD9320_A_[A-Z0-9_]+)", m.group(1)) if m else []
+    MAPPED = {"WCD9320_A_LDO_H_MODE_1", "WCD9320_A_MICB_CFILT_1_CTL",
+              "WCD9320_A_MICB_CFILT_1_VAL", "WCD9320_A_MICB_2_CTL",
+              "WCD9320_A_MICB_2_MBHC", "WCD9320_A_MBHC_SCALING_MUX_1",
+              "WCD9320_A_MBHC_SCALING_MUX_2", "WCD9320_A_MAD_ANA_CTRL",
+              "WCD9320_A_TX_7_MBHC_EN", "WCD9320_A_TX_7_MBHC_TEST_CTL",
+              "WCD9320_A_MBHC_HPH", "WCD9320_A_CDC_MBHC_FIR_B1_CFG",
+              "WCD9320_A_CDC_MBHC_TIMER_B1_CTL",
+              "WCD9320_A_CDC_MBHC_TIMER_B4_CTL",
+              "WCD9320_A_CDC_MBHC_TIMER_B5_CTL",
+              "WCD9320_A_CDC_MBHC_TIMER_B6_CTL", "WCD9320_A_CDC_MBHC_B1_CTL",
+              "WCD9320_A_CDC_MBHC_B2_CTL", "WCD9320_A_CDC_MBHC_CLK_CTL",
+              "WCD9320_A_CDC_MBHC_EN_CTL"}
+    check("the voltmeter table is exactly the mapped write set",
+          set(table) == MAPPED and len(table) == len(MAPPED),
+          "%d entries; extra %s; missing %s"
+          % (len(table), sorted(set(table) - MAPPED) or "none",
+             sorted(MAPPED - set(table)) or "none"))
+    check("EN_CTL and CLK_CTL are last, so the restore stops the engine first",
+          table[-2:] == ["WCD9320_A_CDC_MBHC_CLK_CTL",
+                         "WCD9320_A_CDC_MBHC_EN_CTL"],
+          "tail: %s" % table[-2:])
+    check("the only register outside the table is the FIR data port",
+          re.findall(r"reg == (WCD9320_A_[A-Z0-9_]+)", vm_allowed)
+          == ["WCD9320_A_CDC_MBHC_FIR_B2_CFG"],
+          "wcd9320_vm_reg_allowed")
+    check("wcd9320_vm_wr refuses outside the set before writing",
+          "wcd9320_vm_reg_allowed(reg)" in vm_wr and "return -EPERM;" in vm_wr
+          and vm_wr.index("wcd9320_vm_reg_allowed") < vm_wr.index("regmap_"),
+          "runtime confinement")
+
+    # ---- one write path ---------------------------------------------
+    for nm, bd in (("wcd9320_hphl_vm", vm_main), ("wcd9320_vm_sta", vm_sta),
+                   ("hphl_vm_store", vm_store), ("hphl_vm_show", vm_show)):
+        direct = [c for c in ("regmap_write(", "regmap_update_bits(",
+                              "c2b_write(", "forced_write(",
+                              "regmap_write_bits(", "regmap_bulk_write(")
+                  if c in bd]
+        check("%s writes only through wcd9320_vm_wr" % nm, not direct,
+              "direct write calls: %s" % (direct or "none"))
+
+    # ---- the passive mux, never the current source ------------------
+    # Every write to SCALING_MUX_2 is the full byte HPHL-without-ical. The
+    # first version of this check looked for any "0xf8" in the body and so
+    # failed a correct build on the CDC_MBHC_B1_CTL field mask, which is also
+    # 0xf8 -- the mux value is what matters, so the mux writes are parsed.
+    mux2 = re.findall(
+        r"wcd9320_vm_wr\(\s*wcd,\s*WCD9320_A_MBHC_SCALING_MUX_2,\s*"
+        r"([A-Za-z0-9_]+),\s*([A-Za-z0-9_]+)\s*\)", vm_main + vm_sta)
+    check("every SCALING_MUX_2 write is HPHL WITHOUT ical",
+          mux2 == [("0xff", "WCD9320_VM_MUX2_HPHL_NO_ICAL")],
+          "%s" % (mux2 or "no mux-2 write found"))
+    check("the ical mux value 0xf8 is not defined for the voltmeter",
+          not re.search(r"^#define\s+WCD9320_VM_\w+\s+0x[fF]8\b", ptext_all, re.M),
+          "no constant for the current-injecting mux setting")
+    check("no PA ramp register named by the voltmeter",
+          "PA_RAMP" not in vm_main + vm_sta and "PA_RAMP" not in
+          " ".join(table), "the zdet ramp drives the headphone; not used")
+
+    # ---- what the voltmeter must never touch ------------------------
+    for sym, why in (("WCD9320_A_RX_HPH_CNP_EN", "the PA"),
+                     ("WCD9320_A_MBHC_INSERT_DETECT", "insert detect"),
+                     ("WCD9320_A_INTR_MASK0", "the certified masks"),
+                     ("WCD9320_CDC_CLK_POWER_CTL", "forced 0x314"),
+                     ("WCD9320_CDC_CLK_RDAC_CLK_EN_CTL", "forced 0x30d")):
+        wl = [ln for ln in (vm_main + vm_sta).splitlines()
+              if sym in ln and "vm_wr(" in ln]
+        check("the voltmeter never writes %s (%s)" % (sym, why), not wl,
+              "%d write line(s)" % len(wl))
+    check("insert detect and the masks are READ as preconditions",
+          "WCD9320_A_MBHC_INSERT_DETECT" in ptext_all.split(
+              "wcd9320_vm_pre[] = {")[1].split("};")[0]
+          if "wcd9320_vm_pre[] = {" in ptext_all else False,
+          "in the precondition table")
+
+    # ---- preconditions refuse ----------------------------------------
+    for wit, why in (("vm: refusing -- the codec is not on MCLK",
+                      "MCLK required"),
+                     ("vm: refusing -- insert detection is on",
+                      "insert detect off"),
+                     ("vm: refusing -- interrupt masks are not the certified set",
+                      "masks"),
+                     ("the reference path is not the mapped one",
+                      "1800 mV path")):
+        check("precondition: %s" % why, wit in vm_main, "witness in source")
+    pre = re.search(r"wcd9320_vm_pre\[\] = \{(.*?)\};", ptext_all, re.S)
+    pre_regs = re.findall(r"(WCD9320_A_[A-Z0-9_]+)", pre.group(1)) if pre else []
+    check("the reference preconditions are the mapped four plus insert detect",
+          sorted(pre_regs) == sorted(["WCD9320_A_MBHC_INSERT_DETECT",
+                                      "WCD9320_A_MICB_4_MBHC",
+                                      "WCD9320_A_MICB_2_CTL",
+                                      "WCD9320_A_LDO_H_MODE_1",
+                                      "WCD9320_A_MICB_CFILT_1_VAL"]),
+          "%s" % pre_regs)
+    check("the PA guard is sampled before and after, against its live state",
+          vm_main.count("wcd9320_pa_guard_expect(") == 2
+          and "hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0" in vm_main,
+          "phase-dependent guard")
+
+    # ---- the restore ------------------------------------------------
+    check("every table register is restored and read back from the chip",
+          re.search(r"for \(i = WCD9320_VM_NREGS; i-- > 0; \)", vm_main) is not None
+          and "RESTORE MISMATCH" in vm_main
+          and vm_main.count("regmap_read_bypassed(") == 3,
+          "reverse-order restore, bypassed readback")
+    check("the restore runs on every path past the first write",
+          vm_main.count("goto restore;") >= 8 and "\nrestore:" in vm_main,
+          "%d goto restore" % vm_main.count("goto restore;"))
+    check("only the FIR coefficients actually read are written back",
+          "for (i = 0; i < fir_read; i++)" in vm_main, "fir_read bound")
+
+    # ---- the sysfs surface ------------------------------------------
+    check('hphl_vm accepts exactly measure / window / measure-1200',
+          sorted(re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', vm_store))
+          == ["measure", "measure-1200", "window"], "three verbs")
+    check("hphl_vm serialises on c3_lock",
+          "mutex_lock(&wcd->c3_lock)" in vm_store, "with every C3 sequence")
+    check("hphl_vm is registered",
+          "&dev_attr_hphl_vm.attr" in ptext_all, "in wcd9320_attrs[]")
+    check("dev_attr_hphl_vm present", "dev_attr_hphl_vm" in e.syms,
+          "the sysfs attribute the r178 gate drives")
+    check("voltmeter witness literal shipped",
+          e.code_present("wcd9320_hphl_vm",
+                         "vm: RESTORE MISMATCH at 0x%03x"),
+          "the measurement, symbol or witness")
 
     if args.expect_asoc:
         print()
