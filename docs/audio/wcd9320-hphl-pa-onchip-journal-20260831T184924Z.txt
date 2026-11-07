@@ -1,0 +1,106 @@
+20260831T184924Z ================ C3a run 20260831T184924Z ================
+20260831T184924Z holds: pa-off 600 s, pa-on 120 s, tone 120 s
+20260831T184924Z stimulus -40 dBFS, 2 cycle(s)
+20260831T184924Z instrument onchip  control none  pa-live-expect 20  approvals chat  clock mclk
+20260831T184924Z module version vm-rc1 (expected vm-rc1)
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+20260831T184925Z input devices resolved by name
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260831T184925Z stimulus declared at -40 dBFS
+20260831T184925Z gain field 00 (14 = minimum, 00 = maximum)
+20260831T184925Z baseline pristine: 0x1ab=80 0x1b1=00 0x3b0=00 guard clean
+20260831T184925Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260831T185008Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260831T185008Z gain field 00 set and read back
+20260831T185008Z forced-write journal starts this run at 4 of 16
+20260831T185008Z chat approvals via /run/wcd9320-c3a-approve
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260831T185009Z abort watcher armed, pid 2981
+20260831T185010Z front-end mixer enabled
+20260831T185010Z clock for this run: mclk
+20260831T185010Z clock: before the switch: 1b3=04 1b9=04
+20260831T185011Z clock: on_mclk=1 cdc_alive=1 chip_ctl_0x000=0a chip_ctl_latched=1 buff1_0x108=05 rcosc_0x1fa=46
+20260831T185011Z clock: codec on the external 9.6 MHz clock; 1b3=04 1b9=04
+20260831T185011Z === cycle 1: begin ===
+20260831T185012Z prep applied
+20260831T185012Z forced 0x314 issued
+20260831T185012Z RX1 digital chain on
+20260831T185013Z HPHL DAC path up in register-gain mode
+20260831T185013Z state after DAC: 80 20 c0
+20260831T185013Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T185014Z vm pa-off-c1: rc=0 n=26 raw_mean=-1615.6 drift=4 counts | micbias-scale mv10 6562 drift 47 | sta_z -2180 span 1548 restore_mismatch 0
+20260831T185014Z HOLD stage-1 (onchip) with the PA OFF, up to 600 s
+20260831T185014Z GATE dc-pa-off-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T185045Z GATE dc-pa-off-c1: APPROVED (chat)
+20260831T185046Z fail-safe armed: 60 s, phase pa-on-c1
+20260831T185046Z PA ENABLED
+20260831T185046Z 0x1ab=a0 masked=20 expected=20
+20260831T185046Z INTR_STATUS2=00 ocp_seen=0
+20260831T185046Z AUTO: 2 s for any switch-on pop, then the onchip stage
+20260831T185049Z vm pa-on-c1: rc=0 n=26 raw_mean=-1555.2 drift=6 counts | micbias-scale mv10 7306 drift 69 | sta_z -2186 span 1554 restore_mismatch 0
+20260831T185049Z DC: PA on minus PA off = 60.4 counts (about 70.1 mV on the micbias scale)
+20260831T185049Z onchip: NO tone -- the PA-on window above was this cycle's stage
+20260831T185049Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T185049Z AUTO: 1 s, then the PA off
+20260831T185050Z PA disabled
+20260831T185051Z 0x1ab=80 masked=00 expected=00
+20260831T185051Z fail-safe disarmed: the PA is chip-verified off
+20260831T185052Z vm pa-off-again-c1: rc=0 n=26 raw_mean=-1615.8 drift=4 counts | micbias-scale mv10 6589 drift 46 | sta_z -2184 span 1552 restore_mismatch 0
+20260831T185052Z DAC, forced inverses, RX1 and prep all torn down
+20260831T185052Z === cycle 1: complete ===
+20260831T185052Z === cycle 2: begin ===
+20260831T185052Z prep applied
+20260831T185052Z forced 0x314 issued
+20260831T185053Z RX1 digital chain on
+20260831T185053Z HPHL DAC path up in register-gain mode
+20260831T185053Z state after DAC: 80 20 c0
+20260831T185053Z section 16 abort gate PASSED -- the PA may now be enabled
+20260831T185054Z vm pa-off-c2: rc=0 n=26 raw_mean=-1615.2 drift=6 counts | micbias-scale mv10 6596 drift 70 | sta_z -2184 span 1552 restore_mismatch 0
+20260831T185054Z HOLD stage-1 (onchip) with the PA OFF, up to 600 s
+20260831T185054Z GATE dc-pa-off-c2: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260831T185202Z GATE dc-pa-off-c2: APPROVED (chat)
+20260831T185202Z fail-safe armed: 60 s, phase pa-on-c2
+20260831T185203Z PA ENABLED
+20260831T185203Z 0x1ab=a0 masked=20 expected=20
+20260831T185203Z INTR_STATUS2=00 ocp_seen=0
+20260831T185203Z AUTO: 2 s for any switch-on pop, then the onchip stage
+20260831T185206Z vm pa-on-c2: rc=0 n=26 raw_mean=-1556.4 drift=4 counts | micbias-scale mv10 7255 drift 46 | sta_z -2182 span 1552 restore_mismatch 0
+20260831T185206Z DC: PA on minus PA off = 58.8 counts (about 68.2 mV on the micbias scale)
+20260831T185206Z onchip: NO tone -- the PA-on window above was this cycle's stage
+20260831T185206Z after tone: 0x1ab=a0 intr2=00 ocp=0
+20260831T185206Z AUTO: 1 s, then the PA off
+20260831T185207Z PA disabled
+20260831T185207Z 0x1ab=80 masked=00 expected=00
+20260831T185207Z fail-safe disarmed: the PA is chip-verified off
+20260831T185208Z vm pa-off-again-c2: rc=0 n=26 raw_mean=-1615.5 drift=4 counts | micbias-scale mv10 6577 drift 47 | sta_z -2182 span 1550 restore_mismatch 0
+20260831T185209Z DAC, forced inverses, RX1 and prep all torn down
+20260831T185209Z === cycle 2: complete ===
+20260831T185210Z clock: RESTORED to RCO: on_mclk=0 cdc_alive=1 chip_ctl_0x000=08

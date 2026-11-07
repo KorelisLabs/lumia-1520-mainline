@@ -307,6 +307,39 @@ voltage.**
   needs the HPH channel's scale, which the micbias calibration does not
   give.
 
+## 10c. Option 1: the DC contract in HPH counts (2026-11-07)
+
+Evidence: `wcd9320-hphl-pa-onchip-20260831T184924Z.txt` and its journal.
+
+- **Setup:** `C3A_INSTRUMENT=onchip`, gain field `00` (maximum, the
+  playback setting), codec on MCLK, two cycles, the headset plugged in as
+  the load, no tone.
+- **Safety:** the PA was chip-verified `a0` while on and `80` after, with
+  no OCP, and the run was not aborted.
+
+| cycle | PA off | PA on (2 s after enable) | PA off again | on − off | on the micbias scale |
+|---|---|---|---|---|---|
+| 1 | −1615.6 (drift 4) | −1555.2 (drift 6) | −1615.8 | **+60.4 counts** | ≈ 70 mV |
+| 2 | −1615.2 (drift 6) | −1556.4 (drift 4) | −1615.5 | **+58.8 counts** | ≈ 68 mV |
+
+**What is solid:**
+
+- **The shift is the PA, and it is repeatable.** The two cycles agree to
+  1.6 counts, and the reading returns to within 0.3 counts of its start
+  every time the PA goes off.
+- **Drift with the PA on is at most 6 counts over 250 ms**, about 7 mV on
+  the micbias scale, inside §22's 10 mV.
+
+**What is not settled: whether +60 counts is inside §22's 50 mV.**
+
+- On the micbias scale it is about 69 mV, **which would fail**.
+- That scale is not known to apply to the HPH input (§10b), and the
+  physical picture argues against taking it at face value: 69 mV across a
+  32 Ω-class headphone would be about 2 mA of steady DC.
+- The contract therefore stays **open**, neither passed nor failed.
+  Option 2, the HPH channel's own scale from downstream's impedance math,
+  is what decides it.
+
 ## 11. Open, and settled only on hardware
 
 - the ADC's input range, and the sign behaviour below 0 V (section 8)
