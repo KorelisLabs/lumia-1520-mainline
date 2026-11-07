@@ -74,7 +74,14 @@ PA_SAMPLES=""
 pa_sample() { PA_SAMPLES="$PA_SAMPLES $1:$(pa_masked)"; }
 set_dump() {	# set_dump <file>
 	for _sd_a in $VM_SET $Z_SET; do
-		printf '%s=%s ' "$_sd_a" "$(grep -m1 "^$_sd_a:" "$REGS" 2>/dev/null | cut -d' ' -f2)"
+		_sd_v=$(grep -m1 "^$_sd_a:" "$REGS" 2>/dev/null | cut -d' ' -f2)
+		# r180: RX1/RX2_B6 bit 3 is chip-owned status (volatile from r180,
+		# so debugfs now shows the chip). Compared with it masked, exactly
+		# as the driver's restore check does, and nothing else is masked.
+		case "$_sd_a" in
+		2b5|2bd) [ -n "$_sd_v" ] && _sd_v=$(printf '%02x' $(( 0x$_sd_v & 0xf7 ))) ;;
+		esac
+		printf '%s=%s ' "$_sd_a" "$_sd_v"
 	done > "$1"
 }
 
