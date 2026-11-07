@@ -1,0 +1,111 @@
+
+=== what this run can and cannot establish ===
+The milestone is point 1 of section 24: a waveform at HPHL whose
+frequency tracks the 1 kHz digital stimulus, present during the tone
+segments and absent during the silent ones, across two cycles.
+
+THAT IS AN OBSERVATION ON A SCOPE. It is not in this file, and no
+check below can supply it. Everything here is a PRECONDITION for
+believing that observation -- correct sequencing, a guard that never
+tripped, a complete teardown. Correct PA register sequencing without
+a measured waveform earns NO TAG.
+
+=== the run ===
+aborted     : 0 
+cycles run  : 2 of 2
+stimulus    : -40 dBFS, 1 kHz, tone/silence/tone/silence, one stream
+gain field  : 00  (0x1ae[4:0]; 14 = minimum, 00 = maximum)
+instrument  : acoustic
+codec clock : mclk
+cycle 1 tone : port pending=0 src=00 overflow=0 read_rc=0 | hph 1b3=08 1b9=04
+cycle 2 tone : port pending=0 src=00 overflow=0 read_rc=0 | hph 1b3=08 1b9=04
+control     : none (the PA is enabled)
+DC contract : NOT MEASURED -- waived by the operator (operator-waived)
+waveform    : decided by tools/c3a-capture.py on the PC recording
+
+=== the PA, at every boundary ===
+cycle 1   before 80   live a0   after 80   (predicted 80 a0 80)
+cycle 2   before 80   live a0   after 80   (predicted 80 a0 80)
+
+=== checks ===
+  PASS  module version                   clshk-rc1
+  PASS  the run was not aborted          0
+  PASS  cycles completed                 2
+
+-- the PA reached its one legal live state, and came back --
+  PASS  c1 PA live masked                20
+  PASS  c1 HPHR stayed clear             00
+  PASS  c1 PA off after                  00
+  PASS  c2 PA live masked                20
+  PASS  c2 HPHR stayed clear             00
+  PASS  c2 PA off after                  00
+  PASS  guard never tripped              0
+  PASS  no OCP fault at any point        0
+  PASS  PA enables == disables           2
+
+-- the class-H and POST_PA registers stay PROGRAMMED --
+  PASS  ncps_0x194 stays programmed      08
+  PASS  buck5_0x185 stays programmed     00
+  PASS  buck3_0x183 stays programmed     ce
+
+-- the forced writes, both directions, every cycle --
+  ....  journal start                    this run's entries begin at f0
+  PASS  forced operations this run       8
+  PASS  f0 register                      314
+  PASS  f0 direction                     set
+  PASS  f1 register                      30d
+  PASS  f1 direction                     set
+  PASS  f2 register                      30d
+  PASS  f2 direction                     clear
+  PASS  f3 register                      314
+  PASS  f3 direction                     clear
+  PASS  f4 register                      314
+  PASS  f4 direction                     set
+  PASS  f5 register                      30d
+  PASS  f5 direction                     set
+  PASS  f6 register                      30d
+  PASS  f6 direction                     clear
+  PASS  f7 register                      314
+  PASS  f7 direction                     clear
+
+-- the teardown restored what it found --
+  PASS  gain restored                    00
+  PASS  wg ctl restored                  da
+  PASS  wg time restored                 15
+  PASS  wg ocp restored                  2a
+  PASS  chopper restored                 a4
+  PASS  OCP_CTL never written            69
+  PASS  DAC off                          00
+  PASS  DSM mux cleared                  00
+  PASS  RX bias released                 0
+
+=== finding ===
+THE PA CONTROL PATH SEQUENCED AND REVERSED CLEANLY.
+
+That is ALL this file establishes. It is the same class of
+result as D1, one stage further along, and it earns no tag.
+
+THE MILESTONE IS THE SCOPE TRACE, and it is not here:
+  a waveform at HPHL at the stimulus frequency,
+  present during the tone segments and ABSENT during the
+  silent ones, with the stream and the PA unchanged,
+  reproduced across both cycles, DC in band at every stage.
+
+Award wcd9320-hphl-electrical-proven ONLY if the operator's
+recorded measurements satisfy all of that. If the trace was
+flat, this run is a clean negative: the control path is
+correct and the conversion is still unproven.
+
+=== run identity ===
+mode              : wcd9320-hphl-pa
+date              : 2026-08-31T20:14:02Z (UTC)
+module version    : clshk-rc1   (expected clshk-rc1)
+expect_version_source : environment
+expect_sha_source     : environment
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #182-postmarketos-qcom-msm8974 SMP PREEMPT Sat Nov  7 18:47:06 U
+uptime            : 295.31 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+/home/user/wcd9320-tools/wcd9320-hphl-pa-evidence.sh: line 329: DMESG_LINES: parameter not set

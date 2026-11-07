@@ -1010,11 +1010,35 @@ the left headphone PA, an autonomous button-driven runner for a run that has no
 ssh, and the fences that bound the first two writes this project has ever made
 to `0x1ab`. Everything offline passes. Nothing has touched hardware.
 
-**OPEN BLOCKER FOR THE FINAL BUILD: the HPHL DC contract.** C3a runs
-acoustically with the DC contract waived by the operator (section 28 of the C3
-mapping). That waiver covers C3a only. Before any final build, HPHL DC must be
-measured with the PA off and on -- by scope, or by the on-chip MBHC voltmeter
-planned as r176.
+**CURRENT MODULE: r181 `clshk-rc1` (2026-11-07). The HPHL DC contract is
+MEASURED and WITHIN, on-chip.** No scope was needed; the MBHC voltmeter did it.
+- **r178 `vm-rc1`:** the MBHC voltmeter (`hphl_vm`, gate
+  `tools/wcd9320-hphl-vm-evidence.sh`, 57/0). It reads in counts; the HPH mux
+  has its own offset, so the micbias calibration does not give the scale.
+- **r179 `zdet-rc1`:** faithful downstream impedance detection on both channels
+  (`hphl_zdet`, gate `tools/wcd9320-hphl-zdet-evidence.sh`, 34/0). It supplies
+  the HPH scale (50 mV ramp / count delta). **|Von - Voff| = 14.5 mV against
+  50; drift 1.5 mV against 10.** Zl 51.6 ohm, Zr 56.1 ohm, repeatable across
+  r179/r180/r181.
+- **r180 / r181:** the regcache fixes zdet and the class-H path exposed
+  (RX1/RX2_B6 bit 3 is chip-set status; `CLSH_K_ADDR`/`K_DATA` are volatile).
+  `cache_check` stays at 0 mismatches through RX, DAC, class-H and zdet
+  (`tools/wcd9320-rxb6-trace.sh`).
+- Write-ups: [wcd9320-hphl-dc-vm-mapping.md](wcd9320-hphl-dc-vm-mapping.md)
+  and [wcd9320-hph-zdet-mapping.md](wcd9320-hph-zdet-mapping.md) section 9.
+- **`wcd9320-hphl-electrical-proven` is NOT awarded.** The bar is met,
+  qualified as on-chip; the tag is the operator's call.
+
+**r181 STILL MAKES SOUND (2026-11-07, zdet map section 9c).** Fresh boot,
+listening run first: PASS 2/2, heard, -63/-66 dBFS. Same boot after the vm
+and zdet gates: heard, 1 kHz +34 dB at -68 dBFS (analyser REJECT on a
+coincident thump at the mic, not on the tone). An earlier run on a boot that
+had already run vm, zdet and the trace was lost to a fan heater (floor -75
+dBFS), not to the driver.
+
+**Forced-write budget:** the forced log holds 16 entries per boot. A C3a
+listening cycle uses 4; vm plus zdet together 4; the rxb6 trace 4 (measured).
+Plan runs per boot around that, or the last run is refused.
 
 **C3a ACOUSTIC: PASS, 4/4 -- SOUND, ON THE 9.6 MHz MCLK (2026-11-07).** With
 the codec switched to the external PM8941 clock and 9.6 MHz declared in

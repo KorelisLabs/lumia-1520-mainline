@@ -361,9 +361,40 @@ The `cache_check` after the gates still showed **2 mismatches**, the first
 - **Trace:** gains a C3a DAC-path step, so class-H is exercised under
   `cache_check`.
 
+### 9c. r181 result: cache clean, and the HPHL still plays
+
+**Regression on r181 (one boot):**
+- vm 57/0, zdet 34/0, DC 14.5 mV within.
+- rxb6 trace: `cache_check` **0 mismatches** after every step, including the
+  C3a DAC path with class-H.
+- Evidence: `wcd9320-hphl-vm-20260831T195440Z.txt`,
+  `wcd9320-hphl-zdet-20260831T195456Z.txt`,
+  `wcd9320-rxb6-trace-r181-20260831T195500Z.txt`.
+
+**Listening (C3a acoustic, MCLK, gain field 00, operator by ear plus
+`c3a-capture.py`):**
+
+| Run | Boot state | Result |
+|---|---|---|
+| `195750Z` heater | after vm, zdet, trace | FAIL. A fan heater lifted the 1 kHz floor to −75 dBFS. Cycle 1 caught WEAK with the right pattern; cycle 2 not found; not heard. Superseded. |
+| `201214Z` fresh | **fresh boot, run first** | **PASS 2/2, heard.** −62.9 / −66.0 dBFS, contrast 27.7 / 31.7 dB, 1000.01 / 999.96 Hz. |
+| `201749Z` after zdet | same boot, after vm 57/0 and zdet 34/0 (`201505Z`, `201526Z`) | **Heard.** 1 kHz rose +34 dB to −68 dBFS, matching the fresh run. Analyser REJECT: a coincident 165 Hz thump (+52 dB) and broadband rustle rose more in one segment; no 2 or 3 kHz content. 1 cycle only (forced log 12/16). |
+
+**Reading:** r180/r181 changed only cache classification, and the HPHL path
+plays the same before and after the voltmeter and zdet. Phone telemetry was
+identical in every cycle of all three runs: `0x1ab=a0`, `0x1b3=08`, port 16
+clean, OCP 0, clock restored.
+
+**Process notes:**
+- The forced log (16 per boot) is the binding constraint. Measured costs: a
+  listening cycle 4; vm plus zdet together 4; the trace 4.
+- When analysing a recording, the stimulus is 0.25 s on / 0.25 s off. Don't
+  mistake that for dropout.
+
 **Tag consequence:** the §22 contract is now measured and within, on-chip:
 14.5 mV against 50, drift 1.5 mV against 10, both cross-checked. That
 meets the bar §10 of the voltmeter map set for
 `wcd9320-hphl-electrical-proven`, qualified as on-chip. **It is not
-awarded here.** The gate's verdict is FAIL on the side effect above, and
-the tag is the operator's call.
+awarded here.** The r179 FAIL on the RX_B6 side effect was fixed in r180
+(zdet gate 34/0 on r180 and r181), so the only open item is the operator's
+decision on the tag.

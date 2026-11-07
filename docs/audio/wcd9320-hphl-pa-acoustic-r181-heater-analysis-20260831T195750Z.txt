@@ -1,0 +1,13 @@
+c3a-capture.py analyse, recording c3a-real-r181.wav (sha256 830d7f69bd68a2649c5b880d95cf0d326c347bfb5a1a1c269b7970b167fc343a, archived in ~/c3a-evidence)
+run 20260831T195750Z (phone clock), C3A_CLOCK=mclk, gain field 00, module clshk-rc1 (r181)
+same boot as the vm/zdet/trace regression; a fan heater was running (floor -75 dBFS at 1 kHz). Operator heard neither tone. Cycle 1 (t~81 s) captured with the correct on/off/on/off pattern but only WEAK against the heater floor; cycle 2 not found. Superseded by the fresh-boot run below.
+
+file                : c3a-real-r181.wav (151.0 s at 48000 Hz)
+floor at 1 kHz      : -75.0 dBFS (median over the recording)
+events found        : 1
+  [0] t=  80.970 s  WEAK    contrast  16.3 dB
+       tone  -56.4  silence  -75.3  tone  -56.4  silence  -72.7  dBFS
+       peak 1000.11 / 999.86 Hz   narrowband 19.6 / 17.0 dB
+events_pass=0 events_weak=1 events_reject=0
+NOTE: 1 WEAK event(s) -- a tone near the floor, not a null
+VERDICT: FAIL (expected 2 tracking event(s), found 0)

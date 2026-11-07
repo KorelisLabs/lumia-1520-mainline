@@ -1,0 +1,27 @@
+zdet runs so far this boot: 5
+RX_B6 bit-3 trace, 20260831T195512Z, module clshk-rc1
+0 idle                     chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  on MCLK                  chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  vm rc=0
+1 after voltmeter          chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+2 rx1 on                   chip a8 | cache(debugfs) 2b5: a8 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+2 rx1 off                  chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  stream: hw_ptr_advance=98880 final_rc=0 
+3 rx1 on, after stream     chip a8 | cache(debugfs) 2b5: a8 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+3 rx1 off                  chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+3b DAC path up (PA off)    chip a8 | cache(debugfs) 2b5: a8 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+3b DAC path down           chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  zdet rc=0
+4 after one zdet           chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  zdet: runs=6 refusals=2 last_rc=0 valid=1 restore_mismatch=0 l0=-6232 l1=5114 l2=-5412 r0=-6284 r1=5024 r2=-5538 l0n4=-1560 l2n4=-1354 zl_mohm=51229 zr_mohm=56124 scale16_uv=60 scale4_uv=242 scale16_r_uv=67 
+  back on RCO              chip 88 | cache(debugfs) 2b5: 88 2bd: 88 | cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+
+-- dmesg: writes to 0x2b5 / 0x2bd and restore mismatches --
+[  117.363034] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  118.632449] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]
+[  143.008929] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  143.392207] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]
+[  143.881091] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  146.922619] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]
+[  147.739660] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  148.604490] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]

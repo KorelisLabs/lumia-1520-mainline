@@ -1,0 +1,15 @@
+c3a-capture.py analyse, recording c3a-real-r181-fresh.wav (sha256 137a8e7585ca8a11f1fac889e433ec9b21a8b7fe939e21d4d474a2f802ac7cb8, archived in ~/c3a-evidence)
+run 20260831T201214Z (phone clock), C3A_CLOCK=mclk, gain field 00, module clshk-rc1 (r181)
+FRESH BOOT, nothing else run first; heater off; left earcup on the mic. Operator heard both tones. PASS 2/2.
+
+file                : c3a-real-r181-fresh.wav (131.8 s at 48000 Hz)
+floor at 1 kHz      : -89.7 dBFS (median over the recording)
+events found        : 2
+  [0] t=  81.810 s  PASS    contrast  27.7 dB
+       tone  -62.9  silence  -90.6  tone  -62.9  silence  -90.6  dBFS
+       peak 1000.01 / 1000.02 Hz   narrowband 27.6 / 25.8 dB
+  [1] t= 118.290 s  PASS    contrast  31.7 dB
+       tone  -66.0  silence  -99.8  tone  -66.1  silence  -97.8  dBFS
+       peak 999.96 / 999.94 Hz   narrowband 24.9 / 26.1 dB
+events_pass=2 events_weak=0 events_reject=0
+VERDICT: PASS (expected 2 tracking event(s), found 2)
