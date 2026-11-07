@@ -270,3 +270,60 @@ Fences first, then driver, then selftests, then runner (the project rule).
      path.
    - A pass there closes "MCLK into the driver" up to the point where DAPM
      takes over the call.
+
+## 6. r182 AS STAGED (`mclk-own-rc1`, pkgrel 182)
+
+### Driver (`wcd9320-core.c`)
+
+- **The owner.** `wcd9320_mclk_get()` / `wcd9320_mclk_put()` sit right after
+  `wcd9320_clk_source_switch()`.
+  - `get`: only the first user votes (`clk_prepare_enable`) and switches. A
+    failed switch releases the vote, and users stay 0.
+  - `put`: only the last user switches back, then releases the vote. The vote
+    is released even if the restore failed.
+  - `put` with no reference returns `-EINVAL` and changes nothing.
+- **Removed:** `wcd9320_mclk_enable()` and the `mclk_test` attribute.
+  `mclk_refs` is renamed `mclk_users`.
+- **`clk_source_test`:** `mclk` is now get, and `rco` is now put.
+  `clk_source_state` gains `mclk_users=`.
+- **The r169 switch is unchanged.** The fence pins its body sha256
+  (`757fa0df…`, measured from the r181 patch).
+
+### Divider (`lumia-mclk-experiment.c`)
+
+- `lumia_mclk_apply()` runs once, from probe. It writes the factor,
+  chip-verifies it, and then selects the `divclk` pin state. A failure refuses
+  the bind.
+- `mclk_div_test` is removed, along with the whole restore path.
+- `mclk_div_state` gains `div_at_probe=`.
+
+### Two deliberate deviations from section 3
+
+1. **The DT is unchanged.** Section 3a planned to make `divclk` the pin's
+   `default` state. That would mux gpio15 before probe writes the factor, so
+   the pad would briefly carry the undivided 19.2 MHz. It would also reverse
+   the factor-then-pin order that every hardware run since r169 has used.
+   Instead probe selects `divclk` itself, after the factor is verified. No DTS
+   change, so no DTS checksum change.
+2. **No new mutex: get/put run under `c3_lock`.** Every C3 sequence already
+   holds `c3_lock`, and the voltmeter and zdet refuse unless the codec is on
+   MCLK. Sharing the lock means a `put` can never switch the clock back
+   underneath a measurement. Nothing on the switch path takes `c3_lock` (the
+   PA guard and the sequences were checked), so this cannot deadlock.
+
+### Fences and gates
+
+- **Fence:** new section 5h in `wcd9320-verify-artifact.py`. It fails the
+  r181 patch in 24 places. On the staged r182 patch every source check passes,
+  and the only failures left are the five that need the built module.
+- **Runners:** `c3_clock_up`/`c3_clock_down` in the C3a runner, and the clock
+  steps of the vm gate, the zdet gate and the rxb6 trace, are now:
+  - read the board state (refuse unless factor 2 and gpio15 function 1);
+  - one `mclk`, holding the reference only if it succeeded;
+  - one `rco`.
+- **Check counts:** the vm and zdet gates keep 57 and 34. The "divider on" and
+  "mclk vote" checks became "factor 2" and "gpio15 function 1".
+- **Selftests:** PA 130/0; the evidence lib behaves as expected.
+- **New gate:** `tools/wcd9320-mclk-own-evidence.sh`, three cycles by default.
+- **Retired:** `wcd9320-mclk-evidence.sh`, `-clk-source-evidence.sh` and
+  `-conjunction-evidence.sh` get a header note and are otherwise untouched.

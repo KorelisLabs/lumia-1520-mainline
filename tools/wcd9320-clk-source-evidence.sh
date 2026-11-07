@@ -1,5 +1,12 @@
 #!/bin/sh
 #
+# RETIRED at r182 (mclk-own-rc1). This gate drives mclk_test and/or
+# mclk_div_test, which r182 removed: the RPM vote moved into the driver's
+# wcd9320_mclk_get/_put and the PM8941 divider became board state applied at
+# probe. Kept unedited as the record of what r166-r169 ran. The live MCLK
+# gate is wcd9320-mclk-own-evidence.sh; docs/audio/wcd9320-mclk-ownership-mapping.md.
+#
+#
 # ############################################################################
 # SUPERSEDED AT r170. DO NOT RUN THIS GATE.
 #

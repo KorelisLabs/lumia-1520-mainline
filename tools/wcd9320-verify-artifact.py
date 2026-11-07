@@ -155,6 +155,11 @@ EXPECT = {
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PATCH = REPO / "patches/0002-slimbus-wcd9320-codec-core.patch"
 
+# r182: sha256 of wcd9320_clk_source_switch()'s body as func_body() extracts it,
+# measured on r181 clshk-rc1 (the last build that ran it on hardware). The 5h
+# fence fails if r182 or later changes a byte of the proven switch.
+R169_SWITCH_SHA = "757fa0dfb29e848270e0f9749b9aaa8cf7781c2c424fe2d9edb6eff8a0ca435c"
+
 PASS, FAIL = [], []
 
 
@@ -505,8 +510,10 @@ def main():
              "the r165 prerequisite toggle"),
             ("wcd9320_rdac_probe", "rdac-probe: 0x314 = %02x",
              "the r165 RDAC bit probe"),
-            ("wcd9320_mclk_enable", "mclk: ENABLED, rate %lu Hz",
-             "the r166 external MCLK consumer"),
+            ("wcd9320_mclk_get", "mclk: get, users 0 -> 1, codec on MCLK (cdc_alive %d)",
+             "the r182 MCLK owner: vote, then switch"),
+            ("wcd9320_mclk_put", "mclk: put, users 1 -> 0, codec %s, vote released",
+             "the r182 MCLK owner: switch back, then unvote"),
             ("lumia_mclk_probe", "Lumia MCLK experiment ready",
              "the r167 PM8941 divider experiment"),
             ("lumia_mclk_apply", "mclk-div: DIV_CTL1 did not take",
@@ -525,9 +532,15 @@ def main():
                      ("dev_attr_hphl_pa_state", "sysfs, the C3a register set"),
                      ("dev_attr_cdc_clk_prereq", "sysfs, 0x314 only"),
                      ("dev_attr_rdac_probe", "sysfs, the causal experiment"),
-                     ("dev_attr_mclk_div_test", "sysfs, the r167 divider"),
-                     ("dev_attr_mclk_div_state", "sysfs, DIV_CTL1 + gpio15 mux")):
+                     ("dev_attr_mclk_div_state", "sysfs, DIV_CTL1 + gpio15 mux"),
+                     ("dev_attr_clk_source_test", "sysfs, r182: MCLK get/put")):
         check("%s present" % sym, sym in e.syms, why)
+
+    # r182: the two runtime writers that split MCLK ownership are gone. The
+    # vote is the codec driver's (get/put) and the divider is board state.
+    for sym, why in (("dev_attr_mclk_test", "the r166 vote attribute"),
+                     ("dev_attr_mclk_div_test", "the r167 divider attribute")):
+        check("%s absent" % sym, sym not in e.syms, why + ", removed in r182")
 
     # r166 broke the boot by registering a second CCF provider for a clock RPM
     # already owns. The module must contain no clock-provider registration at
@@ -1525,6 +1538,112 @@ def main():
     check("zdet witness literal shipped",
           e.code_present("wcd9320_hphl_zdet", "zdet: ZDET RESTORE MISMATCH at 0x%03x"),
           "symbol or witness")
+
+    # ==================================================================
+    # 5h. r182: THE MCLK OWNERSHIP FENCE.
+    #
+    # MCLK moves from a runner-sequenced trio (divider, vote, switch) to one
+    # driver owner. docs/audio/wcd9320-mclk-ownership-mapping.md. Bounded:
+    #
+    #   1. the RPM vote is taken and released only inside get/put, in
+    #      downstream's order (vote -> switch; switch back -> unvote)
+    #   2. only the first get and the last put switch; the switch is called
+    #      from nowhere else except its own restore
+    #   3. the r169 switch body is byte-for-byte the proven one (pinned hash)
+    #   4. get/put run under c3_lock, the lock every C3 sequence holds
+    #   5. the divider is board state: written once at probe, factor before
+    #      pin, never restored, no runtime write path
+    # ==================================================================
+    print()
+    print("=== 5h. the r182 MCLK ownership fence ===")
+    m_get = func_body("wcd9320_mclk_get")
+    m_put = func_body("wcd9320_mclk_put")
+    m_sw = func_body("wcd9320_clk_source_switch")
+    m_st = func_body("clk_source_test_store")
+    m_ss = func_body("clk_source_state_show")
+    l_apply = func_body("lumia_mclk_apply")
+    l_probe = func_body("lumia_mclk_probe")
+    for nm, bd in (("wcd9320_mclk_get", m_get), ("wcd9320_mclk_put", m_put),
+                   ("wcd9320_clk_source_switch", m_sw),
+                   ("clk_source_test_store", m_st),
+                   ("clk_source_state_show", m_ss),
+                   ("lumia_mclk_apply", l_apply), ("lumia_mclk_probe", l_probe)):
+        check("%s found in source" % nm, len(bd) > 0, "%d bytes of body" % len(bd))
+
+    VOTE_ON = "clk_prepare_enable(wcd->mclk)"
+    VOTE_OFF = "clk_disable_unprepare(wcd->mclk)"
+    SW_ON = "wcd9320_clk_source_switch(wcd, true)"
+    SW_OFF = "wcd9320_clk_source_switch(wcd, false)"
+    check("the RPM vote is taken only in wcd9320_mclk_get",
+          ptext_all.count(VOTE_ON) == m_get.count(VOTE_ON) == 1,
+          "%d site(s) in the module, %d in get"
+          % (ptext_all.count(VOTE_ON), m_get.count(VOTE_ON)))
+    check("the vote is released only in get (unwind) and put",
+          ptext_all.count(VOTE_OFF) == 2 and m_get.count(VOTE_OFF) == 1
+          and m_put.count(VOTE_OFF) == 1,
+          "%d site(s): get %d, put %d" % (ptext_all.count(VOTE_OFF),
+                                          m_get.count(VOTE_OFF),
+                                          m_put.count(VOTE_OFF)))
+    n_sw = len(re.findall(r"wcd9320_clk_source_switch\(wcd,", ptext_all))
+    check("the switch is called only from get, put and its own restore",
+          m_get.count(SW_ON) == 1 and m_put.count(SW_OFF) == 1
+          and m_sw.count(SW_OFF) == 1 and n_sw == 3,
+          "%d call(s): get %d, put %d, self-restore %d"
+          % (n_sw, m_get.count(SW_ON), m_put.count(SW_OFF), m_sw.count(SW_OFF)))
+    check("get votes BEFORE it switches (downstream order)",
+          0 <= m_get.find(VOTE_ON) < m_get.find(SW_ON), "vote, then switch")
+    check("a failed get releases the vote",
+          m_get.find(SW_ON) < m_get.find(VOTE_OFF), "unwind after the switch")
+    check("put switches back BEFORE it unvotes",
+          0 <= m_put.find(SW_OFF) < m_put.find(VOTE_OFF), "switch back, then unvote")
+    check("only the first get votes and switches",
+          0 <= m_get.find("if (wcd->mclk_users) {") < m_get.find(VOTE_ON),
+          "users > 0 counts and returns")
+    check("only the last put switches and unvotes",
+          0 <= m_put.find("if (--wcd->mclk_users) {") < m_put.find(SW_OFF),
+          "users > 1 counts and returns")
+    check("put refuses without a reference",
+          0 <= m_put.find("if (!wcd->mclk_users) {") < m_put.find("--wcd->mclk_users"),
+          "no underflow")
+    for nm, bd in (("wcd9320_mclk_get", m_get), ("wcd9320_mclk_put", m_put)):
+        check("%s asserts c3_lock" % nm,
+              "lockdep_assert_held(&wcd->c3_lock);" in bd, "serialised with C3")
+    check("clk_source_test takes c3_lock and goes through get/put only",
+          "mutex_lock(&wcd->c3_lock);" in m_st and "wcd9320_mclk_get(wcd)" in m_st
+          and "wcd9320_mclk_put(wcd)" in m_st
+          and "wcd9320_clk_source_switch" not in m_st, "no direct switch")
+    check('clk_source_test accepts exactly "mclk" and "rco"',
+          re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', m_st) == ["mclk", "rco"],
+          "the r168 words, now get/put")
+    check("clk_source_state reports mclk_users", "mclk_users=%u" in m_ss,
+          "the gate checks the count")
+    # The r169 switch is proven on hardware; r182 must not touch it. Pinned by
+    # the sha256 of its body as extracted here, measured on r181 clshk-rc1.
+    sw_sha = hashlib.sha256(m_sw.encode()).hexdigest()
+    check("the r169 switch body is unchanged", sw_sha == R169_SWITCH_SHA,
+          "sha256 %s" % sw_sha[:16])
+    # The divider: board state, once.
+    check("lumia_mclk_apply is called only from probe",
+          ptext_all.count("lumia_mclk_apply(m)") == l_probe.count("lumia_mclk_apply(m)") == 1,
+          "%d call(s)" % ptext_all.count("lumia_mclk_apply(m)"))
+    div_w = [ln for ln in ptext_all.splitlines()
+             if "LUMIA_DIV_CTL1" in ln and "regmap_" in ln and "regmap_read" not in ln]
+    check("DIV_CTL1 is written from exactly one site, inside apply",
+          len(div_w) == 1 and div_w[0].strip() in l_apply,
+          "%d write site(s)" % len(div_w))
+    check("the factor is written BEFORE the pin is muxed",
+          0 <= l_apply.find("regmap_update_bits(")
+          < l_apply.find("DIV_CTL1 did not take")
+          < l_apply.find("pinctrl_select_state("),
+          "factor chip-verified, then divclk")
+    check("pinctrl_select_state only inside apply",
+          ptext_all.count("pinctrl_select_state(") == l_apply.count("pinctrl_select_state(") == 1,
+          "%d site(s)" % ptext_all.count("pinctrl_select_state("))
+    check("the divider is never restored",
+          "restored to factor" not in ptext_all and "state_off" not in ptext_all,
+          "no off path")
+    check("a failed apply refuses the bind",
+          "board state NOT applied" in l_probe, "dev_err_probe on failure")
 
     if args.expect_asoc:
         print()

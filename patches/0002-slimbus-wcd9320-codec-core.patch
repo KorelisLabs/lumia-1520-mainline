@@ -70,8 +70,8 @@ diff -uprN orig/drivers/slimbus/Makefile new/drivers/slimbus/Makefile
 +obj-$(CONFIG_SLIM_WCD9320_LUMIA_CARD)	+= wcd9320-lumia-card.o
 diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumia-mclk-experiment.c
 --- orig/drivers/slimbus/lumia-mclk-experiment.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/drivers/slimbus/lumia-mclk-experiment.c	2026-08-27 16:39:54.663458534 -0400
-@@ -0,0 +1,311 @@
++++ new/drivers/slimbus/lumia-mclk-experiment.c	2026-11-07 14:52:27.051089500 -0500
+@@ -0,0 +1,272 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia 1520 (RM-940): the PM8941 MCLK path, as an EXPERIMENT.
@@ -112,12 +112,15 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 + * Q_CLKDIV_XO_DIV_2 is 2, and mainline's div_to_div_factor(2) is
 + * ilog2(2) + 1 = 2. So DIV_CTL1 = 2 means XO/2 = 9.6 MHz.
 + *
-+ * DELIBERATELY EXPERIMENTAL
++ * r182: BOARD STATE, NOT AN EXPERIMENT ANY MORE
 + *
-+ * This is a separate file, a separate node, and driven entirely from sysfs. It
-+ * does NOT run at probe and the WCD9320 driver does not reach into the PMIC.
-+ * Whether permanent ownership of this configuration belongs here, in a board
-+ * file, or somewhere else is a question for after the hardware answers.
++ * r167 to r181 drove this from sysfs so each evidence file recorded the
++ * transition. The hardware has answered (sound on MCLK, r177), so r182 applies
++ * it once at probe, like downstream's qpnp-clkdiv and qpnp-pin, and keeps only
++ * the read-only state attribute. The WCD9320 driver still does not reach into
++ * the PMIC: it owns the RPM enable vote and the codec-side switch, nothing
++ * else. The file and compatible keep their names so the DT and the gates'
++ * device lookup are unchanged.
 + */
 +
 +#include <linux/device.h>
@@ -156,12 +159,10 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +	u32 base;
 +
 +	struct pinctrl *pinctrl;
-+	struct pinctrl_state *state_off;
 +	struct pinctrl_state *state_divclk;
 +
 +	bool applied;
-+	u8 div_pre;			/* DIV_CTL1 as measured before we wrote */
-+	bool div_pre_valid;
++	u8 div_pre;			/* DIV_CTL1 as measured at probe, before the write */
 +};
 +
 +static int lumia_read(struct lumia_mclk *m, unsigned int reg, unsigned int *val)
@@ -174,101 +175,67 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +	return regmap_read_bypassed(m->regmap, reg, val);
 +}
 +
-+static int lumia_mclk_apply(struct lumia_mclk *m, bool on)
++/*
++ * r182: BOARD STATE, APPLIED ONCE AT PROBE AND NEVER UNDONE.
++ *
++ * Downstream treats the divide factor and the pin mux as board state: the
++ * qpnp-clkdiv node carries qcom,cxo-div = <2>, and qpnp-pin muxes PM8941
++ * gpio15 to FUNC_1 once at boot. Neither changes at runtime. The only runtime
++ * control is the RPM enable vote, and that belongs to the codec driver
++ * (wcd9320_mclk_get/_put). See docs/audio/wcd9320-mclk-ownership-mapping.md.
++ *
++ * The ORDER is the one r169 to r181 proved on hardware every run: the factor
++ * first, chip-verified, then the pin. The DT keeps the pin's "default" state
++ * as the safe input, so the pad never carries the undivided 19.2 MHz.
++ *
++ * Nothing is restored at unbind. Downstream never restores either, and a
++ * divider pulled out from under a codec still running on it is the worse
++ * failure.
++ */
++static int lumia_mclk_apply(struct lumia_mclk *m)
 +{
 +	unsigned int val;
 +	int ret;
 +
-+	if (on) {
-+		if (m->applied) {
-+			dev_err(m->dev, "mclk-div: already applied\n");
-+			return -EBUSY;
-+		}
++	ret = lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
++	if (ret)
++		return ret;
++	m->div_pre = val & 0xff;
++	dev_info(m->dev, "mclk-div: DIV_CTL1 measured %02x at probe, before any write\n",
++		 val & 0xff);
 +
-+		ret = lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
-+		if (ret)
-+			return ret;
-+		m->div_pre = val & 0xff;
-+		m->div_pre_valid = true;
-+		dev_info(m->dev, "mclk-div: DIV_CTL1 measured %02x before any write\n",
-+			 val & 0xff);
-+
-+		ret = regmap_update_bits(m->regmap, m->base + LUMIA_DIV_CTL1,
-+					 LUMIA_DIV_CTL1_FACTOR_MASK,
-+					 LUMIA_XO_DIV_2);
-+		if (ret) {
-+			dev_err(m->dev, "mclk-div: DIV_CTL1 write failed: %d\n", ret);
-+			return ret;
-+		}
-+
-+		ret = lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
-+		if (ret)
-+			return ret;
-+		if ((val & LUMIA_DIV_CTL1_FACTOR_MASK) != LUMIA_XO_DIV_2) {
-+			dev_err(m->dev,
-+				"mclk-div: DIV_CTL1 did not take: chip reads %02x, wanted factor %u\n",
-+				val & 0xff, LUMIA_XO_DIV_2);
-+			return -EIO;
-+		}
-+		dev_info(m->dev, "mclk-div: DIV_CTL1 = %02x, factor %u -> XO/2\n",
-+			 val & 0xff, val & LUMIA_DIV_CTL1_FACTOR_MASK);
-+
-+		if (m->state_divclk) {
-+			ret = pinctrl_select_state(m->pinctrl, m->state_divclk);
-+			if (ret) {
-+				dev_err(m->dev, "mclk-div: pinmux to divclk failed: %d\n",
-+					ret);
-+				return ret;
-+			}
-+			lumia_read(m, LUMIA_GPIO15_MODE_CTL, &val);
-+			dev_info(m->dev,
-+				 "mclk-div: gpio15 MODE_CTL = %02x (dir %u, function %u)\n",
-+				 val & 0xff, (val >> 4) & 0x7, (val >> 1) & 0x7);
-+		}
-+
-+		m->applied = true;
-+		dev_info(m->dev, "mclk-div: APPLIED\n");
-+		return 0;
++	ret = regmap_update_bits(m->regmap, m->base + LUMIA_DIV_CTL1,
++				 LUMIA_DIV_CTL1_FACTOR_MASK, LUMIA_XO_DIV_2);
++	if (ret) {
++		dev_err(m->dev, "mclk-div: DIV_CTL1 write failed: %d\n", ret);
++		return ret;
 +	}
 +
-+	if (!m->applied) {
-+		dev_warn(m->dev, "mclk-div: not applied, nothing to restore\n");
-+		return 0;
++	ret = lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
++	if (ret)
++		return ret;
++	if ((val & LUMIA_DIV_CTL1_FACTOR_MASK) != LUMIA_XO_DIV_2) {
++		dev_err(m->dev,
++			"mclk-div: DIV_CTL1 did not take: chip reads %02x, wanted factor %u\n",
++			val & 0xff, LUMIA_XO_DIV_2);
++		return -EIO;
 +	}
++	dev_info(m->dev, "mclk-div: DIV_CTL1 = %02x, factor %u -> XO/2\n",
++		 val & 0xff, val & LUMIA_DIV_CTL1_FACTOR_MASK);
 +
-+	if (m->state_off)
-+		pinctrl_select_state(m->pinctrl, m->state_off);
-+
-+	if (m->div_pre_valid) {
-+		regmap_update_bits(m->regmap, m->base + LUMIA_DIV_CTL1,
-+				   LUMIA_DIV_CTL1_FACTOR_MASK,
-+				   m->div_pre & LUMIA_DIV_CTL1_FACTOR_MASK);
-+		dev_info(m->dev, "mclk-div: DIV_CTL1 restored to factor %u\n",
-+			 m->div_pre & LUMIA_DIV_CTL1_FACTOR_MASK);
++	ret = pinctrl_select_state(m->pinctrl, m->state_divclk);
++	if (ret) {
++		dev_err(m->dev, "mclk-div: pinmux to divclk failed: %d\n", ret);
++		return ret;
 +	}
++	lumia_read(m, LUMIA_GPIO15_MODE_CTL, &val);
++	dev_info(m->dev, "mclk-div: gpio15 MODE_CTL = %02x (dir %u, function %u)\n",
++		 val & 0xff, (val >> 4) & 0x7, (val >> 1) & 0x7);
 +
-+	m->applied = false;
-+	dev_info(m->dev, "mclk-div: RESTORED\n");
++	m->applied = true;
++	dev_info(m->dev, "mclk-div: APPLIED (board state, static from here on)\n");
 +	return 0;
 +}
-+
-+static ssize_t mclk_div_test_store(struct device *dev,
-+				   struct device_attribute *attr,
-+				   const char *buf, size_t len)
-+{
-+	struct lumia_mclk *m = dev_get_drvdata(dev);
-+	int ret;
-+
-+	if (sysfs_streq(buf, "on"))
-+		ret = lumia_mclk_apply(m, true);
-+	else if (sysfs_streq(buf, "off"))
-+		ret = lumia_mclk_apply(m, false);
-+	else
-+		return -EINVAL;
-+
-+	return ret ? ret : len;
-+}
-+static DEVICE_ATTR_WO(mclk_div_test);
 +
 +/*
 + * Everything the gate needs about the external path, read from the PMIC at the
@@ -289,11 +256,11 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +	lumia_read(m, LUMIA_GPIO15_MODE_CTL, &mode);
 +
 +	return sysfs_emit(buf,
-+			  "applied=%u base=0x%04x\n"
++			  "applied=%u base=0x%04x div_at_probe=%02x\n"
 +			  "div_ctl1=%02x factor=%u\n"
 +			  "en_ctl=%02x enabled=%u\n"
 +			  "gpio15_mode_ctl=%02x dir=%u function=%u\n",
-+			  m->applied ? 1 : 0, m->base,
++			  m->applied ? 1 : 0, m->base, m->div_pre,
 +			  div & 0xff, div & LUMIA_DIV_CTL1_FACTOR_MASK,
 +			  en & 0xff, (en & LUMIA_EN_CTL_ENABLE) ? 1 : 0,
 +			  mode & 0xff, (mode >> 4) & 0x7, (mode >> 1) & 0x7);
@@ -301,7 +268,6 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +static DEVICE_ATTR_RO(mclk_div_state);
 +
 +static struct attribute *lumia_mclk_attrs[] = {
-+	&dev_attr_mclk_div_test.attr,
 +	&dev_attr_mclk_div_state.attr,
 +	NULL,
 +};
@@ -335,27 +301,22 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +	if (IS_ERR(m->pinctrl))
 +		return dev_err_probe(dev, PTR_ERR(m->pinctrl),
 +				     "no pinctrl\n");
-+	m->state_off = pinctrl_lookup_state(m->pinctrl, "default");
-+	if (IS_ERR(m->state_off))
-+		m->state_off = NULL;
 +	m->state_divclk = pinctrl_lookup_state(m->pinctrl, "divclk");
 +	if (IS_ERR(m->state_divclk))
-+		m->state_divclk = NULL;
++		return dev_err_probe(dev, PTR_ERR(m->state_divclk),
++				     "no \"divclk\" pinctrl state -- the MCLK cannot reach the codec\n");
 +
 +	platform_set_drvdata(pdev, m);
 +
-+	ret = lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
++	/* r182: board state, once. A failure refuses the bind, loudly. */
++	ret = lumia_mclk_apply(m);
 +	if (ret)
-+		return dev_err_probe(dev, ret, "cannot read DIV_CTL1\n");
++		return dev_err_probe(dev, ret, "mclk-div: board state NOT applied\n");
 +
-+	/*
-+	 * Nothing is programmed at probe. The experiment is driven from sysfs
-+	 * so the evidence file records the transition rather than inheriting a
-+	 * state that was already there when it started looking.
-+	 */
++	lumia_read(m, m->base + LUMIA_DIV_CTL1, &val);
 +	dev_info(dev,
-+		 "Lumia MCLK experiment ready: base 0x%04x, DIV_CTL1 %02x, divclk state %s\n",
-+		 m->base, val & 0xff, m->state_divclk ? "present" : "MISSING");
++		 "Lumia MCLK experiment ready: base 0x%04x, DIV_CTL1 %02x, gpio15 on divclk\n",
++		 m->base, val & 0xff);
 +	return 0;
 +}
 +
@@ -385,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 13:41:58.020033561 -0500
-@@ -0,0 +1,10766 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 14:53:19.626962107 -0500
+@@ -0,0 +1,10795 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2033,7 +1994,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* ---- the external MCLK (r166) ---- */
 +	struct clk *mclk;              /* NULL when the DT does not provide one */
-+	unsigned int mclk_refs;
++	unsigned int mclk_users;       /* r182: wcd9320_mclk_get/_put, under c3_lock */
 +
 +	/* ---- the codec clock source switch (r168) ---- */
 +	bool clk_src_mclk;             /* the codec is selecting the external MCLK */
@@ -6373,106 +6334,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
-+/* ------------------------------ the external MCLK (r166) -- */
++/* -------------------------- the external MCLK (r166, r182) -- */
 +
 +/*
-+ * The board-level clock the analog path may need.
++ * The board-level clock the analog path needs: PM8941 DIV_CLK1 at 9.6 MHz, an
++ * RPM consumer. devm_clk_get_optional() at probe returns NULL when the DT has
++ * no "mclk", so a device tree without the provider still probes and every
++ * milestone that never needed the clock still runs.
 + *
-+ * WHAT r166 IS FOR
-+ *
-+ * Two codec registers refuse writes on this part -- CDC_CLK_RDAC_CLK_EN_CTL
-+ * (0x30d) bit 1 and CDC_CLK_POWER_CTL (0x314) -- while the entire digital RX
-+ * path accepts everything. The board description says the codec should have an
-+ * external 9.6 MHz MCLK from PM8941 DIV_CLK1 that this port has never
-+ * provided. See docs/audio/wcd9320-mclk-mapping.md.
-+ *
-+ * ONE VARIABLE. This acquires and enables that clock. It deliberately does NOT
-+ * switch the codec's internal source: CLK_BUFF_EN1 (0x108) bit 3 still selects
-+ * the RC oscillator, exactly as it did in r165. So r166 asks whether an
-+ * external MCLK being PRESENT AND ROUTED is enough, separately from whether
-+ * the codec has to be running from it. If r166 says no, the source switch is a
-+ * different question and gets its own build.
-+ *
-+ * OPTIONAL ON PURPOSE. devm_clk_get_optional() returns NULL when the DT has no
-+ * "mclk", so a device tree without the provider still probes and every earlier
-+ * milestone still runs on this driver. A missing clock must not become a
-+ * regression in paths that never needed one.
-+ *
-+ * NOT ENABLED AT PROBE. The gate turns it on explicitly so the evidence file
-+ * records the transition rather than inheriting it. The pin mux and the
-+ * divider rate are applied earlier regardless -- pinctrl-0 by the driver core
-+ * before probe, assigned-clock-rates by the provider -- which is why the gate
-+ * verifies those from the PMIC's own registers rather than from this driver.
++ * r182: THE VOTE IS NO LONGER ITS OWN ATTRIBUTE. r166 to r181 exposed it as
++ * mclk_test, a second writer beside clk_source_test, and every runner had to
++ * sequence the PMIC divider, the vote and the switch by hand. The vote now
++ * lives in wcd9320_mclk_get() / wcd9320_mclk_put(), next to the codec-side
++ * switch it belongs with. See docs/audio/wcd9320-mclk-ownership-mapping.md.
 + */
-+static int wcd9320_mclk_enable(struct wcd9320 *wcd, bool enable)
-+{
-+	struct device *dev = &wcd->sdev->dev;
-+	int ret;
-+
-+	if (wcd->is_ifd)
-+		return -ENODEV;
-+	if (!wcd->mclk) {
-+		dev_err(dev,
-+			"mclk: no \"mclk\" clock in DT -- this build needs the PM8941 clkdiv provider\n");
-+		return -ENODEV;
-+	}
-+
-+	if (enable) {
-+		wcd->mclk_refs++;
-+		if (wcd->mclk_refs > 1) {
-+			dev_info(dev, "mclk: already held, refs now %u\n",
-+				 wcd->mclk_refs);
-+			return 0;
-+		}
-+		ret = clk_prepare_enable(wcd->mclk);
-+		if (ret) {
-+			wcd->mclk_refs--;
-+			dev_err(dev, "mclk: prepare_enable failed: %d\n", ret);
-+			return ret;
-+		}
-+		dev_info(dev, "mclk: ENABLED, rate %lu Hz (refs 0 -> 1)\n",
-+			 clk_get_rate(wcd->mclk));
-+		return 0;
-+	}
-+
-+	if (!wcd->mclk_refs) {
-+		dev_warn(dev, "mclk: released without a reference\n");
-+		return -EINVAL;
-+	}
-+	wcd->mclk_refs--;
-+	if (wcd->mclk_refs) {
-+		dev_info(dev, "mclk: still held, refs now %u\n", wcd->mclk_refs);
-+		return 0;
-+	}
-+	clk_disable_unprepare(wcd->mclk);
-+	dev_info(dev, "mclk: DISABLED (refs 1 -> 0)\n");
-+	return 0;
-+}
-+
-+/*
-+ *   echo on  > mclk_test
-+ *   echo off > mclk_test
-+ */
-+static ssize_t mclk_test_store(struct device *dev,
-+			       struct device_attribute *attr,
-+			       const char *buf, size_t len)
-+{
-+	struct wcd9320 *wcd = dev_get_drvdata(dev);
-+	int ret;
-+
-+	if (wcd->is_ifd)
-+		return -ENODEV;
-+
-+	if (sysfs_streq(buf, "on"))
-+		ret = wcd9320_mclk_enable(wcd, true);
-+	else if (sysfs_streq(buf, "off"))
-+		ret = wcd9320_mclk_enable(wcd, false);
-+	else
-+		return -EINVAL;
-+
-+	return ret ? ret : len;
-+}
-+static DEVICE_ATTR_WO(mclk_test);
 +
 +/*
 + * What the driver knows about the external clock, plus the codec-side source
@@ -6500,7 +6375,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  "present=%u refs=%u rate=%lu\n"
 +			  "buff1_0x108=%02x buff2_0x109=%02x rcosc_0x1fa=%02x mclkgate_0x311=%02x\n"
 +			  "source=%s\n",
-+			  wcd->mclk ? 1 : 0, wcd->mclk_refs,
++			  wcd->mclk ? 1 : 0, wcd->mclk_users,
 +			  wcd->mclk ? clk_get_rate(wcd->mclk) : 0UL,
 +			  buff1 & 0xff, buff2 & 0xff, rcosc & 0xff, mclkctl & 0xff,
 +			  (buff1 & 0x08) ? "RCO" : "EXTERNAL");
@@ -7083,9 +6958,122 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/* ------------------------- r182: the one owner of the MCLK -- */
++
 +/*
-+ *   echo mclk > clk_source_test
-+ *   echo rco  > clk_source_test
++ * wcd9320_mclk_get() / wcd9320_mclk_put(): downstream's
++ * msm_snd_enable_codec_ext_clk() and taiko_mclk_enable() fused, because this
++ * port has no separate machine driver.
++ *
++ *   get:  first user only -- the RPM vote, then the codec-side switch
++ *   put:  last user only  -- the codec-side switch back, then the vote
++ *
++ * The order is downstream's. The switch itself, wcd9320_clk_source_switch(),
++ * is r169's, UNCHANGED: its PA guard, positive control, CHIP_CTL ordering and
++ * unconditional RCO restore are all proven on hardware, so this layer only
++ * counts and votes around it.
++ *
++ * The codec runs on its RC oscillator from core init onward, which is
++ * downstream's "RCO users remain" case permanently, so the last put returns
++ * the codec to RCO, never to OFF -- exactly r169's restore.
++ *
++ * SERIALISED ON c3_lock, not a lock of its own. Every C3 sequence (the PA
++ * path, the voltmeter, the zdet) takes c3_lock and several of them refuse
++ * unless the codec is on MCLK, so holding the same lock means the clock can
++ * never be switched back underneath a measurement that is relying on it.
++ *
++ * When the card arrives, a DAPM supply calls these from PRE_PMU / POST_PMD,
++ * the way downstream's msm8974_mclk_event does.
++ */
++static int wcd9320_mclk_get(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	lockdep_assert_held(&wcd->c3_lock);
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->mclk) {
++		dev_err(dev,
++			"mclk: no \"mclk\" clock in DT -- this build needs the RPM DIV_CLK1 consumer\n");
++		return -ENODEV;
++	}
++
++	if (wcd->mclk_users) {
++		wcd->mclk_users++;
++		dev_info(dev, "mclk: get, users now %u (already on MCLK, no switch)\n",
++			 wcd->mclk_users);
++		return 0;
++	}
++
++	ret = clk_prepare_enable(wcd->mclk);
++	if (ret) {
++		dev_err(dev, "mclk: get -- the RPM vote failed: %d\n", ret);
++		return ret;
++	}
++
++	ret = wcd9320_clk_source_switch(wcd, true);
++	if (ret) {
++		/*
++		 * The switch has already put the codec back on RCO itself (its
++		 * restore label runs on every failure after its first write, and
++		 * its early refusals write nothing), so all that is left to undo
++		 * here is the vote. A failed get must not leak it.
++		 */
++		clk_disable_unprepare(wcd->mclk);
++		dev_err(dev, "mclk: get FAILED (%d) -- vote released, users stay 0\n",
++			ret);
++		return ret;
++	}
++
++	wcd->mclk_users = 1;
++	dev_info(dev, "mclk: get, users 0 -> 1, codec on MCLK (cdc_alive %d)\n",
++		 wcd->cdc_alive);
++	return 0;
++}
++
++static int wcd9320_mclk_put(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	int ret;
++
++	lockdep_assert_held(&wcd->c3_lock);
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->mclk_users) {
++		dev_warn(dev, "mclk: put without a reference -- nothing done\n");
++		return -EINVAL;
++	}
++
++	if (--wcd->mclk_users) {
++		dev_info(dev, "mclk: put, users now %u (staying on MCLK)\n",
++			 wcd->mclk_users);
++		return 0;
++	}
++
++	ret = wcd9320_clk_source_switch(wcd, false);
++
++	/*
++	 * The vote goes EVEN IF the restore failed. Register access does not
++	 * depend on the CDC clock (the r168 mapping, section 5), so a failed
++	 * restore is recovered by core_reinit, not by holding a vote for a
++	 * codec that is no longer being driven.
++	 */
++	clk_disable_unprepare(wcd->mclk);
++	dev_info(dev, "mclk: put, users 1 -> 0, codec %s, vote released\n",
++		 ret ? "restore FAILED -- see above" : "back on RCO");
++	return ret;
++}
++
++/*
++ *   echo mclk > clk_source_test     take a reference  (wcd9320_mclk_get)
++ *   echo rco  > clk_source_test     drop a reference  (wcd9320_mclk_put)
++ *
++ * r182: the same name and words as r168 to r181, so the runners change by
++ * deletion only. Only 0 -> 1 and 1 -> 0 switch; a second "mclk" now counts
++ * instead of returning -EBUSY.
 + */
 +static ssize_t clk_source_test_store(struct device *dev,
 +				     struct device_attribute *attr,
@@ -7097,12 +7085,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (wcd->is_ifd)
 +		return -ENODEV;
 +
++	mutex_lock(&wcd->c3_lock);
 +	if (sysfs_streq(buf, "mclk"))
-+		ret = wcd9320_clk_source_switch(wcd, true);
++		ret = wcd9320_mclk_get(wcd);
 +	else if (sysfs_streq(buf, "rco"))
-+		ret = wcd9320_clk_source_switch(wcd, false);
++		ret = wcd9320_mclk_put(wcd);
 +	else
-+		return -EINVAL;
++		ret = -EINVAL;
++	mutex_unlock(&wcd->c3_lock);
 +
 +	return ret ? ret : len;
 +}
@@ -7146,7 +7136,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 (c2 & 0xff) == wcd9320_clk_controls[2].por) ? 1 : 0;
 +
 +	return sysfs_emit(buf,
-+			  "on_mclk=%u switches=%u restores=%u last_error=%d\n"
++			  "on_mclk=%u switches=%u restores=%u last_error=%d mclk_users=%u\n"
 +			  "source=%s cdc_alive=%d alive_at_last_transition=%d\n"
 +			  "ctl_0x2b4=%02x ctl_0x370=%02x ctl_0x373=%02x\n"
 +			  "want_0x2b4=%02x want_0x370=%02x want_0x373=%02x\n"
@@ -7155,6 +7145,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  "clk_power_0x314=%02x rdac_0x30d=%02x\n",
 +			  wcd->clk_src_mclk ? 1 : 0, wcd->clk_src_switches,
 +			  wcd->clk_src_restores, wcd->clk_src_last_error,
++			  wcd->mclk_users,
 +			  (buff1 & WCD9320_CLK_BUFF_EN1_RCO_SEL) ? "RCO" : "EXTERNAL",
 +			  alive, wcd->cdc_alive,
 +			  c0 & 0xff, c1 & 0xff, c2 & 0xff,
@@ -10159,7 +10150,6 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_hph_status_test.attr,
 +	&dev_attr_hph_status_state.attr,
 +	&dev_attr_forced_log.attr,
-+	&dev_attr_mclk_test.attr,
 +	&dev_attr_mclk_state.attr,
 +	&dev_attr_clk_source_test.attr,
 +	&dev_attr_clk_source_state.attr,
@@ -11150,7 +11140,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("clshk-rc1");
++MODULE_VERSION("mclk-own-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

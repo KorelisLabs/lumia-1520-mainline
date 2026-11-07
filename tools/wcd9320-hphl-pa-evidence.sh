@@ -253,23 +253,26 @@ c3_hph_status() {	# the two headphone status registers, chip reads
 }
 c3_clock_up() {
 	[ "$CLOCK" = "mclk" ] || return 0
-	_ck_div=""
+	# r182: the PM8941 divider is board state, applied at probe. Read it,
+	# refuse if it is not XO/2 on gpio15, and take ONE reference through the
+	# driver's owner, which casts the RPM vote and runs the r169 switch.
+	_ck_dv=""
 	for _ck_d in /sys/bus/platform/devices/*mclk-divider-experiment*; do
-		[ -d "$_ck_d" ] && { _ck_div="$_ck_d/mclk_div_test"; break; }
+		[ -e "$_ck_d/mclk_div_state" ] && { _ck_dv=$(cat "$_ck_d/mclk_div_state" 2>/dev/null); break; }
 	done
-	[ -n "$_ck_div" ] || { jrn "clock: the PM8941 divider device is missing"; return 1; }
-	CLOCK_DIV="$_ck_div"
-	jrn "clock: before the switch: $(c3_hph_status)"
-	echo on > "$CLOCK_DIV" 2>/dev/null || { jrn "clock: divider on REFUSED"; return 1; }
-	echo on > "$PGD/mclk_test" 2>/dev/null || {
-		jrn "clock: mclk vote REFUSED"; echo off > "$CLOCK_DIV" 2>/dev/null; return 1; }
-	CLOCK_UP=1
-	if ! echo mclk > "$PGD/clk_source_test" 2>/dev/null; then
-		jrn "clock: the switch to MCLK FAILED (the driver restores RCO itself)"
+	jrn "clock: board state: div_ctl1=$(rv "$_ck_dv" div_ctl1) factor=$(rv "$_ck_dv" factor) gpio15_function=$(rv "$_ck_dv" function)"
+	if [ "$(rv "$_ck_dv" factor)" != "2" ] || [ "$(rv "$_ck_dv" function)" != "1" ]; then
+		jrn "clock: the PM8941 divider is not XO/2 on gpio15 -- refusing"
 		return 1
 	fi
+	jrn "clock: before the switch: $(c3_hph_status)"
+	if ! echo mclk > "$PGD/clk_source_test" 2>/dev/null; then
+		jrn "clock: MCLK get FAILED (the driver restored RCO and released the vote itself)"
+		return 1
+	fi
+	CLOCK_UP=1
 	_ck_st=$(cat "$PGD/clk_source_state" 2>/dev/null)
-	jrn "clock: on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000) chip_ctl_latched=$(rv "$_ck_st" chip_ctl_latched) buff1_0x108=$(rv "$_ck_st" buff1_0x108) rcosc_0x1fa=$(rv "$_ck_st" rcosc_0x1fa)"
+	jrn "clock: mclk_users=$(rv "$_ck_st" mclk_users) on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000) chip_ctl_latched=$(rv "$_ck_st" chip_ctl_latched) buff1_0x108=$(rv "$_ck_st" buff1_0x108) rcosc_0x1fa=$(rv "$_ck_st" rcosc_0x1fa)"
 	if [ "$(rv "$_ck_st" on_mclk)" != "1" ] || [ "$(rv "$_ck_st" cdc_alive)" != "1" ]; then
 		jrn "clock: the codec is NOT running on MCLK -- refusing to continue"
 		return 1
@@ -296,12 +299,10 @@ c3_vm_window() {
 c3_clock_down() {
 	[ "$CLOCK_UP" = "1" ] || return 0
 	echo rco > "$PGD/clk_source_test" 2>/dev/null ||
-		jrn "clock: the restore to RCO reported an error -- see dmesg"
-	echo off > "$PGD/mclk_test" 2>/dev/null
-	echo off > "$CLOCK_DIV" 2>/dev/null
+		jrn "clock: the MCLK put reported an error -- see dmesg"
 	CLOCK_UP=0
 	_ck_st=$(cat "$PGD/clk_source_state" 2>/dev/null)
-	jrn "clock: RESTORED to RCO: on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000)"
+	jrn "clock: RESTORED to RCO: mclk_users=$(rv "$_ck_st" mclk_users) on_mclk=$(rv "$_ck_st" on_mclk) cdc_alive=$(rv "$_ck_st" cdc_alive) chip_ctl_0x000=$(rv "$_ck_st" chip_ctl_0x000)"
 }
 
 # ------------------------------------------------------------------- abort --
@@ -594,13 +595,15 @@ c3_preflight() {	# c3_preflight <arming?>
 	[ "$(rv "$DPRE" dac_0x1b1)" = "00" ]   || _pf_bad="$_pf_bad dac_0x1b1_dirty"
 	[ "$(rv "$DPRE" dsm_0x3b0)" = "00" ]   || _pf_bad="$_pf_bad dsm_0x3b0_dirty"
 	if [ "$CLOCK" = "mclk" ]; then
-		[ -e "$PGD/clk_source_test" ] && [ -e "$PGD/mclk_test" ] ||
-			_pf_bad="$_pf_bad mclk-switch-missing"
+		[ -e "$PGD/clk_source_test" ] || _pf_bad="$_pf_bad mclk-switch-missing"
 		_pf_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 		[ "$(rv "$_pf_cs" on_mclk)" = "0" ] ||
 			_pf_bad="$_pf_bad codec-not-starting-on-rco"
-		ls -d /sys/bus/platform/devices/*mclk-divider-experiment* >/dev/null 2>&1 ||
-			_pf_bad="$_pf_bad no-mclk-divider-device"
+		# r182: nobody may already hold the MCLK, and the divider state exists
+		[ "$(rv "$_pf_cs" mclk_users)" = "0" ] ||
+			_pf_bad="$_pf_bad mclk-already-held"
+		ls /sys/bus/platform/devices/*mclk-divider-experiment*/mclk_div_state >/dev/null 2>&1 ||
+			_pf_bad="$_pf_bad no-mclk-divider-state"
 	fi
 	if [ "$INSTRUMENT" = "onchip" ]; then
 		# the voltmeter refuses on RCO, and must exist (r178)

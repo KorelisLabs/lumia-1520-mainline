@@ -1038,6 +1038,13 @@ coincident thump at the mic, not on the tone). An earlier run on a boot that
 had already run vm, zdet and the trace was lost to a fan heater (floor -75
 dBFS), not to the driver.
 
+**r182 `mclk-own-rc1` STAGED, NOT BUILT:** MCLK ownership moves into the
+driver. The PM8941 divider is board state applied at probe, and one
+refcounted `wcd9320_mclk_get/_put` holds the RPM vote around the unchanged
+r169 switch (`clk_source_test` `mclk`/`rco`). `mclk_test` and `mclk_div_test`
+are gone. New gate: `tools/wcd9320-mclk-own-evidence.sh`. Map and as-staged
+notes: [wcd9320-mclk-ownership-mapping.md](wcd9320-mclk-ownership-mapping.md).
+
 **Forced-write budget:** the forced log holds 16 entries per boot. A C3a
 listening cycle uses 4; vm plus zdet together 4; the rxb6 trace 4 (measured).
 Plan runs per boot around that, or the last run is refused.

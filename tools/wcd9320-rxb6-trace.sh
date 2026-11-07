@@ -33,11 +33,7 @@ CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 RUNNER="$DIR/pcm-run-measured"
 SETCTL="$DIR/alsa-setctl"
-CSRC="$PGD/clk_source_test"; MCLKT="$PGD/mclk_test"
-DIVT=""
-for d in /sys/bus/platform/devices/*mclk-divider-experiment*; do
-	[ -d "$d" ] && { DIVT="$d/mclk_div_test"; break; }
-done
+CSRC="$PGD/clk_source_test"	# r182: MCLK get/put; the divider is board state
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
 
 [ "$(id -u)" = "0" ] || { say "need root"; exit 2; }
@@ -59,7 +55,7 @@ snap() {	# snap <label>
 say "RX_B6 bit-3 trace, $(date -u '+%Y%m%dT%H%M%SZ'), module $(cat /sys/module/wcd9320/version)"
 snap "0 idle"
 
-echo on > "$DIVT"; echo on > "$MCLKT"; echo mclk > "$CSRC"
+echo mclk > "$CSRC"
 snap "  on MCLK"
 
 echo measure > "$PGD/hphl_vm"; say "  vm rc=$?"
@@ -89,7 +85,7 @@ echo measure > "$PGD/hphl_zdet"; say "  zdet rc=$?"
 snap "4 after one zdet"
 say "  zdet: $(cat "$PGD/hphl_zdet" | tr '\n' ' ')"
 
-echo rco > "$CSRC"; echo off > "$MCLKT"; echo off > "$DIVT"
+echo rco > "$CSRC"
 snap "  back on RCO"
 say ""
 say "-- dmesg: writes to 0x2b5 / 0x2bd and restore mismatches --"

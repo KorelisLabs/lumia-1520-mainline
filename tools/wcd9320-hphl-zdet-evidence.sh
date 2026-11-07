@@ -47,20 +47,20 @@ PAS="$PGD/hphl_pa_state"
 PAT="$PGD/hphl_pa_test"
 CSRC="$PGD/clk_source_test"
 CSRS="$PGD/clk_source_state"
-MCLKT="$PGD/mclk_test"
 FLOG="$PGD/forced_log"
 MBHC="$PGD/mbhc_detect"
 DACS="$PGD/hphl_dac_state"
 REGS="/sys/kernel/debug/regmap/$PGD_NAME/registers"
-DIVT=""
+# r182: the divider is board state, applied at probe; only its state is read.
+DIVS=""
 for d in /sys/bus/platform/devices/*mclk-divider-experiment*; do
-	[ -d "$d" ] && { DIVT="$d/mclk_div_test"; break; }
+	[ -e "$d/mclk_div_state" ] && { DIVS="$d/mclk_div_state"; break; }
 done
 
-for f in "$ZD" "$PAS" "$PAT" "$CSRC" "$CSRS" "$MCLKT" "$FLOG" "$MBHC" "$DACS" "$REGS"; do
+for f in "$ZD" "$PAS" "$PAT" "$CSRC" "$CSRS" "$FLOG" "$MBHC" "$DACS" "$REGS"; do
 	[ -e "$f" ] || { say "INVALID RUN: $f does not exist (zdet-rc1 or later, as root)."; exit 2; }
 done
-[ -n "$DIVT" ] || { say "INVALID RUN: the PM8941 divider device is missing."; exit 2; }
+[ -n "$DIVS" ] || { say "INVALID RUN: the PM8941 divider state is missing (mclk-own-rc1 or later)."; exit 2; }
 [ "$(id -u)" = "0" ] || { say "INVALID RUN: need root."; exit 2; }
 
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
@@ -109,9 +109,7 @@ mkdir -p "$T"
 CLOCK_UP=0
 clock_down() {
 	[ "$CLOCK_UP" = "1" ] || return 0
-	echo rco > "$CSRC" 2>/dev/null
-	echo off > "$MCLKT" 2>/dev/null
-	echo off > "$DIVT" 2>/dev/null
+	echo rco > "$CSRC" 2>/dev/null	# r182: drop the one MCLK reference
 	CLOCK_UP=0
 }
 on_signal() { echo unprep > "$PAT" 2>/dev/null; clock_down; exit 2; }
@@ -126,10 +124,11 @@ RCO_ST=$(zds)
 set_dump "$T/set-after-rco"
 
 # ---- the clock ----
-echo on > "$DIVT" 2>/dev/null; DIV_RC=$?
-echo on > "$MCLKT" 2>/dev/null; MCLK_RC=$?
-CLOCK_UP=1
+DIV_ST=$(cat "$DIVS" 2>/dev/null)
+# r182: one reference through the driver's owner (vote + switch). Held only if
+# the get succeeded -- a failed get has already unwound itself in the driver.
 echo mclk > "$CSRC" 2>/dev/null; SW_RC=$?
+[ "$SW_RC" = "0" ] && CLOCK_UP=1
 CLK_ST=$(cat "$CSRS" 2>/dev/null)
 pa_sample mclk
 
@@ -182,8 +181,8 @@ spread() { printf '%s\n' "$@" | awk 'NF{if(mn==""||$1<mn)mn=$1; if(mx==""||$1>mx
 	check "both refusals counted" "$(rv "$BUSY_ST" refusals)" "2"
 
 	hdr "the clock"
-	check "divider on" "$DIV_RC" "0"
-	check "mclk vote" "$MCLK_RC" "0"
+	check "divider factor (board state)" "$(rv "$DIV_ST" factor)" "2"
+	check "gpio15 on divclk (board state)" "$(rv "$DIV_ST" function)" "1"
 	check "switch to MCLK" "$SW_RC" "0"
 	check "on_mclk" "$(rv "$CLK_ST" on_mclk)" "1"
 	check "cdc_alive" "$(rv "$CLK_ST" cdc_alive)" "1"
