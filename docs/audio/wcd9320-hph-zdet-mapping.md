@@ -394,7 +394,6 @@ clean, OCP 0, clock restored.
 **Tag consequence:** the §22 contract is now measured and within, on-chip:
 14.5 mV against 50, drift 1.5 mV against 10, both cross-checked. That
 meets the bar §10 of the voltmeter map set for
-`wcd9320-hphl-electrical-proven`, qualified as on-chip. **It is not
-awarded here.** The r179 FAIL on the RX_B6 side effect was fixed in r180
-(zdet gate 34/0 on r180 and r181), so the only open item is the operator's
-decision on the tag.
+`wcd9320-hphl-electrical-proven`, qualified as on-chip. The r179 FAIL on
+the RX_B6 side effect was fixed in r180 (zdet gate 34/0 on r180 and r181).
+**The operator awarded the tag on 2026-11-07, on `a58c3d4` (r181).**

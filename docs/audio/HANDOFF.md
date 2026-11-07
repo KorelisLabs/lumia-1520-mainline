@@ -1026,8 +1026,10 @@ MEASURED and WITHIN, on-chip.** No scope was needed; the MBHC voltmeter did it.
   (`tools/wcd9320-rxb6-trace.sh`).
 - Write-ups: [wcd9320-hphl-dc-vm-mapping.md](wcd9320-hphl-dc-vm-mapping.md)
   and [wcd9320-hph-zdet-mapping.md](wcd9320-hph-zdet-mapping.md) section 9.
-- **`wcd9320-hphl-electrical-proven` is NOT awarded.** The bar is met,
-  qualified as on-chip; the tag is the operator's call.
+- **`wcd9320-hphl-electrical-proven` AWARDED (2026-11-07, on `a58c3d4`),
+  qualified as on-chip.** |Voff| <= 100 mV rests on argument, not a reading.
+  The tag does not claim a scope measurement, HPHR as an output, or MCLK
+  bring-up inside the driver.
 
 **r181 STILL MAKES SOUND (2026-11-07, zdet map section 9c).** Fresh boot,
 listening run first: PASS 2/2, heard, -63/-66 dBFS. Same boot after the vm
