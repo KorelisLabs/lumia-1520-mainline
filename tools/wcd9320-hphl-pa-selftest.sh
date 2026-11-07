@@ -439,6 +439,14 @@ ok "the pa-off control is accepted" \
    "$(pa_instrument_decision acoustic operator-waived pa-off)" "OK"
 ok "an unknown control refuses" \
    "$(pa_instrument_decision acoustic operator-waived maybe | cut -c1-6)" "REFUSE"
+# r178: the on-chip voltmeter MEASURES DC, so it needs no waiver -- and one
+# given anyway is refused, because it means the operator misread the mode.
+ok "onchip needs no waiver" \
+   "$(pa_instrument_decision onchip '' '')" "OK"
+ok "onchip with a waiver refuses" \
+   "$(pa_instrument_decision onchip operator-waived '' | cut -c1-6)" "REFUSE"
+ok "onchip with the pa-off control is accepted" \
+   "$(pa_instrument_decision onchip '' pa-off)" "OK"
 
 # --------------------------------------------------------------------------
 hdr "CHAT APPROVAL: only a fresh approval, for this gate, counts"

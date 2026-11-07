@@ -138,6 +138,22 @@ INSTRUMENT="${C3A_INSTRUMENT:-scope}"
 #         cycle 1, restored after the last cycle and on every abort.
 #
 CLOCK="${C3A_CLOCK:-rco}"
+#
+# r178: INSTRUMENT "onchip" -- the codec's own MBHC voltmeter (hphl_vm) reads
+# HPHL in a 250 ms window with the PA off, then on, then off again. No tone
+# is played. The voltmeter refuses on the RC oscillator, so onchip runs on
+# MCLK by default and the preflight refuses rco.
+#
+# THE READING IS IN HPH-CHANNEL COUNTS. r178's characterisation showed the
+# HPH mux input carries its own offset (+659 mV-equivalent with the node held
+# at 0 V by the headphone), so the micbias calibration does not give HPH
+# volts. With the headphone as the load the PA-off window IS the channel's
+# zero; on minus off is the PA's DC offset in counts. Millivolts are printed
+# on the micbias scale (about 1.16 mV per count) and labelled as an
+# assumption until the HPH scale is established.
+#
+[ "$INSTRUMENT" = "onchip" ] && CLOCK="${C3A_CLOCK:-mclk}"
+ONCHIP_ABORT_COUNTS="${ONCHIP_ABORT_COUNTS:-100}"	# |on - off|, hard abort
 DC_WAIVER="${C3A_DC_WAIVER:-}"
 CONTROL="${C3A_CONTROL:-}"
 if [ "$CONTROL" = "pa-off" ]; then
@@ -159,7 +175,7 @@ fi
 #            Refused unless input-gate has the dwell, so a burst of presses
 #            cannot chain through gates.
 #
-if [ "$INSTRUMENT" = "acoustic" ]; then
+if [ "$INSTRUMENT" = "acoustic" ] || [ "$INSTRUMENT" = "onchip" ]; then
 	APPROVE="${C3A_APPROVE:-chat}"
 else
 	APPROVE="${C3A_APPROVE:-buttons}"
@@ -261,6 +277,22 @@ c3_clock_up() {
 	jrn "clock: codec on the external 9.6 MHz clock; $(c3_hph_status)"
 	return 0
 }
+# c3_vm_window <label> -- r178: one 250 ms on-chip window. Sets VW_RC,
+# VW_MEAN (counts, one decimal), VW_DRIFT (counts), VW_MV10 and VW_MVD (the
+# micbias-scale mV x10, labelled as such), VW_SPAN, and journals it all.
+c3_vm_window() {
+	echo window > "$PGD/hphl_vm" 2>/dev/null; VW_RC=$?
+	_vw_s=$(cat "$PGD/hphl_vm" 2>/dev/null)
+	_vw_raw=$(printf '%s\n' "$_vw_s" | sed -n 's/^raw=//p' | tr ',' '\n')
+	VW_MEAN=$(printf '%s\n' "$_vw_raw" | awk 'NF{s+=$1;n++} END{if(n) printf "%.1f", s/n; else print "?"}')
+	VW_DRIFT=$(printf '%s\n' "$_vw_raw" | awk 'NF{if(mn==""||$1<mn)mn=$1; if(mx==""||$1>mx)mx=$1} END{if(mn=="")print "?"; else print mx-mn}')
+	VW_MV10=$(rv "$_vw_s" mv10_mean)
+	VW_MVD=$(rv "$_vw_s" mv10_drift)
+	VW_SPAN=$(rv "$_vw_s" span)
+	jrn "vm $1: rc=$VW_RC n=$(rv "$_vw_s" n) raw_mean=$VW_MEAN drift=$VW_DRIFT counts | micbias-scale mv10 $VW_MV10 drift $VW_MVD | sta_z $(rv "$_vw_s" sta_z) span $VW_SPAN restore_mismatch $(rv "$_vw_s" restore_mismatch)"
+	[ "$VW_RC" = "0" ] && [ "$(rv "$_vw_s" restore_mismatch)" = "0" ]
+}
+
 c3_clock_down() {
 	[ "$CLOCK_UP" = "1" ] || return 0
 	echo rco > "$PGD/clk_source_test" 2>/dev/null ||
@@ -570,6 +602,11 @@ c3_preflight() {	# c3_preflight <arming?>
 		ls -d /sys/bus/platform/devices/*mclk-divider-experiment* >/dev/null 2>&1 ||
 			_pf_bad="$_pf_bad no-mclk-divider-device"
 	fi
+	if [ "$INSTRUMENT" = "onchip" ]; then
+		# the voltmeter refuses on RCO, and must exist (r178)
+		[ "$CLOCK" = "mclk" ] || _pf_bad="$_pf_bad onchip-needs-mclk"
+		[ -e "$PGD/hphl_vm" ] || _pf_bad="$_pf_bad no-hphl_vm-needs-r178"
+	fi
 
 	if [ -n "$_pf_bad" ]; then
 		say "INVALID SETUP: the analog baseline is not pristine:$_pf_bad"
@@ -676,10 +713,23 @@ c3_cycle() {	# c3_cycle <n>
 	jrn "section 16 abort gate PASSED -- the PA may now be enabled"
 
 	# ---------------------------------------------- stage 1: DC, PA off --
+	if [ "$INSTRUMENT" = "onchip" ]; then
+		if ! c3_vm_window "pa-off-c$_cy"; then
+			jrn "the PA-off voltmeter window FAILED -- the PA is never enabled"
+			c3_abort "vm-off-failed"
+			return 1
+		fi
+		eval "C${_cy}_VOFF=\$VW_MEAN; C${_cy}_VOFF_D=\$VW_DRIFT; C${_cy}_VOFF_MV=\$VW_MV10"
+	fi
 	say ""
-	if [ "$INSTRUMENT" = "acoustic" ]; then
-		say "  ==> The PA is OFF. Earbuds OUT of everyone's ears, one earbud"
-		say "      against the USB microphone, the PC recording running."
+	if [ "$INSTRUMENT" = "acoustic" ] || [ "$INSTRUMENT" = "onchip" ]; then
+		if [ "$INSTRUMENT" = "onchip" ]; then
+			say "  ==> The PA is OFF; the PA-off DC window is taken. The headset"
+			say "      stays plugged in -- it is the load. No tone will play."
+		else
+			say "  ==> The PA is OFF. Earbuds OUT of everyone's ears, one earbud"
+			say "      against the USB microphone, the PC recording running."
+		fi
 		[ "$CONTROL" = "pa-off" ] &&
 			say "      CONTROL RUN: approving will NOT enable the PA."
 		if [ "$APPROVE" = "chat" ]; then
@@ -749,8 +799,31 @@ c3_cycle() {	# c3_cycle <n>
 		# approved it; nothing after this needs a human, and holding the PA
 		# open at a gate only lengthens the time it is live.
 		#
-		jrn "AUTO: ${CONTROL:+(control, PA off) }2 s for any switch-on pop, then the tone"
+		jrn "AUTO: ${CONTROL:+(control, PA off) }2 s for any switch-on pop, then the ${INSTRUMENT:+$INSTRUMENT }stage"
 		c3_pause 2 "settle-c$_cy" || return 1
+		if [ "$INSTRUMENT" = "onchip" ]; then
+			#
+			# STAGE 2, ON-CHIP: the PA live, no tone. The difference from
+			# the PA-off window is the PA's DC offset in HPH counts; a
+			# difference beyond ONCHIP_ABORT_COUNTS is a hard abort.
+			#
+			if ! c3_vm_window "pa-on-c$_cy"; then
+				jrn "the PA-on voltmeter window FAILED -- tearing down"
+				c3_abort "vm-on-failed"
+				return 1
+			fi
+			eval "C${_cy}_VON=\$VW_MEAN; C${_cy}_VON_D=\$VW_DRIFT; C${_cy}_VON_MV=\$VW_MV10"
+			eval "_vw_off=\$C${_cy}_VOFF"
+			_vw_d=$(awk -v a="$VW_MEAN" -v b="$_vw_off" 'BEGIN{d=a-b; printf "%.1f", d}')
+			_vw_ad=$(awk -v d="$_vw_d" 'BEGIN{if(d<0)d=-d; printf "%d", d+0.5}')
+			eval "C${_cy}_VDELTA=\$_vw_d"
+			jrn "DC: PA on minus PA off = $_vw_d counts (about $(awk -v d="$_vw_d" 'BEGIN{printf "%.1f", d*1.16}') mV on the micbias scale)"
+			if [ "$_vw_ad" -gt "$ONCHIP_ABORT_COUNTS" ]; then
+				jrn "DC OFFSET BEYOND $ONCHIP_ABORT_COUNTS COUNTS -- hard abort"
+				c3_abort "dc-offset-$_vw_ad"
+				return 1
+			fi
+		fi
 	else
 	say ""
 	if [ "$INSTRUMENT" = "acoustic" ]; then
@@ -775,6 +848,10 @@ c3_cycle() {	# c3_cycle <n>
 			c3_abort "failsafe-unavailable"; return 1; }
 	fi
 
+	if [ "$INSTRUMENT" = "onchip" ]; then
+		jrn "onchip: NO tone -- the PA-on window above was this cycle's stage"
+		eval "C${_cy}_TONE_RC=skipped C${_cy}_PORT=n/a C${_cy}_HS=\"\$(c3_hph_status)\""
+	else
 	jrn "tone: 1 kHz, $DBFS dBFS, 250 ms tone/silence/tone/silence, one stream"
 	#
 	# r177: port 16's state INSIDE the tone. Each stream is bistable --
@@ -808,6 +885,7 @@ c3_cycle() {	# c3_cycle <n>
 	eval "jrn \"tone finished rc=\$C${_cy}_TONE_RC\""
 	eval "jrn \"port 16 during the tone: \$C${_cy}_PORT\""
 	eval "jrn \"hph status during the tone: \$C${_cy}_HS (Xperia: 04 = no master clock, 08 = clocked)\""
+	fi
 
 	eval "C${_cy}_POST=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "_cy_st=\$C${_cy}_POST"
@@ -853,6 +931,15 @@ c3_cycle() {	# c3_cycle <n>
 		jrn "PA NOT OFF AFTER pa-off -- leaving the fail-safe armed"
 		c3_abort "pa-stuck-$_cy_pa"
 		return 1
+	fi
+
+	# r178: the third window, PA off again, DAC path still up -- does the
+	# reading come back to where it started? Not an abort condition: the PA
+	# is already chip-verified off.
+	if [ "$INSTRUMENT" = "onchip" ]; then
+		c3_vm_window "pa-off-again-c$_cy" ||
+			jrn "the second PA-off window failed (the PA is already off)"
+		eval "C${_cy}_VOFF2=\$VW_MEAN; C${_cy}_VOFF2_D=\$VW_DRIFT"
 	fi
 
 	echo dac-off-reggain > "$PGD/hphl_dac_test" 2>/dev/null
@@ -1062,6 +1149,21 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		say "DC contract : NOT MEASURED -- waived by the operator ($DC_WAIVER)"
 		say "waveform    : decided by tools/c3a-capture.py on the PC recording"
+	fi
+	if [ "$INSTRUMENT" = "onchip" ]; then
+		say ""
+		say "DC, on-chip (r178 hphl_vm), 250 ms windows, HPH-channel COUNTS."
+		say "The headset is the load, so PA-off is the channel's zero. mV are on"
+		say "the micbias scale (~1.16 mV/count): an ASSUMPTION until the HPH"
+		say "channel's own scale is established."
+		say "cycle  off(mean/drift)  on(mean/drift)  off-again  on-off  ~mV"
+		c=1
+		while [ "$c" -lt "$n" ]; do
+			eval "_a=\${C${c}_VOFF:-?}; _ad=\${C${c}_VOFF_D:-?}; _b=\${C${c}_VON:-?}; _bd=\${C${c}_VON_D:-?}; _g=\${C${c}_VOFF2:-?}; _dl=\${C${c}_VDELTA:-?}"
+			printf '%-6s %-8s/%-7s %-8s/%-6s %-10s %-7s %s\n' "$c" "$_a" "$_ad" "$_b" "$_bd" "$_g" "$_dl" \
+				"$(awk -v d="$_dl" 'BEGIN{ if (d ~ /^-?[0-9.]+$/) printf "%.1f", d*1.16; else print "?" }')"
+			c=$((c + 1))
+		done
 	fi
 
 	hdr "the PA, at every boundary"

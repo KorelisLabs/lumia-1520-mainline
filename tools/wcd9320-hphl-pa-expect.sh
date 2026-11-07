@@ -272,6 +272,15 @@ pa_instrument_decision() {
 	case "$_id_inst" in
 	scope)
 		echo OK ;;
+	onchip)
+		# r178: DC IS measured, by the codec's own MBHC voltmeter, so there
+		# is nothing to waive -- and a waiver given anyway is refused,
+		# because it would mean the operator thinks DC is not being taken.
+		if [ -z "$_id_waive" ]; then
+			echo OK
+		else
+			echo "REFUSE:onchip-measures-dc-no-waiver-applies"
+		fi ;;
 	acoustic)
 		if [ "$_id_waive" = "operator-waived" ]; then
 			echo OK
