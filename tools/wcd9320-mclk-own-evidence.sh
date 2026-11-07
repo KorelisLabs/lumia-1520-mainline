@@ -133,6 +133,14 @@ chip_ctl_on() { printf '%02x' $(( (0x$1 & 0xf9) | 0x02 )); }
 	check "codec on RCO"                  "$(rv "$S0" source)" "RCO"
 	check "on_mclk 0"                     "$(rv "$S0" on_mclk)" "0"
 	check "mclk_users 0"                  "$(rv "$S0" mclk_users)" "0"
+	# r183: the pin's electrical config, raw from the PMIC (SPMI slave 0).
+	# DIG_PULL_CTL 0xce42 = 05 (no pull), DIG_OUT_CTL 0xce45 = 03 (CMOS, HIGH),
+	# matching downstream and the Lumia's ACPI. r182 and earlier read 04 / 01.
+	PREG=/sys/kernel/debug/regmap/0-00/registers
+	PULL=$(grep -m1 '^ce42:' "$PREG" 2>/dev/null | cut -d' ' -f2)
+	DOUT=$(grep -m1 '^ce45:' "$PREG" 2>/dev/null | cut -d' ' -f2)
+	check "gpio15 pull: none (0xce42)"    "${PULL:-unread}" "05"
+	check "gpio15 CMOS, HIGH (0xce45)"    "${DOUT:-unread}" "03"
 	note  "CHIP_CTL at boot"              "$C0 (on MCLK it must read $CTL_ON)"
 	note  "rpm clock enable counts"       "$(clk_counts)"
 

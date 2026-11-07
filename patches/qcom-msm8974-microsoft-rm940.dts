@@ -196,10 +196,27 @@
 		power-source = <PM8941_GPIO_S3>;
 	};
 
+	/*
+	 * r183: drive strength and pull, matched to the two independent sources
+	 * that configure this pin as the codec MCLK:
+	 *
+	 *   Nexus 5 (msm8974-hammerhead.dtsi, gpio@ce00 WCD_MCLK):
+	 *       qcom,out-strength = <3>, qcom,pull = <5> (no pull)
+	 *   Lumia's own ACPI, codec power state (PMICGPIO 0x0E):
+	 *       CONFIG_DIGITAL_OUTPUT ..., 0x02 (VIN2), 0x04 (FUNC1), 0x03
+	 *
+	 * Raw DIG_OUT_CTL strength 3 is HIGH in both downstream's qpnp enum and
+	 * the hardware field mainline writes (pinctrl-spmi-gpio translates the
+	 * binding's PMIC_GPIO_STRENGTH_HIGH = 1 to register value 3). r169-r182
+	 * ran with neither property set, i.e. the POR values: strength 1 (LOW)
+	 * and pull 4 (pull-down 10 uA), measured at 0xce45 = 01, 0xce42 = 04.
+	 */
 	wcd9320_mclk_divclk: wcd9320-mclk-divclk-state {
 		pins = "gpio15";
 		function = "func1";
 		output-high;
+		bias-disable;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_HIGH>;
 		power-source = <PM8941_GPIO_S3>;
 	};
 };
