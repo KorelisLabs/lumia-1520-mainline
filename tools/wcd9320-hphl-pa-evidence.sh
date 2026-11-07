@@ -697,9 +697,30 @@ c3_cycle() {	# c3_cycle <n>
 	fi
 
 	jrn "tone: 1 kHz, $DBFS dBFS, 250 ms tone/silence/tone/silence, one stream"
-	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >>"$JOURNAL" 2>&1
+	#
+	# r177: port 16's state INSIDE the tone. Each stream is bistable --
+	# clean throughout or overflowing throughout, decided at its start
+	# (wcd9320-rx-port-flow-mapping.md) -- so clear once the stream is up and
+	# read before it ends. A cycle with a CLEAN port and silence at the mic
+	# puts the fault downstream of the interpolator. Skipped on a module
+	# without slim_port_status; the tone itself is unchanged.
+	#
+	_pt_ps="$PGD/slim_port_status"
+	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >>"$JOURNAL" 2>&1 &
+	_pt_pid=$!
+	eval "C${_cy}_PORT=none"
+	if [ -e "$_pt_ps" ]; then
+		sleep 0.3
+		echo clear > "$_pt_ps" 2>/dev/null
+		sleep 0.5
+		_pt_out=$(cat "$_pt_ps" 2>/dev/null)
+		_pt_sum="pending=$(rv "$_pt_out" pending) src=$(rv "$_pt_out" src) overflow=$(rv "$_pt_out" overflow) read_rc=$(rv "$_pt_out" read_rc)"
+		eval "C${_cy}_PORT=\"\$_pt_sum\""
+	fi
+	wait "$_pt_pid"
 	eval "C${_cy}_TONE_RC=\$?"
 	eval "jrn \"tone finished rc=\$C${_cy}_TONE_RC\""
+	eval "jrn \"port 16 during the tone: \$C${_cy}_PORT\""
 
 	eval "C${_cy}_POST=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "_cy_st=\$C${_cy}_POST"
