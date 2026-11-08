@@ -226,8 +226,13 @@ Three deviations from section 3, each found while building:
 
 **Gates:**
 - fence 5i: 42 checks, 11 of 11 mutations caught;
-- `tools/wcd9320-dapm-selftest.sh`: 38/38 offline, covering the expectations
+- `tools/wcd9320-dapm-selftest.sh`: 43/43 offline, covering the expectations
   and the DAPM teardown against fakes;
+- **the card module must be r184's** (`q6-card-rc4`). With an older card the
+  codec's HEADPHONE output has no pin behind it, so it is a DAPM endpoint by
+  itself and any stream would power the whole path. Both gates refuse before
+  anything plays unless the card is `q6-card-rc4` and the pin reads 0. The
+  card `.ko` is installed together with the codec's;
 - `tools/wcd9320-dapm-evidence.sh`: the digital gate;
 - `tools/wcd9320-dapm-listen.sh`: the acoustic gate. It runs as the
   `wcd9320-c3a` unit, so `tools/c3a-approve.sh dapm-c1` works unchanged.

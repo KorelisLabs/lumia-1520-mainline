@@ -153,7 +153,9 @@ preflight() {
 	DPRE=$(cat "$PGD/hphl_dac_state" 2>/dev/null)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	[ "$(dapm_held_is "$D_PRE" "$DAPM_HELD_NONE")" = "OK" ] || _bad="$_bad dapm-held=$(dapm_kv "$D_PRE" held)"
-	[ "$(pin_get)" = "0" ] || _bad="$_bad pin-not-off"
+	CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
+	_cok=$(dapm_card_ok "$CARDV" "$(pin_get)")
+	[ "$_cok" = "OK" ] || _bad="$_bad ${_cok#REFUSE:}"
 	[ "$(rv "$_cs" mclk_users)" = "0" ] || _bad="$_bad mclk-held"
 	[ "$(rv "$_cs" on_mclk)" = "0" ] || _bad="$_bad not-on-rco"
 	[ "$(pa_masked "$(rv "$PRE" pa_0x1ab)")" = "00" ] || _bad="$_bad pa-on"
@@ -361,6 +363,7 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 
 	hdr "checks"
 	check "module version" "$RUNNING_VERSION" "$EXPECT_VERSION"
+	check "card module version" "${CARDV:-}" "$DAPM_CARD_VERSION"
 	check "the run was not aborted" "$ABORTED" "0"
 	check "streams completed" "$((n - 1))" "$CYCLES"
 	c=1

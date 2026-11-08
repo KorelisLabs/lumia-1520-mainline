@@ -57,6 +57,23 @@ dapm_widget() {
 		head -n1 | grep . || echo "? ? ?"
 }
 
+# THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
+# no pin behind it and is a DAPM endpoint by itself, so any stream would power
+# the whole path, PA included. Every gate checks this BEFORE anything plays.
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc4}"
+DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
+
+# dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
+dapm_card_ok() {
+	if [ "$1" != "$DAPM_CARD_VERSION" ]; then
+		echo "REFUSE:card module is '${1:-absent}', not $DAPM_CARD_VERSION -- no pin behind HEADPHONE"
+	elif [ "$2" != "0" ]; then
+		echo "REFUSE:Headphones pin reads '$2', not 0"
+	else
+		echo "OK"
+	fi
+}
+
 # dapm_pin_value <alsa-setctl --get output> -> 0, 1, or ?
 dapm_pin_value() {
 	_pv=$(printf '%s\n' "$1" | sed -n 's/^readback=//p' | head -n1)

@@ -72,6 +72,11 @@ wfield() { printf '%s' "$1" | tr ';' '\n' | sed -n "s/^$2=//p" | head -n1; }
 
 pin() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"; }
 
+# ------------------------------------------------- refuse before playing --
+CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
+_cok=$(dapm_card_ok "$CARDV" "$(pin)")
+[ "$_cok" = "OK" ] || { say "INVALID SETUP: ${_cok#REFUSE:}. Nothing was played."; exit 2; }
+
 # ---------------------------------------------------------------- before --
 D0=$(cat "$PGD/dapm_state" 2>/dev/null)
 PA0=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
@@ -131,6 +136,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 
 	hdr "checks"
 	check "module version" "$RUNNING_VERSION" "$EXPECT_VERSION"
+	check "card module version" "$CARDV" "$DAPM_CARD_VERSION"
 	check "pin OFF before" "$PIN0" "0"
 	check "pin OFF during" "$PIN1" "0"
 	check "pin OFF after" "$PIN2" "0"
