@@ -1,6 +1,7 @@
 # DAPM for the HPHL path: ordinary playback powers the chain (r184 map)
 
-**Status:** map only, nothing built. Written 2026-11-07, after r183.
+**Status:** built as r184 `dapm-hphl-rc1` (section 4a), not yet run on
+hardware. Mapped 2026-11-07, after r183.
 
 **The goal.** `aplay` on the Q6 card, with nothing else, produces sound on
 the left earcup. Today the same sound needs the C3a runner, which writes six
@@ -191,6 +192,48 @@ is left OFF throughout:
 
 **Forced budget.** One played stream costs 4 entries (the prereq pair and the
 DAC-path pair), the same as one C3a cycle.
+
+## 4a. As built (r184, `dapm-hphl-rc1`, pkgrel 184)
+
+Three deviations from section 3, each found while building:
+
+1. **RX1 and the DAC are supplies, not a MIXER and a DAC.** Mainline's
+   `dapm_up_seq[]` powers `dac` (7) *before* `mixer` (8), so the table in 3a
+   would have run the DAC event before RX1, and the DAC path refuses without
+   RX1. All five pre-PA stages are therefore `SUPPLY_S` with subsequences
+   0 to 4 (MCLK, prep, prereq, RX1, DAC), all feeding the `HPHL` PGA.
+   Supplies always power before PGAs, subsequences ascend on the way up and
+   descend on the way down (`dapm_seq_compare()`), so the order is fixed by
+   the widget types alone. The route graph is `AIF1 PB -> HPHL -> HEADPHONE`
+   with the five supplies on `HPHL`.
+2. **Ownership chain.** `dapm_seq_check_event()` logs a failed event and
+   carries on powering the next widget, so the events cannot trust the
+   graph. `dapm_held` records what DAPM itself powered:
+   - a stage powers only if DAPM holds exactly every stage below it;
+   - MCLK powers only on an idle codec (`wcd9320_dapm_idle()`: no MCLK user,
+     no prep, prereq, RX1, DAC, PA, compander, class-H or RX bias), so DAPM
+     never shares the path with the runner, the voltmeter or the zdet;
+   - any failure runs `wcd9320_c3_abort()` and drops what it took down from
+     `dapm_held`, so every later stage refuses;
+   - power-down undoes only stages DAPM holds.
+3. **One event function.** The stage number is the widget's `.shift`, which
+   nothing reads on an `SND_SOC_NOPM` widget, and one dispatcher holds the
+   six calls. So the lock, the chain and the abort exist once.
+
+**Also added:**
+- a `dapm_state` attribute: `held`, `ups`, `downs`, `refusals`, `failures`;
+- the C3a runner's preflight refuses while the Headphones pin is on.
+
+**Gates:**
+- fence 5i: 42 checks, 11 of 11 mutations caught;
+- `tools/wcd9320-dapm-selftest.sh`: 38/38 offline, covering the expectations
+  and the DAPM teardown against fakes;
+- `tools/wcd9320-dapm-evidence.sh`: the digital gate;
+- `tools/wcd9320-dapm-listen.sh`: the acoustic gate. It runs as the
+  `wcd9320-c3a` unit, so `tools/c3a-approve.sh dapm-c1` works unchanged.
+
+**The emergency path** is `tools/wcd9320-dapm-teardown.sh`: pin off, kill the
+player, then the C3 abort unconditionally.
 
 ## 5. Order of work
 

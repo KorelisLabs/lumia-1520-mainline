@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-08-23 08:49:05.389813142 -0400
-@@ -0,0 +1,273 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 08:26:39.875559209 -0500
+@@ -0,0 +1,326 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -294,6 +294,47 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	}
 +}
 +
++/*
++ * r184: THE HEADPHONE PIN, OFF AT INIT.
++ *
++ * The codec's DAPM graph ends at its HEADPHONE output; this is the board's
++ * jack behind it. An output wired to an HP widget stops being an endpoint by
++ * itself, so with this pin disabled the path from the RX1 DAI is incomplete
++ * and DAPM powers NOTHING on the codec -- not the PA, not even MCLK -- however
++ * much is played.
++ *
++ * That is the safety gate for ordinary playback. The pin is disabled before
++ * the card's first DAPM sync and this driver never enables it: only the
++ * operator does, through the standard "Headphones Switch" control. Jack
++ * detection driving the pin comes later.
++ */
++static const struct snd_soc_dapm_widget lumia_q6_widgets[] = {
++	SND_SOC_DAPM_HP("Headphones", NULL),
++};
++
++static const struct snd_soc_dapm_route lumia_q6_routes[] = {
++	{ "Headphones", NULL, "HEADPHONE" },
++};
++
++static const struct snd_kcontrol_new lumia_q6_controls[] = {
++	SOC_DAPM_PIN_SWITCH("Headphones"),
++};
++
++static int lumia_q6_late_probe(struct snd_soc_card *card)
++{
++	int ret;
++
++	/* A card whose pin cannot be put OFF does not register. */
++	ret = snd_soc_dapm_disable_pin(&card->dapm, "Headphones");
++	if (ret) {
++		dev_err(card->dev, "could not disable the Headphones pin: %d\n", ret);
++		return ret;
++	}
++	dev_info(card->dev,
++		 "Headphones pin OFF at init -- nothing on the codec powers until \"Headphones Switch\" is turned on\n");
++	return snd_soc_dapm_sync(&card->dapm);
++}
++
 +static int lumia_q6_probe(struct platform_device *pdev)
 +{
 +	struct device *dev = &pdev->dev;
@@ -307,6 +348,18 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	card->owner = THIS_MODULE;
 +	card->dev = dev;
 +	dev_set_drvdata(dev, card);
++
++	/*
++	 * Set BEFORE qcom_snd_parse_of(), which installs its generic jack
++	 * widgets only when the card has none of its own.
++	 */
++	card->dapm_widgets = lumia_q6_widgets;
++	card->num_dapm_widgets = ARRAY_SIZE(lumia_q6_widgets);
++	card->dapm_routes = lumia_q6_routes;
++	card->num_dapm_routes = ARRAY_SIZE(lumia_q6_routes);
++	card->controls = lumia_q6_controls;
++	card->num_controls = ARRAY_SIZE(lumia_q6_controls);
++	card->late_probe = lumia_q6_late_probe;
 +
 +	/*
 +	 * Resolves every sound-dai phandle through the component that owns the
@@ -346,4 +399,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc3");
++MODULE_VERSION("q6-card-rc4");

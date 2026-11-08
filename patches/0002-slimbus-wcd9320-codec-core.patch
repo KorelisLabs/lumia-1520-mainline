@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-07 17:55:21.831877416 -0500
-@@ -0,0 +1,10795 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 08:25:32.213912381 -0500
+@@ -0,0 +1,11024 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1995,6 +1995,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* ---- the external MCLK (r166) ---- */
 +	struct clk *mclk;              /* NULL when the DT does not provide one */
 +	unsigned int mclk_users;       /* r182: wcd9320_mclk_get/_put, under c3_lock */
++
++	/* ---- r184: DAPM, under c3_lock ---- */
++	unsigned int dapm_held;        /* BIT(stage) for each stage DAPM powered */
++	unsigned int dapm_ups, dapm_downs, dapm_refusals, dapm_failures;
 +
 +	/* ---- the codec clock source switch (r168) ---- */
 +	bool clk_src_mclk;             /* the codec is selecting the external MCLK */
@@ -10106,6 +10110,225 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +static DEVICE_ATTR_RW(hphl_zdet);
 +
++/* ------------------------------------------------- r184: DAPM -- */
++
++/*
++ * Ordinary playback powers the HPHL path. docs/audio/wcd9320-dapm-hphl-mapping.md.
++ *
++ * EVERY WIDGET IS SND_SOC_NOPM. DAPM writes no register itself: each widget's
++ * event calls the function the C3a runner has been calling all along, so the
++ * register sequences, the PA fence (four 0x1ab sites, all HPHL) and the
++ * forced-write sites are exactly the proven ones.
++ *
++ * THE ORDER COMES FROM THE WIDGET TYPES. Mainline powers supplies before
++ * PGAs, and SUPPLY_S subsequences ascend on the way up and descend on the way
++ * down. Mainline also powers DACs BEFORE mixers, so RX1 and the DAC cannot be
++ * a MIXER and a DAC here -- the DAC path refuses without RX1. They are the
++ * fourth and fifth supplies instead. Up:
++ *
++ *   MCLK, class-H prep, prereq (forced 0x314), RX1, DAC, then the PA (PGA)
++ *
++ * which is the runner's order with MCLK first, and down is its exact reverse.
++ * (The runner drops prereq before RX1 on the way down; DAPM drops it after.
++ * Both keep the forced inverse pair, and the PA is already off. Recorded in
++ * the mapping, not engineered around.)
++ *
++ * THE STAGE NUMBER RIDES IN .shift. With SND_SOC_NOPM nothing reads it, and
++ * one event function keeps the lock, the ownership chain and the abort in one
++ * place instead of six copies.
++ *
++ * OWNERSHIP. DAPM logs a failed event and carries on powering the rest, so the
++ * event cannot trust the graph. dapm_held records what DAPM itself powered:
++ *
++ *   - a stage powers only if DAPM holds exactly every stage below it;
++ *   - the first stage (MCLK) powers only on an idle codec, so DAPM never
++ *     shares the path with the runner, the voltmeter or the zdet;
++ *   - any failed stage runs the full C3 abort, which drops what DAPM holds
++ *     above RX1, so every stage above it refuses;
++ *   - power-down undoes only what DAPM holds, and tolerates a path an abort
++ *     already took down (every teardown is a no-op when not reached).
++ *
++ * Lock order: the DAPM mutex, then c3_lock. No research hook calls DAPM.
++ */
++enum wcd9320_dapm_stage {
++	WCD9320_DS_MCLK,
++	WCD9320_DS_PREP,
++	WCD9320_DS_PREREQ,
++	WCD9320_DS_RX1,
++	WCD9320_DS_DAC,
++	WCD9320_DS_PA,
++	WCD9320_DS_N,
++};
++
++static const char * const wcd9320_dapm_stage_name[WCD9320_DS_N] = {
++	[WCD9320_DS_MCLK]	= "mclk",
++	[WCD9320_DS_PREP]	= "class-h prep",
++	[WCD9320_DS_PREREQ]	= "cdc prereq",
++	[WCD9320_DS_RX1]	= "rx1",
++	[WCD9320_DS_DAC]	= "hphl dac",
++	[WCD9320_DS_PA]		= "hphl pa",
++};
++
++#define WCD9320_DS_ABORTED \
++	(BIT(WCD9320_DS_PREP) | BIT(WCD9320_DS_PREREQ) | \
++	 BIT(WCD9320_DS_DAC) | BIT(WCD9320_DS_PA))
++
++/* Nothing on the C3 path is up, and nobody holds the clock. */
++static bool wcd9320_dapm_idle(struct wcd9320 *wcd)
++{
++	return !wcd->mclk_users && !wcd->pa_prep_on && !wcd->clk_prereq_on &&
++	       !wcd->rx1_digital_on && !wcd->hphl_dac_on && !wcd->hphl_pa_on &&
++	       !wcd->comp1_on && !wcd->clsh_on && !wcd->rx_bias_refs;
++}
++
++/* The six proven functions, and nothing else. Under c3_lock. */
++static int wcd9320_dapm_stage_call(struct wcd9320 *wcd, unsigned int stage,
++				   bool on)
++{
++	switch (stage) {
++	case WCD9320_DS_MCLK:
++		return on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd);
++	case WCD9320_DS_PREP:
++		return wcd9320_pa_prep(wcd, on);
++	case WCD9320_DS_PREREQ:
++		return wcd9320_cdc_clk_prereq(wcd, on);
++	case WCD9320_DS_RX1:
++		return wcd9320_rx1_digital_path(wcd, on);
++	case WCD9320_DS_DAC:
++		return wcd9320_hphl_dac_path(wcd, on, true,
++					     WCD9320_GAIN_SRC_REGISTER);
++	case WCD9320_DS_PA:
++		return wcd9320_hphl_pa_path(wcd, on);
++	}
++	return -EINVAL;
++}
++
++static int wcd9320_dapm_event(struct snd_soc_dapm_widget *w,
++			      struct snd_kcontrol *kc, int event)
++{
++	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
++	struct wcd9320 *wcd = dev_get_drvdata(component->dev);
++	unsigned int stage = w->shift, below;
++	struct device *dev;
++	int ret = 0;
++
++	if (!wcd || wcd->is_ifd || stage >= WCD9320_DS_N)
++		return -ENODEV;
++	dev = &wcd->sdev->dev;
++	below = BIT(stage) - 1;
++
++	mutex_lock(&wcd->c3_lock);
++	if (SND_SOC_DAPM_EVENT_ON(event)) {
++		if (wcd->dapm_held != below) {
++			wcd->dapm_refusals++;
++			dev_err(dev,
++				"dapm: %s REFUSED -- DAPM holds %02x, this stage needs exactly %02x below it\n",
++				wcd9320_dapm_stage_name[stage], wcd->dapm_held, below);
++			ret = -EAGAIN;
++			goto out;
++		}
++		if (stage == WCD9320_DS_MCLK && !wcd9320_dapm_idle(wcd)) {
++			wcd->dapm_refusals++;
++			dev_err(dev,
++				"dapm: REFUSED -- the C3 path is not idle (mclk_users=%u prep=%d prereq=%d rx1=%d dac=%d pa=%d comp1=%d clsh=%d rx_bias=%u)\n",
++				wcd->mclk_users, wcd->pa_prep_on,
++				wcd->clk_prereq_on, wcd->rx1_digital_on,
++				wcd->hphl_dac_on, wcd->hphl_pa_on, wcd->comp1_on,
++				wcd->clsh_on, wcd->rx_bias_refs);
++			ret = -EBUSY;
++			goto out;
++		}
++		ret = wcd9320_dapm_stage_call(wcd, stage, true);
++		if (ret) {
++			wcd->dapm_failures++;
++			dev_err(dev, "dapm: %s FAILED (%d) -- full C3 abort\n",
++				wcd9320_dapm_stage_name[stage], ret);
++			wcd9320_c3_abort(wcd);
++			wcd->dapm_held &= ~WCD9320_DS_ABORTED;
++			goto out;
++		}
++		wcd->dapm_held |= BIT(stage);
++		wcd->dapm_ups++;
++		dev_info(dev, "dapm: %s up, held %02x\n",
++			 wcd9320_dapm_stage_name[stage], wcd->dapm_held);
++	} else {
++		if (!(wcd->dapm_held & BIT(stage))) {
++			dev_info(dev, "dapm: %s not held by DAPM -- nothing to undo\n",
++				 wcd9320_dapm_stage_name[stage]);
++			goto out;
++		}
++		ret = wcd9320_dapm_stage_call(wcd, stage, false);
++		wcd->dapm_held &= ~BIT(stage);
++		wcd->dapm_downs++;
++		if (ret) {
++			wcd->dapm_failures++;
++			dev_err(dev, "dapm: %s teardown FAILED (%d) -- full C3 abort\n",
++				wcd9320_dapm_stage_name[stage], ret);
++			wcd9320_c3_abort(wcd);
++			wcd->dapm_held &= ~WCD9320_DS_ABORTED;
++		} else {
++			dev_info(dev, "dapm: %s down, held %02x\n",
++				 wcd9320_dapm_stage_name[stage], wcd->dapm_held);
++		}
++	}
++out:
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
++static const struct snd_soc_dapm_widget wcd9320_dapm_widgets[] = {
++	SND_SOC_DAPM_AIF_IN("AIF1 PB", "WCD9320 SLIM RX1 Playback", 0,
++			    SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_SUPPLY_S("MCLK", 0, SND_SOC_NOPM, WCD9320_DS_MCLK, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("CLASS_H PREP", 1, SND_SOC_NOPM, WCD9320_DS_PREP, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("CDC PREREQ", 2, SND_SOC_NOPM, WCD9320_DS_PREREQ, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("RX1 CHAIN", 3, SND_SOC_NOPM, WCD9320_DS_RX1, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("HPHL DAC", 4, SND_SOC_NOPM, WCD9320_DS_DAC, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_PGA_E("HPHL", SND_SOC_NOPM, WCD9320_DS_PA, 0, NULL, 0,
++			   wcd9320_dapm_event,
++			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_OUTPUT("HEADPHONE"),
++};
++
++static const struct snd_soc_dapm_route wcd9320_dapm_routes[] = {
++	{ "HPHL", NULL, "AIF1 PB" },
++	{ "HEADPHONE", NULL, "HPHL" },
++	{ "HPHL", NULL, "MCLK" },
++	{ "HPHL", NULL, "CLASS_H PREP" },
++	{ "HPHL", NULL, "CDC PREREQ" },
++	{ "HPHL", NULL, "RX1 CHAIN" },
++	{ "HPHL", NULL, "HPHL DAC" },
++};
++
++static ssize_t dapm_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	ssize_t n;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	mutex_lock(&wcd->c3_lock);
++	n = sysfs_emit(buf,
++		       "held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u pa_on=%d\n",
++		       wcd->dapm_held, wcd->dapm_ups, wcd->dapm_downs,
++		       wcd->dapm_refusals, wcd->dapm_failures, wcd->mclk_users,
++		       wcd->hphl_pa_on);
++	mutex_unlock(&wcd->c3_lock);
++	return n;
++}
++static DEVICE_ATTR_RO(dapm_state);
++
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
 +	&dev_attr_rx_port_state.attr,
@@ -10153,6 +10376,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_mclk_state.attr,
 +	&dev_attr_clk_source_test.attr,
 +	&dev_attr_clk_source_state.attr,
++	&dev_attr_dapm_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -10383,6 +10607,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static const struct snd_soc_component_driver wcd9320_soc_component = {
 +	.name = "wcd9320-codec",
 +	.endianness = 1,
++	/* r184: the HPHL path -- see the DAPM block above */
++	.dapm_widgets = wcd9320_dapm_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(wcd9320_dapm_widgets),
++	.dapm_routes = wcd9320_dapm_routes,
++	.num_dapm_routes = ARRAY_SIZE(wcd9320_dapm_routes),
 +};
 +
 +/*
@@ -11140,7 +11369,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("mclkpin-rc1");
++MODULE_VERSION("dapm-hphl-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

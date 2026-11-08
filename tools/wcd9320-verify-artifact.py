@@ -1645,6 +1645,197 @@ def main():
     check("a failed apply refuses the bind",
           "board state NOT applied" in l_probe, "dev_err_probe on failure")
 
+    # ==================================================================
+    # 5i. r184: THE DAPM FENCE.
+    #
+    # Ordinary playback powers the HPHL path through DAPM.
+    # docs/audio/wcd9320-dapm-hphl-mapping.md. Bounded:
+    #
+    #   1. every codec widget is SND_SOC_NOPM -- DAPM itself writes no
+    #      register, so the 0x1ab / 0x1b1 / forced-write counts fenced above
+    #      are the whole story and stay unchanged
+    #   2. the widget set is exactly the mapped one: five ordered supplies,
+    #      one PGA, no HPHR
+    #   3. one event function, under c3_lock, calling one dispatcher whose
+    #      only calls are the six proven path functions
+    #   4. ownership: a stage powers only when DAPM holds every stage below
+    #      it, the first only on an idle codec, and any failure runs the full
+    #      C3 abort
+    #   5. the card's Headphones pin exists and is disabled at card init
+    #
+    # The ORDER comes from the widget TYPES, not from the route graph:
+    # mainline powers supplies before PGAs, SUPPLY_S subsequences ascending on
+    # the way up and descending on the way down. (Mainline powers DACs BEFORE
+    # mixers, which is why RX1 and the DAC are supplies here and not a MIXER
+    # and a DAC -- the DAC path refuses without RX1.)
+    # ==================================================================
+    print()
+    print("=== 5i. the r184 DAPM fence ===")
+    d_ev = func_body("wcd9320_dapm_event")
+    d_call = func_body("wcd9320_dapm_stage_call")
+    d_idle = func_body("wcd9320_dapm_idle")
+    for nm, bd in (("wcd9320_dapm_event", d_ev),
+                   ("wcd9320_dapm_stage_call", d_call),
+                   ("wcd9320_dapm_idle", d_idle)):
+        check("%s found in source" % nm, len(bd) > 0, "%d bytes of body" % len(bd))
+
+    def array_body(decl):
+        m = re.search(re.escape(decl) + r"\s*=\s*\{(.*?)\n\};", ptext_all, re.S)
+        return m.group(1) if m else ""
+
+    w_body = array_body("static const struct snd_soc_dapm_widget wcd9320_dapm_widgets[]")
+    r_body = array_body("static const struct snd_soc_dapm_route wcd9320_dapm_routes[]")
+    # OUTPUT takes the name alone, so the argument tail is optional.
+    widgets = re.findall(r"SND_SOC_DAPM_(\w+)\(\s*\"([^\"]+)\"\s*((?:,[^;]*?)?)\)\s*,",
+                         w_body, re.S)
+    w_names = [(t, n) for t, n, _ in widgets]
+    check("the widget set is exactly the mapped one",
+          w_names == [("AIF_IN", "AIF1 PB"),
+                      ("SUPPLY_S", "MCLK"), ("SUPPLY_S", "CLASS_H PREP"),
+                      ("SUPPLY_S", "CDC PREREQ"), ("SUPPLY_S", "RX1 CHAIN"),
+                      ("SUPPLY_S", "HPHL DAC"),
+                      ("PGA_E", "HPHL"), ("OUTPUT", "HEADPHONE")],
+          "%s" % w_names)
+    check("every widget is SND_SOC_NOPM",
+          widgets and all("SND_SOC_NOPM" in a for t, n, a in widgets
+                          if t != "OUTPUT"),
+          "%d widget(s); OUTPUT takes no register argument" % len(widgets))
+    check("no register-backed widget macro",
+          not re.search(r"SND_SOC_DAPM_\w+\([^)]*WCD9320_(?!DS_)", w_body),
+          "no WCD9320_* register named in the widget table (WCD9320_DS_* is the stage)")
+    check("AIF1 PB is fed by the RX1 DAI's stream",
+          re.search(r'SND_SOC_DAPM_AIF_IN\(\s*"AIF1 PB"\s*,\s*'
+                    r'"WCD9320 SLIM RX1 Playback"', w_body) is not None,
+          "sname = the DAI's playback stream_name")
+    want_stage = [("MCLK", "0", "WCD9320_DS_MCLK"),
+                  ("CLASS_H PREP", "1", "WCD9320_DS_PREP"),
+                  ("CDC PREREQ", "2", "WCD9320_DS_PREREQ"),
+                  ("RX1 CHAIN", "3", "WCD9320_DS_RX1"),
+                  ("HPHL DAC", "4", "WCD9320_DS_DAC")]
+    got_stage = re.findall(r'SND_SOC_DAPM_SUPPLY_S\(\s*"([^"]+)"\s*,\s*(\d+)\s*,'
+                           r'\s*SND_SOC_NOPM\s*,\s*(\w+)\s*,\s*0\s*,'
+                           r'\s*wcd9320_dapm_event\s*,', w_body)
+    check("the supplies are ordered by subsequence 0..4, stage in .shift",
+          got_stage == want_stage, "%s" % got_stage)
+    check("HPHL is the PA stage and uses the same event",
+          re.search(r'SND_SOC_DAPM_PGA_E\(\s*"HPHL"\s*,\s*SND_SOC_NOPM\s*,'
+                    r'\s*WCD9320_DS_PA\s*,\s*0\s*,\s*NULL\s*,\s*0\s*,'
+                    r'\s*wcd9320_dapm_event\s*,', w_body) is not None,
+          "PGA_E, NOPM, shift = WCD9320_DS_PA")
+    n_evt = w_body.count("wcd9320_dapm_event")
+    check("every event widget has PRE_PMU and POST_PMD only",
+          n_evt == 6 and w_body.count("SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD") == 6
+          and "POST_PMU" not in w_body and "PRE_PMD" not in w_body,
+          "%d event widget(s)" % n_evt)
+    routes = re.findall(r'\{\s*"([^"]+)"\s*,\s*(NULL|"[^"]*")\s*,\s*"([^"]+)"\s*\}',
+                        r_body)
+    routes = sorted((s, c.strip('"') if c != "NULL" else None, src)
+                    for s, c, src in routes)
+    want_routes = sorted([("HPHL", None, "AIF1 PB"),
+                          ("HEADPHONE", None, "HPHL"),
+                          ("HPHL", None, "MCLK"),
+                          ("HPHL", None, "CLASS_H PREP"),
+                          ("HPHL", None, "CDC PREREQ"),
+                          ("HPHL", None, "RX1 CHAIN"),
+                          ("HPHL", None, "HPHL DAC")])
+    check("the routes are exactly the mapped ones", routes == want_routes,
+          "%d route(s)" % len(routes))
+    check("no HPHR anywhere in the DAPM tables",
+          "HPHR" not in w_body and "HPHR" not in r_body, "HPHL only")
+    comp = array_body("static const struct snd_soc_component_driver wcd9320_soc_component")
+    check("the component declares the widgets and routes",
+          all(s in comp for s in (".dapm_widgets = wcd9320_dapm_widgets",
+                                  ".num_dapm_widgets = ARRAY_SIZE(wcd9320_dapm_widgets)",
+                                  ".dapm_routes = wcd9320_dapm_routes",
+                                  ".num_dapm_routes = ARRAY_SIZE(wcd9320_dapm_routes)")),
+          "wcd9320_soc_component")
+    check("the component declares no controls",
+          ".controls" not in comp, "no volume, no mode controls in r184")
+
+    # ---- the dispatcher: the six proven functions, nothing else --------
+    want_calls = ["wcd9320_mclk_get(wcd)", "wcd9320_mclk_put(wcd)",
+                  "wcd9320_pa_prep(wcd, on)", "wcd9320_cdc_clk_prereq(wcd, on)",
+                  "wcd9320_rx1_digital_path(wcd, on)",
+                  "wcd9320_hphl_dac_path(wcd, on, true,",
+                  "wcd9320_hphl_pa_path(wcd, on)"]
+    check("the dispatcher calls each proven function exactly once",
+          all(d_call.count(c) == 1 for c in want_calls),
+          ", ".join("%s%d" % (c.split("(")[0][8:], d_call.count(c)) for c in want_calls))
+    all_calls = [c for c in re.findall(r"\b(\w+)\s*\(", d_call)
+                 if c not in ("switch", "if", "return", "sizeof")]
+    check("the dispatcher calls nothing else",
+          sorted(set(all_calls)) == sorted({c.split("(")[0] for c in want_calls}),
+          "%s" % sorted(set(all_calls)))
+    check("the DAC stage is register-gain mode, DAC powered",
+          "wcd9320_hphl_dac_path(wcd, on, true,\n\t\t\t\t\t     WCD9320_GAIN_SRC_REGISTER)" in d_call
+          or re.search(r"wcd9320_hphl_dac_path\(wcd, on, true,\s*WCD9320_GAIN_SRC_REGISTER\)",
+                       d_call) is not None, "the C3a mode, never compander")
+    for nm, bd in (("wcd9320_dapm_event", d_ev),
+                   ("wcd9320_dapm_stage_call", d_call),
+                   ("wcd9320_dapm_idle", d_idle)):
+        direct = [c for c in ("regmap_", "c2b_write(", "forced_write(",
+                              "rx1_write(", "clk_prepare", "clk_disable",
+                              "clk_source_switch(")
+                  if c in bd]
+        check("%s writes nothing itself" % nm, not direct,
+              "direct register/clock calls: %s" % (direct or "none"))
+
+    # ---- the event: lock, ownership chain, idle start, abort on failure ---
+    check("the event takes and releases c3_lock",
+          d_ev.count("mutex_lock(&wcd->c3_lock);") == 1
+          and d_ev.count("mutex_unlock(&wcd->c3_lock);") == 1, "one critical section")
+    check("the event calls the path only through the dispatcher",
+          d_ev.count("wcd9320_dapm_stage_call(") == 2
+          and not any(f in d_ev for f in ("wcd9320_mclk_get", "wcd9320_pa_prep",
+                                          "wcd9320_hphl_pa_path", "wcd9320_hphl_dac_path",
+                                          "wcd9320_rx1_digital_path",
+                                          "wcd9320_cdc_clk_prereq")),
+          "power up once, power down once")
+    i_on = d_ev.find("wcd9320_dapm_stage_call(wcd, stage, true)")
+    check("power-up requires DAPM to hold exactly the stages below",
+          0 <= d_ev.find("wcd->dapm_held != below") < i_on, "checked before the call")
+    check("the first stage requires an idle codec",
+          0 <= d_ev.find("!wcd9320_dapm_idle(wcd)") < i_on, "checked before the call")
+    up_branch = d_ev[i_on:d_ev.find("} else {", i_on)] if i_on >= 0 else ""
+    check("a failed power-up runs the full C3 abort",
+          "wcd9320_c3_abort(wcd);" in up_branch
+          and "wcd->dapm_held &= ~WCD9320_DS_ABORTED;" in up_branch,
+          "in the power-up branch, after the failed call")
+    check("power-down undoes only what DAPM holds",
+          0 <= d_ev.find("!(wcd->dapm_held & BIT(stage))")
+          < d_ev.find("wcd9320_dapm_stage_call(wcd, stage, false)"),
+          "a stage DAPM never powered is never torn down by it")
+    for flag in ("wcd->mclk_users", "wcd->pa_prep_on", "wcd->clk_prereq_on",
+                 "wcd->rx1_digital_on", "wcd->hphl_dac_on", "wcd->hphl_pa_on",
+                 "wcd->comp1_on", "wcd->clsh_on", "wcd->rx_bias_refs"):
+        check("idle means %s is clear" % flag.split("->")[1], "!" + flag in d_idle,
+              "wcd9320_dapm_idle")
+    check("the event is called from nothing but the widget table",
+          ptext_all.count("wcd9320_dapm_event") == 1 + n_evt,
+          "%d mention(s): the definition and %d widget(s)"
+          % (ptext_all.count("wcd9320_dapm_event"), n_evt))
+
+    # ---- the card: the Headphones pin, off at init ---------------------
+    P5 = REPO / "patches/0005-asoc-qcom-lumia1520-q6-sndcard.patch"
+    card = "\n".join(ln[1:] for ln in
+                     (P5.read_text(errors="replace") if P5.exists() else "").splitlines()
+                     if ln.startswith("+") and not ln.startswith("+++"))
+    check("card patch found", len(card) > 0, str(P5.name))
+    check("the card declares the Headphones widget",
+          'SND_SOC_DAPM_HP("Headphones", NULL)' in card, "an HP endpoint")
+    check("the card routes Headphones <- HEADPHONE",
+          re.search(r'\{\s*"Headphones"\s*,\s*NULL\s*,\s*"HEADPHONE"\s*\}', card)
+          is not None, "the codec output reaches the pin")
+    check("the card exposes the pin switch",
+          'SOC_DAPM_PIN_SWITCH("Headphones")' in card, '"Headphones Switch"')
+    check("the card disables the pin at init",
+          'snd_soc_dapm_disable_pin(&card->dapm, "Headphones")' in card
+          and "card->late_probe = lumia_q6_late_probe;" in card,
+          "late_probe, before the first sync")
+    check("the card never enables the pin itself",
+          "enable_pin" not in card and "force_enable" not in card,
+          "only the operator, through the control")
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")

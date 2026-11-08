@@ -606,6 +606,14 @@ c3_preflight() {	# c3_preflight <arming?>
 		ls /sys/bus/platform/devices/*mclk-divider-experiment*/mclk_div_state >/dev/null 2>&1 ||
 			_pf_bad="$_pf_bad no-mclk-divider-state"
 	fi
+	# r184: the C3a runner owns the path by hand, so DAPM must not also try
+	# to. With the Headphones pin on, the runner's tone would start DAPM's
+	# sequence beside it (DAPM refuses -- the codec is not idle -- but a
+	# refusal is not a state to run research in). Absent on older cards.
+	_pf_pin=$("$SETCTL" -D "$CTLDEV" --get "Headphones Switch" 2>/dev/null |
+		sed -n 's/^readback=//p' | head -n1)
+	[ -z "$_pf_pin" ] || [ "$_pf_pin" = "0" ] ||
+		_pf_bad="$_pf_bad headphones-pin-on"
 	if [ "$INSTRUMENT" = "onchip" ]; then
 		# the voltmeter refuses on RCO, and must exist (r178)
 		[ "$CLOCK" = "mclk" ] || _pf_bad="$_pf_bad onchip-needs-mclk"
