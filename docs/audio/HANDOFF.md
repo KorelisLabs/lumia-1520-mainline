@@ -1031,7 +1031,36 @@ re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
   The tag does not claim a scope measurement, HPHR as an output, or MCLK
   bring-up inside the driver.
 
-**r185 `stereo-vol-jack-rc1` + `q6-card-rc5`: STAGED, NOT YET RUN
+**r186 `stereo-vol-jack-rc2` + `q6-card-rc5`: STEREO, VOLUME AND JACK DETECTION ON HARDWARE (2026-11-08,
+[wcd9320-r185-stereo-volume-jack-mapping.md](wcd9320-r185-stereo-volume-jack-mapping.md) section 10).**
+This is the current build. Install the codec `.ko`, the card `.ko` and r186's
+`pcm-tone` together.
+
+- **One fresh boot, every step passed:**
+  - jack gate 52/0 (a headset plugged in at boot is detected; removal
+    detection works);
+  - digital gate 36/0;
+  - mclk-own 90/0, vm 57/0, zdet 34/0;
+  - **HPHR DC ≈ 13.5 mV of 50, WITHIN** (+50 counts at about 268 µV per
+    count);
+  - listen 169/0 with the analyser 4/4: the left alone, the right alone, the
+    right at HPHR Volume 16, the right at -6 dB digital, all heard.
+- **r185 found two defects outside the analog path:** the jack level was read
+  before arming, and `pcm-tone`'s ACCESS mask made stereo writes `EINVAL`.
+  r186 fixes both, plus the C3a runner's missing `snap_dmesg()`, which had
+  dropped every C3a report's verdict line since August.
+- **Open:** the analog volume step size (hand-held mic placement swamps it,
+  so there is no TLV yet); channel separation, judged by ear only.
+- **To play:**
+  ```
+  alsa-setctl --set "SLIMBUS_0_RX Audio Mixer MultiMedia1" 1
+  alsa-setctl --set "HPHL Volume" 20
+  alsa-setctl --set "HPHR Volume" 20
+  ```
+  Then play with the headset plugged in; the jack turns the pin on. The
+  volumes boot at 0, the quietest.
+
+**r185 `stereo-vol-jack-rc1` + `q6-card-rc5`: superseded by r186
 (2026-11-08, [wcd9320-r185-stereo-volume-jack-mapping.md](wcd9320-r185-stereo-volume-jack-mapping.md)).**
 
 - **What it adds:** the right channel, volume controls, and jack detection

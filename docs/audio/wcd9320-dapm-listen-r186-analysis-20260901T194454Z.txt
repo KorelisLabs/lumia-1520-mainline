@@ -1,0 +1,20 @@
+c3a-capture.py analyse --expect 4, recording c3a-stereo-r186.wav (sha256 d66a9fae717d1775c148205aa8fe0868470ad1cdc3d8b9afc4ba25290e9a35a8, archived in ~/c3a-evidence)
+r186 stereo-vol-jack-rc2 + q6-card-rc5, fresh boot. DAPM listen run 20260901T194454Z: streams L:20:84, R:20:84, R:16:84, R:20:78; earbud hand-held on the USB mic, left for stream 1, right for 2-4.
+
+file                : c3a-stereo-r186.wav (272.2 s at 48000 Hz)
+floor at 1 kHz      : -86.1 dBFS (median over the recording)
+events found        : 4
+  [0] t=  85.470 s  PASS    contrast  29.9 dB
+       tone  -56.6  silence  -86.6  tone  -56.7  silence  -87.8  dBFS
+       peak 999.95 / 999.94 Hz   narrowband 28.2 / 26.5 dB
+  [1] t= 146.810 s  PASS    contrast  25.4 dB
+       tone  -61.9  silence  -87.4  tone  -62.0  silence  -90.2  dBFS
+       peak 1000.01 / 999.98 Hz   narrowband 22.9 / 22.6 dB
+  [2] t= 201.170 s  PASS    contrast  20.5 dB
+       tone  -63.6  silence  -84.5  tone  -64.0  silence  -85.5  dBFS
+       peak 999.93 / 1000.09 Hz   narrowband 15.1 / 18.9 dB
+  [3] t= 248.450 s  PASS    contrast  22.4 dB
+       tone  -64.6  silence  -87.6  tone  -63.9  silence  -87.0  dBFS
+       peak 1000.05 / 999.98 Hz   narrowband 17.6 / 19.5 dB
+events_pass=4 events_weak=0 events_reject=0
+VERDICT: PASS (expected 4 tracking event(s), found 4)

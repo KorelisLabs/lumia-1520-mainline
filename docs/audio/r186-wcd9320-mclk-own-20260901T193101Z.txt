@@ -1,0 +1,186 @@
+WCD9320 r182: the driver owns the MCLK
+mode              : wcd9320-mclk-own
+stamp             : 20260901T193101Z
+module            : stereo-vol-jack-rc2 (expect stereo-vol-jack-rc2, manifest)
+control function  : 217:a0:1:0
+divider state     : /sys/bus/platform/devices/fc4cf000.spmi:pm8941@0:mclk-divider-experiment@5b00/mclk_div_state
+rpm clocks        :  /sys/kernel/debug/clk/div_clk1 /sys/kernel/debug/clk/div_clk1_a
+design            : docs/audio/wcd9320-mclk-ownership-mapping.md
+
+=== 1. board state at boot ===
+  applied=1 base=0x5b00 div_at_probe=00 div_ctl1=02 factor=2 en_ctl=80 enabled=1 gpio15_mode_ctl=25 dir=2 function=2
+  PASS  divider applied at probe         1
+  PASS  DIV_CTL1 factor 2 (XO/2)         2
+  PASS  gpio15 src_sel 2 (FUNC1 = DIV_CLK) 2
+  PASS  codec on RCO                     RCO
+  PASS  on_mclk 0                        0
+  PASS  mclk_users 0                     0
+  PASS  gpio15 pull: none (0xce42)       05
+  PASS  gpio15 CMOS, HIGH (0xce45)       03
+  ....  CHIP_CTL at boot                 08 (on MCLK it must read 0a)
+  ....  rpm clock enable counts          div_clk1=0 div_clk1_a=0
+
+=== 2/3. cycle 1: get, get, put, put ===
+  PASS  c1 get 1 rc                      0
+  PASS  c1 users 0 -> 1                  1
+  PASS  c1 on MCLK                       1
+  PASS  c1 CDC alive on MCLK             1
+  PASS  c1 CHIP_CTL declares 9.6         0a
+  PASS  c1 switched once                 1
+  PASS  c1 factor after vote ON          2
+  ....  c1 rpm clocks, vote on           div_clk1=0 div_clk1_a=1
+  PASS  c1 an rpm clock moved with the vote yes
+  PASS  c1 get 2 rc                      0
+  PASS  c1 users 1 -> 2                  2
+  PASS  c1 second get did not switch     1
+  PASS  c1 put 1 rc                      0
+  PASS  c1 users 2 -> 1                  1
+  PASS  c1 still on MCLK                 1
+  PASS  c1 first put did not restore     0
+  PASS  c1 put 2 rc                      0
+  PASS  c1 users 1 -> 0                  0
+  PASS  c1 back on RCO                   0
+  PASS  c1 CDC alive on RCO              1
+  PASS  c1 CHIP_CTL restored             08
+  PASS  c1 restored once                 1
+  PASS  c1 factor after vote OFF         2
+  PASS  c1 gpio15 still DIV_CLK          2
+  PASS  c1 rpm clock count back to start 0
+
+=== 2/3. cycle 2: get, get, put, put ===
+  PASS  c2 get 1 rc                      0
+  PASS  c2 users 0 -> 1                  1
+  PASS  c2 on MCLK                       1
+  PASS  c2 CDC alive on MCLK             1
+  PASS  c2 CHIP_CTL declares 9.6         0a
+  PASS  c2 switched once                 2
+  PASS  c2 factor after vote ON          2
+  ....  c2 rpm clocks, vote on           div_clk1=0 div_clk1_a=1
+  PASS  c2 an rpm clock moved with the vote yes
+  PASS  c2 get 2 rc                      0
+  PASS  c2 users 1 -> 2                  2
+  PASS  c2 second get did not switch     2
+  PASS  c2 put 1 rc                      0
+  PASS  c2 users 2 -> 1                  1
+  PASS  c2 still on MCLK                 1
+  PASS  c2 first put did not restore     1
+  PASS  c2 put 2 rc                      0
+  PASS  c2 users 1 -> 0                  0
+  PASS  c2 back on RCO                   0
+  PASS  c2 CDC alive on RCO              1
+  PASS  c2 CHIP_CTL restored             08
+  PASS  c2 restored once                 2
+  PASS  c2 factor after vote OFF         2
+  PASS  c2 gpio15 still DIV_CLK          2
+  PASS  c2 rpm clock count back to start 0
+
+=== 2/3. cycle 3: get, get, put, put ===
+  PASS  c3 get 1 rc                      0
+  PASS  c3 users 0 -> 1                  1
+  PASS  c3 on MCLK                       1
+  PASS  c3 CDC alive on MCLK             1
+  PASS  c3 CHIP_CTL declares 9.6         0a
+  PASS  c3 switched once                 3
+  PASS  c3 factor after vote ON          2
+  ....  c3 rpm clocks, vote on           div_clk1=0 div_clk1_a=1
+  PASS  c3 an rpm clock moved with the vote yes
+  PASS  c3 get 2 rc                      0
+  PASS  c3 users 1 -> 2                  2
+  PASS  c3 second get did not switch     3
+  PASS  c3 put 1 rc                      0
+  PASS  c3 users 2 -> 1                  1
+  PASS  c3 still on MCLK                 1
+  PASS  c3 first put did not restore     2
+  PASS  c3 put 2 rc                      0
+  PASS  c3 users 1 -> 0                  0
+  PASS  c3 back on RCO                   0
+  PASS  c3 CDC alive on RCO              1
+  PASS  c3 CHIP_CTL restored             08
+  PASS  c3 restored once                 3
+  PASS  c3 factor after vote OFF         2
+  PASS  c3 gpio15 still DIV_CLK          2
+  PASS  c3 rpm clock count back to start 0
+
+=== 5. a put with no reference ===
+  PASS  refused                          yes
+  PASS  users stay 0                     0
+  PASS  nothing restored                 3
+  PASS  an unknown word is refused       yes
+
+=== end state ===
+  cache_check: cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  PASS  codec on RCO                     RCO
+  PASS  factor still 2                   2
+  PASS  cache_check mismatches           0
+  PASS  cache_check read errors          0
+  PASS  forced journal untouched         0
+  PASS  PA masked 00 at every sample     0
+  ....  rpm clock enable counts          div_clk1=0 div_clk1_a=0
+PA samples: start:00 c1-get1:00 c1-get2:00 c1-put1:00 c1-put2:00 c2-get1:00 c2-get2:00 c2-put1:00 c2-put2:00 c3-get1:00 c3-get2:00 c3-put1:00 c3-put2:00 end:00
+
+-- dmesg, mclk / clk-src / mclk-div lines --
+[  516.916167] WARNING: CPU: 0 PID: 4066 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  517.100442] WARNING: CPU: 0 PID: 4066 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  518.442444] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) before the switch
+[  518.462547] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) before the switch
+[  518.469279] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) before the switch
+[  518.489343] wcd9320 217:a0:1:0: clk-src: CHIP_CTL measured 08 before the switch (not written yet)
+[  518.664667] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  518.969301] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  518.989306] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  518.997032] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  519.009326] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  519.037368] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  519.043165] wcd9320 217:a0:1:0: mclk: get, users 0 -> 1, codec on MCLK (cdc_alive 1)
+[  519.460788] wcd9320 217:a0:1:0: mclk: get, users now 2 (already on MCLK, no switch)
+[  519.687813] wcd9320 217:a0:1:0: mclk: put, users now 1 (staying on MCLK)
+[  519.814286] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  520.289316] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  520.302164] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  520.322038] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  520.328124] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  520.350029] wcd9320 217:a0:1:0: mclk: put, users 1 -> 0, codec back on RCO, vote released
+[  520.613326] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) before the switch
+[  520.637213] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) before the switch
+[  520.659792] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) before the switch
+[  520.669309] wcd9320 217:a0:1:0: clk-src: CHIP_CTL measured 08 before the switch (not written yet)
+[  520.825792] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  521.129328] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  521.139301] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  521.161629] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  521.168183] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  521.190706] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  521.212153] wcd9320 217:a0:1:0: mclk: get, users 0 -> 1, codec on MCLK (cdc_alive 1)
+[  521.436897] wcd9320 217:a0:1:0: mclk: get, users now 2 (already on MCLK, no switch)
+[  521.543056] wcd9320 217:a0:1:0: mclk: put, users now 1 (staying on MCLK)
+[  521.664410] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  522.202022] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  522.222054] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  522.239316] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  522.246145] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  522.270004] wcd9320 217:a0:1:0: mclk: put, users 1 -> 0, codec back on RCO, vote released
+[  522.537786] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) before the switch
+[  522.559786] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) before the switch
+[  522.579335] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) before the switch
+[  522.599918] wcd9320 217:a0:1:0: clk-src: CHIP_CTL measured 08 before the switch (not written yet)
+[  522.779317] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  523.066245] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  523.089751] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  523.099300] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  523.105756] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  523.140701] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  523.147616] wcd9320 217:a0:1:0: mclk: get, users 0 -> 1, codec on MCLK (cdc_alive 1)
+[  523.370971] wcd9320 217:a0:1:0: mclk: get, users now 2 (already on MCLK, no switch)
+[  523.477015] wcd9320 217:a0:1:0: mclk: put, users now 1 (staying on MCLK)
+[  523.690497] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  524.229708] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  524.252023] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  524.262043] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  524.268767] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  524.300036] wcd9320 217:a0:1:0: mclk: put, users 1 -> 0, codec back on RCO, vote released
+[  524.524349] wcd9320 217:a0:1:0: mclk: put without a reference -- nothing done
+
+=== verdict ===
+mode   : wcd9320-mclk-own
+checks : 90 passed, 0 failed
+VERDICT: PASS (wcd9320-mclk-own)

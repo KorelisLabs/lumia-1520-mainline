@@ -483,3 +483,104 @@ tools/build-c3a-helpers.sh --stage ~/r185 --force
 
 The second command rebuilds `pcm-tone` (and `input-gate`, unchanged) for
 `--side`.
+
+## 10. Hardware (phone clock 2026-09-01; operator date 2026-11-08)
+
+### 10a. r185 first boot: two defects, both outside the analog path
+
+**Jack gate PASS 52/0** (`wcd9320-jack-20260901T190952Z.txt`):
+- insertion, and the **first removal on this hardware**, each raised one
+  JACK_SWITCH interrupt;
+- each event re-armed `0x14a` for the opposite state (`6d` / `6f`), and the
+  pin and the jack control followed;
+- nothing powered.
+
+**Defect 1, the boot-time jack level.** The driver read `0x14b` before it
+enabled detection.
+- An unconfigured `0x14b` reads `0e` (bit 2, "removed") whatever is plugged
+  in, so a headset in at boot was reported out.
+- The chip later read `0b` while the driver still said removed.
+- **Fix (r186):** arm, settle 50 ms, read, then re-arm for removal if a
+  headset is in.
+
+**Defect 2, the digital gate's tone** (`wcd9320-dapm-20260901T191103Z-r185-pcmtone-einval.txt`).
+The gate failed, but not in the codec.
+- **What happened:** `pcm-tone` OR-ed its ACCESS bit into an all-ones mask,
+  so the kernel picked MMAP access, where WRITEI is legal only for one
+  channel. Every mono run had worked; the first stereo write returned
+  `EINVAL`.
+- **The codec side of stereo came up cleanly on that same stream:**
+  - ports 16 and 17 programmed at `03`;
+  - a two-channel SLIMbus stream, prepare and enable both returning 0;
+  - the AFE accepted the two-slot channel map.
+- **Fix:** `pcm-tone` narrows the mask to the one bit. `pcm-run-measured`
+  had the same code and is fixed too.
+- The ASoC control is **"Headphones Jack"**, one per pin, not "Headphone
+  Jack". The jack gate's default is corrected.
+
+### 10b. r186 `stereo-vol-jack-rc2`, one fresh boot, headset plugged in at boot
+
+| step | result | evidence |
+|---|---|---|
+| boot | the jack is reported **inserted** at boot (`0x14b = 0b`, armed for removal, pin on); nothing powers | dmesg |
+| 1 jack gate | **PASS 52/0**: removal, then insertion; detection off/on now reads `08` and keeps the jack inserted | `wcd9320-jack-20260901T192755Z.txt` |
+| 2 digital gate | **PASS 36/0**: the stereo stream reaches `HPH` (`in 1`), all nine stages stay off | `wcd9320-dapm-20260901T192911Z.txt` |
+| 3 regressions | mclk-own **90/0**, vm **57/0**, zdet **34/0** (Zl 52.6 Ω, Zr 56.2 Ω), cache 0 | `r186-wcd9320-{mclk-own,hphl-vm,hphl-zdet}-*.txt` |
+| 4 HPHR DC | **WITHIN** (table below) | `r186-hphr-dc-*` |
+| 5 listen | **PASS 169/0**, heard; analyser **PASS 4/4** | `wcd9320-dapm-listen-r186-*-20260901T194454Z.txt` |
+
+**HPHR DC** (C3a `onchip`, `C3A_STEREO=1 C3A_VM_CH=r`, gain field 00 on
+both channels, headset as the load):
+
+| cycle | PA off | PA on | off again | on − off |
+|---|---|---|---|---|
+| 1 | −1621.8 (drift 6) | −1571.5 (drift 6) | −1621.7 | +50.3 counts |
+| 2 | −1621.9 (drift 6) | −1572.0 (drift 4) | −1621.2 | +49.9 counts |
+
+- **The HPHR scale,** from the same boot's zdet: R2 − R0 = 745 counts at
+  navg 16. 50 mV / 745 = 67 µV per count, so **about 268 µV per count at
+  navg 4** (STA is a sum).
+- **The verdict:** +50 counts is **≈ 13.5 mV against 50 mV: WITHIN.** Drift
+  is ≤ 6 counts (≈ 1.6 mV) against 10 mV. HPHL is 14.5 mV for comparison.
+  The two cycles agree to 0.4 counts, and the reading returns to within 0.7
+  counts after PA-off.
+- **What the run confirmed on the chip:**
+  - the PAs stayed at exactly `b0` / `80`, with no OCP;
+  - the class-H join read `a3` as predicted;
+  - forced writes 4..15 ran in the stereo order 314, 30d/02, 30d/04, 30d/04,
+    30d/02, 314.
+- **The report lacked its verdict line.** The C3a runner had never called
+  `snap_dmesg()`, so under `set -u` every C3a report since 2026-08-30
+  stopped at the evidence block, after its checks. It's fixed in r186's
+  runner. No check had failed in this run.
+
+**Listen run, four streams.** Each stream had its own chat approval, and
+the earbud was hand-held on the USB mic.
+
+| stream | spec | live chip state | heard | mic level (tone) | analyser |
+|---|---|---|---|---|---|
+| 1 | L:20:84 | `1ff`, `0x1ab b0`, DACs `c0/c0`, gains `20/20`, `1b3 08`, `1b9 08` | left, yes | −56.6 dBFS | PASS, 29.9 dB, 999.95 Hz |
+| 2 | R:20:84 | the same | right, yes | −62.0 | PASS, 25.4 dB, 1000.01 Hz |
+| 3 | R:16:84 | gains `24/24` (field 04) | yes | −63.8 | PASS, 20.5 dB, 999.93 Hz |
+| 4 | R:20:78 | gains `20/20`, RX2 digital `fa` (−6 dB) | yes | −64.3 | PASS, 22.4 dB, 1000.05 Hz |
+
+- **The path, every stream:** DAPM powered all nine stages in about 0.8 s and
+  took them down within 100 ms of the stream stopping.
+- **The forced writes:** 24 of them, in the stereo pattern.
+- **At the end:** volumes restored to the boot values, end-of-run checks
+  clean.
+
+**What the levels do and do not show:**
+- **The controls reach the chip.** The fields and the digital byte read
+  back live, as set.
+- **Stream 3 was 1.8 dB below stream 2, and stream 4 2.3 dB below.** Both
+  are in the right direction, but smaller than the expected about 6 dB for
+  four analog steps and exactly 6 dB digital.
+- **Placement swamps these numbers.** The earbud was hand-held, and left
+  against right already differs by 5 dB on the same settings. So **the
+  analog step size is NOT established**, and the volume controls keep no TLV.
+- **What would settle it:** a fixed coupling, or one stream that changes the
+  volume mid-tone.
+
+**Not proven here:** channel separation was judged only by ear (a single
+mic, one earbud at a time).

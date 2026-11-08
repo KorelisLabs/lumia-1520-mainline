@@ -1229,6 +1229,14 @@ c3_clock_down
 POST=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 DPOST=$(cat "$PGD/hphl_dac_state" 2>/dev/null)
 FLOG=$(cat "$PGD/forced_log" 2>/dev/null)
+#
+# r186: collect_evidence() reads DMESG_LINES, which snap_dmesg() sets. This
+# runner never called it, so under set -u EVERY C3a report since the first
+# stopped at the evidence block -- every check printed, but the finding and
+# the verdict never did, and the unit exited 2. Found on the HPHR DC run.
+#
+DMESG_FILE="/tmp/.wcd9320-dmesg-c3a-$$"
+snap_dmesg
 
 open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 {
@@ -1415,6 +1423,7 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	emit_verdict
 	say "REPORT_COMPLETE"
 } > "$OUT" 2>&1
+rm -f "$DMESG_FILE"
 
 sync 2>/dev/null
 jrn "evidence written to $OUT"
