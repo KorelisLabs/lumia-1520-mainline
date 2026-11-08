@@ -61,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc5}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc6}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
@@ -129,3 +129,58 @@ dapm_spec_ok() {
 dapm_spec_field() { printf '%02x' $(( 20 - $1 )); }
 # dapm_spec_dig <dig> -> the 0x2b7 / 0x2bf byte, hex (s8 dB, two's complement)
 dapm_spec_dig() { printf '%02x' $(( ($1 - 84) & 0xff )); }
+
+# ------------------------------------------------------------------ r187 --
+#
+# Three outputs, each its own DAPM chain and ownership mask in dapm_state:
+#   hph  held=      nine stages, 1ff, 6 forced writes per stream (r185)
+#   spk  spk_held=  six stages, 3f, 2 forced writes (the 0x314 pair only)
+#   ear  ear_held=  six stages, 3f, 2 forced writes
+#
+# dapm_out <hph|spk|ear> -> sets OUT_PIN OUT_KEY OUT_ALL OUT_NONE OUT_STAGES
+#                           OUT_FORCED OUT_VMAX; returns 1 for anything else
+dapm_out() {
+	case "$1" in
+	hph) OUT_PIN="Headphones Switch"; OUT_KEY=held; OUT_ALL=1ff; OUT_NONE=000
+	     OUT_STAGES=9; OUT_FORCED=6; OUT_VMAX=20 ;;
+	spk) OUT_PIN="Speaker Switch"; OUT_KEY=spk_held; OUT_ALL=3f; OUT_NONE=00
+	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=8 ;;
+	ear) OUT_PIN="Earpiece Switch"; OUT_KEY=ear_held; OUT_ALL=3f; OUT_NONE=00
+	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=6 ;;
+	*) return 1 ;;
+	esac
+}
+
+# dapm_held_key_is <dapm_state text> <key> <want> -> OK, or REFUSE:<why>
+dapm_held_key_is() {
+	_dk=$(dapm_kv "$1" "$2")
+	if [ -z "$_dk" ]; then
+		echo "REFUSE:no $2= in dapm_state"
+	elif [ "$_dk" = "$3" ]; then
+		echo "OK"
+	else
+		echo "REFUSE:$2=$_dk want $3"
+	fi
+}
+
+# dapm_forced_want_out <out> <index> -> "reg mask dir"
+dapm_forced_want_out() {
+	case "$1" in
+	hph) dapm_forced_want "$2" ;;
+	*) if [ $(( $2 % 2 )) -eq 0 ]; then echo "314 ff set"; else echo "314 ff clear"; fi ;;
+	esac
+}
+
+# dapm_spec_ok_out <out> <spec> -> OK, or REFUSE:<why>. hph is dapm_spec_ok's
+# side:hph:dig; spk and ear take side:vol:dig with vol up to the output's max
+# (Speaker Volume 0..8, Earpiece Volume 0..6).
+dapm_spec_ok_out() {
+	dapm_out "$1" || { echo "REFUSE:unknown output '$1'"; return; }
+	[ "$1" = "hph" ] && { dapm_spec_ok "$2"; return; }
+	_so=$(dapm_spec_ok "$(printf '%s' "$2" | awk -F: '{print $1 ":0:" $3}')")
+	[ "$_so" = "OK" ] || { echo "$_so"; return; }
+	_sv=$(printf '%s' "$2" | cut -d: -f2)
+	case "$_sv" in ''|*[!0-9]*) echo "REFUSE:vol '$_sv' is not a number"; return ;; esac
+	[ "$_sv" -le "$OUT_VMAX" ] || { echo "REFUSE:vol $_sv above $OUT_VMAX for $1"; return; }
+	echo OK
+}

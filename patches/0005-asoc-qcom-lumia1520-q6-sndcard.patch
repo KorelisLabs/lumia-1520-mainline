@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 10:56:36.401840278 -0500
-@@ -0,0 +1,379 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 14:37:43.728920534 -0500
+@@ -0,0 +1,399 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -317,16 +317,32 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * still starts OFF, the "Headphones Switch" override stays, and a codec that
 + * refuses the jack leaves exactly r184's manual behaviour.
 + */
++/*
++ * r187: the loudspeaker and the earpiece, each a pin that starts OFF and is
++ * switched only by hand ("Speaker Switch", "Earpiece Switch") -- no jack
++ * linkage. Choosing between outputs is UCM's job later; the codec plays one
++ * output at a time and refuses a second.
++ */
 +static const struct snd_soc_dapm_widget lumia_q6_widgets[] = {
 +	SND_SOC_DAPM_HP("Headphones", NULL),
++	SND_SOC_DAPM_SPK("Speaker", NULL),
++	SND_SOC_DAPM_SPK("Earpiece", NULL),
 +};
 +
 +static const struct snd_soc_dapm_route lumia_q6_routes[] = {
 +	{ "Headphones", NULL, "HEADPHONE" },
++	{ "Speaker", NULL, "SPK_OUT" },
++	{ "Earpiece", NULL, "EAR_OUT" },
 +};
 +
 +static const struct snd_kcontrol_new lumia_q6_controls[] = {
 +	SOC_DAPM_PIN_SWITCH("Headphones"),
++	SOC_DAPM_PIN_SWITCH("Speaker"),
++	SOC_DAPM_PIN_SWITCH("Earpiece"),
++};
++
++static const char * const lumia_q6_pins_off[] = {
++	"Headphones", "Speaker", "Earpiece",
 +};
 +
 +static struct snd_soc_jack lumia_q6_jack;
@@ -352,16 +368,20 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +static int lumia_q6_late_probe(struct snd_soc_card *card)
 +{
 +	struct snd_soc_component *codec;
++	unsigned int i;
 +	int ret;
 +
-+	/* A card whose pin cannot be put OFF does not register. */
-+	ret = snd_soc_dapm_disable_pin(&card->dapm, "Headphones");
-+	if (ret) {
-+		dev_err(card->dev, "could not disable the Headphones pin: %d\n", ret);
-+		return ret;
++	/* A card whose pins cannot be put OFF does not register. */
++	for (i = 0; i < ARRAY_SIZE(lumia_q6_pins_off); i++) {
++		ret = snd_soc_dapm_disable_pin(&card->dapm, lumia_q6_pins_off[i]);
++		if (ret) {
++			dev_err(card->dev, "could not disable the %s pin: %d\n",
++				lumia_q6_pins_off[i], ret);
++			return ret;
++		}
 +	}
 +	dev_info(card->dev,
-+		 "Headphones pin OFF at init -- nothing on the codec powers until the jack or \"Headphones Switch\" turns it on\n");
++		 "Headphones, Speaker and Earpiece pins OFF at init -- nothing on the codec powers until the jack or a pin switch turns one on\n");
 +	ret = snd_soc_dapm_sync(&card->dapm);
 +	if (ret)
 +		return ret;
@@ -452,4 +472,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc5");
++MODULE_VERSION("q6-card-rc6");

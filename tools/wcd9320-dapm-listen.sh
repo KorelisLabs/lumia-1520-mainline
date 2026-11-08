@@ -38,8 +38,16 @@
 # the runner takes the pin with the manual override, as before. At the end
 # every volume goes back to its boot value (analog minimum, digital 0 dB).
 #
+# r187: OUTPUT=hph (default), spk or ear. The speaker and earpiece probes
+# use the same arming, approval, fail-safe and teardown; their spec is
+# side:vol:dig with vol the output's own control (Speaker Volume 0..8,
+# Earpiece Volume 0..6, 0 = minimum) and dig the RX7 (speaker) or RX1
+# (earpiece) digital volume. Default plan for both: one stream, B:0:84 --
+# the minimum gain, the probe of docs/audio/wcd9320-r187-speaker-earpiece-mapping.md.
+#
 # Usage (one line):
-#   sudo env EXPECT_VERSION=stereo-vol-jack-rc1 sh wcd9320-dapm-listen.sh launch
+#   sudo env EXPECT_VERSION=outputs-rc1 sh wcd9320-dapm-listen.sh launch
+#   sudo env EXPECT_VERSION=outputs-rc1 OUTPUT=spk sh wcd9320-dapm-listen.sh launch
 #   (SPECS=L:20:84,R:20:84 to override the plan)
 # Exit:   0 pass, 1 checks failed, 2 invalid setup, 3 aborted.
 
@@ -65,7 +73,13 @@ TEARDOWN="$DIR/wcd9320-dapm-teardown.sh"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 DBFS="${DBFS:--40}"
-SPECS="${SPECS:-L:20:84,R:20:84,R:16:84,R:20:78}"	# commas: it survives --setenv
+OUTPUT="${OUTPUT:-hph}"
+dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk or ear)"; exit 2; }
+if [ "$OUTPUT" = "hph" ]; then
+	SPECS="${SPECS:-L:20:84,R:20:84,R:16:84,R:20:78}"	# commas: it survives --setenv
+else
+	SPECS="${SPECS:-B:0:84}"
+fi
 SPEC_LIST=$(printf '%s' "$SPECS" | tr ',' ' ')
 CYCLES=$(printf '%s\n' $SPEC_LIST | grep -c .)
 HOLD_ARM="${HOLD_ARM:-300}"
@@ -96,19 +110,45 @@ hph_status() {
 	grep -m2 -E '^(1b3|1b9):' "/sys/kernel/debug/regmap/${PGD_NAME:-none}/registers" \
 		2>/dev/null | tr -d ' ' | tr '\n' ' ' | sed 's/:/=/g; s/ *$//'
 }
-pin_set() {	# pin_set 0|1 -> 0 when it reads back as asked
-	[ "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --set "$DAPM_PIN" "$1" 2>/dev/null)")" = "$1" ]
+pin_set() {	# pin_set 0|1 -> 0 when THIS output's pin reads back as asked
+	[ "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --set "$OUT_PIN" "$1" 2>/dev/null)")" = "$1" ]
 }
-pin_get() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"; }
+pin_get() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$OUT_PIN" 2>/dev/null)"; }
+# r187: every output pin off (the others must stay off for a single-output run)
+pins_all_off() {
+	for _po in "Headphones Switch" "Speaker Switch" "Earpiece Switch"; do
+		"$SETCTL" -D "$CTLDEV" --set "$_po" 0 >/dev/null 2>&1
+	done
+}
+# r187: 0 when every PA is chip-verified off -- HPH, speaker, earpiece
+all_pa_off() {
+	_ap=$(rv "$(cat "${PGD:-/nonexistent}/hphl_pa_state" 2>/dev/null)" pa_0x1ab)
+	_ao=$(cat "${PGD:-/nonexistent}/out_state" 2>/dev/null)
+	[ -n "$_ap" ] && [ "$(pa_masked "$_ap")" = "00" ] || return 1
+	[ -n "$_ao" ] || return 0
+	[ $(( 0x$(rv "$_ao" spken_0x1df) & 0x80 )) -eq 0 ] &&
+	[ $(( 0x$(rv "$_ao" ear_0x1bc) & 0x10 )) -eq 0 ]
+}
 # r185: ctl_set <control> <value> -> 0 when it reads back as asked
 ctl_set() {
 	[ "$("$SETCTL" -D "$CTLDEV" --set "$1" "$2" 2>/dev/null |
 	     sed -n 's/^readback=//p' | head -n1)" = "$2" ]
 }
-# vol_set <hph> <dig> -> all four controls, both channels the same
+# vol_set <vol> <dig> -> this output's volume and digital controls
 vol_set() {
-	ctl_set "HPHL Volume" "$1" && ctl_set "HPHR Volume" "$1" &&
-	ctl_set "RX1 Digital Volume" "$2" && ctl_set "RX2 Digital Volume" "$2"
+	case "$OUTPUT" in
+	hph) ctl_set "HPHL Volume" "$1" && ctl_set "HPHR Volume" "$1" &&
+	     ctl_set "RX1 Digital Volume" "$2" && ctl_set "RX2 Digital Volume" "$2" ;;
+	spk) ctl_set "Speaker Volume" "$1" && ctl_set "RX7 Digital Volume" "$2" ;;
+	ear) ctl_set "Earpiece Volume" "$1" && ctl_set "RX1 Digital Volume" "$2" ;;
+	esac
+}
+# r187: every output back to its boot value
+vol_restore() {
+	ctl_set "HPHL Volume" 0 && ctl_set "HPHR Volume" 0 &&
+	ctl_set "RX1 Digital Volume" 84 && ctl_set "RX2 Digital Volume" 84 &&
+	ctl_set "Speaker Volume" 0 && ctl_set "Earpiece Volume" 0 &&
+	ctl_set "RX7 Digital Volume" 78
 }
 
 # ------------------------------------------------------------------- abort --
@@ -138,12 +178,11 @@ dl_abort() {	# dl_abort <reason>
 	jrn "ABORT reason=$1"
 	[ -n "$TPID" ] && kill "$TPID" 2>/dev/null
 	sh "$TEARDOWN" "$1" 2>&1 | while read -r _l; do jrn "  $_l"; done
-	_ab_pa=$(rv "$(cat "${PGD:-/nonexistent}/hphl_pa_state" 2>/dev/null)" pa_0x1ab)
-	if [ -n "$_ab_pa" ] && [ "$(pa_masked "$_ab_pa")" = "00" ]; then
+	if all_pa_off; then
 		failsafe_disarm
-		jrn "PA chip-verified off after the abort (0x1ab=$_ab_pa); fail-safe disarmed"
+		jrn "every PA chip-verified off after the abort; fail-safe disarmed"
 	else
-		jrn "PA NOT VERIFIED OFF AFTER THE ABORT (0x1ab=${_ab_pa:-unreadable}) -- fail-safe LEFT ARMED"
+		jrn "A PA IS NOT VERIFIED OFF AFTER THE ABORT -- fail-safe LEFT ARMED"
 	fi
 	watch_stop
 	jrn "ABORT complete"
@@ -174,16 +213,20 @@ preflight() {
 	"$TONE" --dbfs "$DBFS" --side B --dry-run >>"$JOURNAL" 2>&1 ||
 		{ say "INVALID SETUP: the tone helper refused $DBFS dBFS stereo (r185 pcm-tone?)"; return 1; }
 	for _sp in $SPEC_LIST; do
-		_ok=$(dapm_spec_ok "$_sp")
+		_ok=$(dapm_spec_ok_out "$OUTPUT" "$_sp")
 		[ "$_ok" = "OK" ] || { say "INVALID SETUP: stream spec $_sp: ${_ok#REFUSE:}"; return 1; }
 	done
 	[ -e "$PGD/hphr_state" ] || { say "INVALID SETUP: no hphr_state -- not r185"; return 1; }
+	[ "$OUTPUT" = "hph" ] || [ -e "$PGD/out_state" ] ||
+		{ say "INVALID SETUP: no out_state -- not r187"; return 1; }
 
 	# r185: jack detection may hold the pin on for a plugged headset. The
 	# manual override takes it off; the run owns the pin from here.
 	JACK_PRE=$(cat "$PGD/jack_detect" 2>/dev/null)
 	jrn "jack: $JACK_PRE"
-	pin_set 0 || { say "INVALID SETUP: the Headphones pin would not go off"; return 1; }
+	pins_all_off
+	pin_set 0 || { say "INVALID SETUP: the $OUT_PIN pin would not go off"; return 1; }
+	jrn "output $OUTPUT: pin $OUT_PIN, $OUT_KEY full $OUT_ALL"
 
 	D_PRE=$(cat "$PGD/dapm_state" 2>/dev/null)
 	PRE=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
@@ -204,6 +247,14 @@ preflight() {
 	[ "$(rv "$RPRE" dac_on)" = "0" ] || _bad="$_bad hphr-dac-on"
 	[ "$(rv "$RPRE" pa_on)" = "0" ] || _bad="$_bad hphr-pa-on"
 	[ "$(rv "$RPRE" rdac_0x1b7)" = "00" ] || _bad="$_bad hphr-dac-dirty"
+	OPRE=$(cat "$PGD/out_state" 2>/dev/null)
+	if [ -n "$OPRE" ]; then
+		[ "$(rv "$OPRE" spk_pa)" = "0" ] || _bad="$_bad spk-pa-on"
+		[ "$(rv "$OPRE" ear_pa)" = "0" ] || _bad="$_bad ear-pa-on"
+		[ "$(rv "$OPRE" ear_0x1bc)" = "00" ] || _bad="$_bad ear-dirty"
+		[ $(( 0x$(rv "$OPRE" spken_0x1df) & 0x80 )) -eq 0 ] || _bad="$_bad spk-en-set"
+		[ "$(dapm_kv "$D_PRE" "$OUT_KEY")" = "$OUT_NONE" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$D_PRE" "$OUT_KEY")"
+	fi
 	[ -n "$_bad" ] && { say "INVALID SETUP: not idle:$_bad"; return 1; }
 	jrn "baseline idle: dapm held $DAPM_HELD_NONE, pin off, RCO, both PAs off"
 
@@ -234,10 +285,12 @@ stream() {	# stream <n> <spec>
 		return 1
 	fi
 	jrn "volumes: HPHL/HPHR $_hv (field $(dapm_spec_field "$_hv")), RX1/RX2 digital $_dv (0x$(dapm_spec_dig "$_dv"))"
-	case "$_side" in
-	L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
-	R) jrn "stream $_n: tone on the RIGHT only -- the mic on the RIGHT earcup" ;;
-	B) jrn "stream $_n: tone on BOTH channels" ;;
+	case "$OUTPUT:$_side" in
+	hph:L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
+	hph:R) jrn "stream $_n: tone on the RIGHT only -- the mic on the RIGHT earcup" ;;
+	hph:B) jrn "stream $_n: tone on BOTH channels" ;;
+	spk:*) jrn "stream $_n: SPEAKER, Speaker Volume $_hv -- the mic at its fixed spot over the grille" ;;
+	ear:*) jrn "stream $_n: EARPIECE, Earpiece Volume $_hv -- the mic at its fixed spot over the earpiece slot" ;;
 	esac
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
@@ -257,7 +310,8 @@ stream() {	# stream <n> <spec>
 	_s=$(cat "$PGD/dapm_state" 2>/dev/null)
 	eval "S${_n}_PINON=\$_s"
 	jrn "pin ON; with no stream: $_s"
-	if [ "$(dapm_held_is "$_s" "$DAPM_HELD_NONE")" != "OK" ]; then
+	if [ "$(dapm_held_key_is "$_s" "$OUT_KEY" "$OUT_NONE")" != "OK" ] ||
+	   [ "$(dapm_held_is "$_s" "$DAPM_HELD_NONE")" != "OK" ]; then
 		jrn "the pin alone powered something -- abort"
 		dl_abort "pin-alone-powered"
 		return 1
@@ -284,27 +338,35 @@ stream() {	# stream <n> <spec>
 	while [ "$_w" -lt "${LIVE_WAIT_DS:-50}" ]; do
 		_l=$(cat "$PGD/dapm_state" 2>/dev/null)
 		_up=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
-		[ "$(dapm_held_is "$_l" "$DAPM_HELD_ALL")" = "OK" ] && [ "$_up" = "1" ] && break
+		[ "$(dapm_held_key_is "$_l" "$OUT_KEY" "$OUT_ALL")" = "OK" ] && [ "$_up" = "1" ] && break
 		kill -0 "$TPID" 2>/dev/null || break
 		[ -e "$FLAG" ] && break
 		sleep 0.1
 		_w=$((_w + 1))
 	done
 	eval "S${_n}_UP_MS=$((_w * 100))"
-	jrn "path wait: ~$((_w * 100)) ms, held=$(dapm_kv "$_l" held) slim_up=$_up"
+	jrn "path wait: ~$((_w * 100)) ms, $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY") slim_up=$_up"
 	flag_ok "path-wait-c$_n" || return 1
 	sleep 0.1
 	_l=$(cat "$PGD/dapm_state" 2>/dev/null)
 	_p=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 	_r=$(cat "$PGD/hphr_state" 2>/dev/null)
 	_r1=$(cat "$PGD/rx1_digital_state" 2>/dev/null)
+	_o=$(cat "$PGD/out_state" 2>/dev/null)
+	eval "S${_n}_O=\$_o"
 	_hs=$(hph_status)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs; S${_n}_R=\$_r; S${_n}_R1=\$_r1"
 	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | 0x1b1=$(rv "$_p" dac_0x1b1) 0x1b7=$(rv "$_r" rdac_0x1b7) | 0x1ae=$(rv "$_p" lgain_0x1ae) 0x1b4=$(rv "$_r" rgain_0x1b4) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
 	_bad=""
-	[ "$(dapm_held_is "$_l" "$DAPM_HELD_ALL")" = "OK" ] || _bad="$_bad held=$(dapm_kv "$_l" held)"
-	[ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "$DAPM_PA_LIVE" ] || _bad="$_bad pa=$(rv "$_p" pa_0x1ab)"
+	[ "$(dapm_held_key_is "$_l" "$OUT_KEY" "$OUT_ALL")" = "OK" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY")"
+	case "$OUTPUT" in
+	hph) [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "$DAPM_PA_LIVE" ] || _bad="$_bad pa=$(rv "$_p" pa_0x1ab)" ;;
+	spk) [ "$(rv "$_o" spk_pa)" = "1" ] || _bad="$_bad spk_pa=$(rv "$_o" spk_pa)"
+	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
+	ear) [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
+	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
+	esac
 	[ "$(rv "$_p" ocp_seen)" = "0" ] || _bad="$_bad ocp"
 	if [ -n "$_bad" ]; then
 		jrn "THE PATH IS NOT IN ITS ONE LEGAL LIVE STATE:$_bad"
@@ -322,7 +384,7 @@ stream() {	# stream <n> <spec>
 	# this card). Polled, not assumed, for up to 3 s.
 	_w=0
 	while [ "$_w" -lt 30 ]; do
-		[ "$(dapm_held_is "$(cat "$PGD/dapm_state" 2>/dev/null)" "$DAPM_HELD_NONE")" = "OK" ] && break
+		[ "$(dapm_held_key_is "$(cat "$PGD/dapm_state" 2>/dev/null)" "$OUT_KEY" "$OUT_NONE")" = "OK" ] && break
 		sleep 0.1
 		_w=$((_w + 1))
 	done
@@ -335,8 +397,9 @@ stream() {	# stream <n> <spec>
 	_pin=$(pin_get)
 	eval "S${_n}_PIN=\$_pin"
 
-	if [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] &&
-	   [ "$(dapm_held_is "$_a" "$DAPM_HELD_NONE")" = "OK" ]; then
+	eval "S${_n}_OAFTER=\$(cat \"\$PGD/out_state\" 2>/dev/null)"
+	if all_pa_off &&
+	   [ "$(dapm_held_key_is "$_a" "$OUT_KEY" "$OUT_NONE")" = "OK" ]; then
 		failsafe_disarm
 		jrn "fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing"
 	else
@@ -357,6 +420,7 @@ check)
 launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=SPECS=$SPECS --setenv=HOLD_ARM=$HOLD_ARM"
+	CMD="$CMD --setenv=OUTPUT=$OUTPUT"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -382,7 +446,7 @@ FORCED_START=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
 FORCED_START=${FORCED_START:-0}
 FORCED_RING=$(sed -n 's/.*ring=\([0-9]*\).*/\1/p' "$PGD/forced_log" 2>/dev/null | head -n1)
 FORCED_RING=${FORCED_RING:-16}
-if [ $(( FORCED_START + DAPM_FORCED_PER_STREAM * CYCLES )) -gt "$FORCED_RING" ]; then
+if [ $(( FORCED_START + OUT_FORCED * CYCLES )) -gt "$FORCED_RING" ]; then
 	jrn "the forced-write journal holds $FORCED_START of $FORCED_RING -- this run would not fit; power cycle. Nothing armed."
 	exit 2
 fi
@@ -409,9 +473,11 @@ done
 failsafe_disarm
 watch_stop
 [ "$(pin_get)" = "0" ] || { pin_set 0; jrn "pin forced OFF at the end"; }
-# r185: the volumes back to their boot values -- analog minimum, digital 0 dB
-if vol_set 0 84; then
-	jrn "volumes restored: HPHL/HPHR 0 (minimum), RX1/RX2 digital 84 (0 dB)"
+pins_all_off
+OPOST=$(cat "$PGD/out_state" 2>/dev/null)
+# r185/r187: every volume back to its boot value
+if vol_restore; then
+	jrn "volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB"
 else
 	jrn "THE VOLUMES DID NOT RESTORE -- check HPHL/HPHR Volume by hand"
 fi
@@ -438,6 +504,7 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	say "aborted     : $ABORTED $ABORT_WHY"
 	say "streams run : $((n - 1)) of $CYCLES"
 	say "stimulus    : $DBFS dBFS, 1 kHz, tone/silence/tone/silence"
+	say "output      : $OUTPUT (pin $OUT_PIN)"
 	say "plan        : $SPEC_LIST"
 	c=1
 	while [ "$c" -lt "$n" ]; do
@@ -460,8 +527,35 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		_dv=$(printf '%s' "$_sp" | cut -d: -f3)
 		say ""
 		say "-- stream $c [$_sp] --"
-		check "s$c pin alone powers nothing" "$(dapm_kv "$_pi" held)" "$DAPM_HELD_NONE"
-		check "s$c DAPM holds the whole path live" "$(dapm_kv "$_l" held)" "$DAPM_HELD_ALL"
+		check "s$c pin alone powers nothing" "$(dapm_kv "$_pi" "$OUT_KEY")" "$OUT_NONE"
+		check "s$c DAPM holds the whole path live" "$(dapm_kv "$_l" "$OUT_KEY")" "$OUT_ALL"
+		eval "_o=\${S${c}_O:-}; _oa=\${S${c}_OAFTER:-}"
+		if [ "$OUTPUT" != "hph" ]; then
+			check "s$c no HPH PA live" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "00"
+			check "s$c headphone path untouched" "$(dapm_kv "$_l" held)" "$DAPM_HELD_NONE"
+			check "s$c one MCLK user live" "$(rv "$_cs" mclk_users)" "1"
+			check "s$c codec on MCLK live" "$(rv "$_cs" on_mclk)" "1"
+			check "s$c tone played" "$_t" "0"
+			if [ "$OUTPUT" = "spk" ]; then
+				check "s$c speaker PA live (0x1df bit 7)" "$(printf '%02x' $(( 0x$(rv "$_o" spken_0x1df) & 0x80 )))" "80"
+				check "s$c speaker gain = 8 - $_hv, register source" \
+				      "$(printf '%02x' $(( 0x$(rv "$_o" spkgain_0x1e0) & 0x7c )))" \
+				      "$(printf '%02x' $(( 0x04 | ((8 - ${_hv:-0}) << 3) )))"
+				check "s$c power stage 24" "$(printf '%02x' $(( 0x$(rv "$_o" pwrstg_0x1e7) & 0x24 )))" "24"
+				check "s$c RX7 mux L+R" "$(rv "$_o" mux_0x38e)" "65"
+				check "s$c RX7 interpolator on" "$(printf '%02x' $(( 0x$(rv "$_o" rxclk_0x30f) & 0x40 )))" "40"
+				check "s$c no speaker clip" "$(printf '%02x' $(( 0x$(rv "$_o" intr3_0x09b) & 0x08 )))" "00"
+				check "s$c speaker PA off after" "$(printf '%02x' $(( 0x$(rv "$_oa" spken_0x1df) & 0x80 )))" "00"
+			else
+				check "s$c earpiece live (0x1bc DAC1 + switch + PA)" "$(rv "$_o" ear_0x1bc)" "70"
+				check "s$c class-H in EAR mode" "$(rv "$_o" clsh_ear)" "1"
+				check "s$c earpiece off after" "$(rv "$_oa" ear_0x1bc)" "00"
+			fi
+			check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" "$OUT_KEY")" "$OUT_NONE"
+			check "s$c pin OFF after" "$_pin" "0"
+			c=$((c + 1))
+			continue
+		fi
 		check "s$c both PAs live (0x1ab masked)" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "$DAPM_PA_LIVE"
 		check "s$c HPHL DAC live (0x1b1)" "$(rv "$_p" dac_0x1b1)" "c0"
 		check "s$c HPHR DAC live (0x1b7)" "$(rv "$_r" rdac_0x1b7)" "c0"
@@ -486,11 +580,11 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 
 	say ""
 	say "-- DAPM's own accounting --"
-	check "DAPM ups this run" "$(dapm_delta "$D_PRE" "$D_POST" ups)" "$((DAPM_STAGES * (n - 1)))"
-	check "DAPM downs this run" "$(dapm_delta "$D_PRE" "$D_POST" downs)" "$((DAPM_STAGES * (n - 1)))"
+	check "DAPM ups this run" "$(dapm_delta "$D_PRE" "$D_POST" ups)" "$((OUT_STAGES * (n - 1)))"
+	check "DAPM downs this run" "$(dapm_delta "$D_PRE" "$D_POST" downs)" "$((OUT_STAGES * (n - 1)))"
 	check "DAPM refusals this run" "$(dapm_delta "$D_PRE" "$D_POST" refusals)" "0"
 	check "DAPM failures this run" "$(dapm_delta "$D_PRE" "$D_POST" failures)" "0"
-	check "DAPM holds nothing at the end" "$(dapm_kv "$D_POST" held)" "$DAPM_HELD_NONE"
+	check "DAPM holds nothing at the end" "$(dapm_kv "$D_POST" held) $(dapm_kv "$D_POST" spk_held) $(dapm_kv "$D_POST" ear_held)" "000 00 00"
 	check "nobody holds MCLK at the end" "$(rv "$CPOST" mclk_users)" "0"
 	check "codec back on RCO" "$(rv "$CPOST" on_mclk)" "0"
 	check "guard never tripped" "$(rv "$POST" guard_tripped)" "0"
@@ -498,12 +592,12 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
 
 	say ""
-	say "-- the forced writes, per stream: 314 set, 30d L set, 30d R set, R clear, L clear, 314 clear --"
+	say "-- the forced writes, per stream ($OUT_FORCED for $OUTPUT) --"
 	check "forced operations this run" "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" \
-	      "$(( DAPM_FORCED_PER_STREAM * (n - 1) ))"
+	      "$(( OUT_FORCED * (n - 1) ))"
 	_i=0
-	while [ "$_i" -lt "$(( DAPM_FORCED_PER_STREAM * (n - 1) ))" ]; do
-		set -- $(dapm_forced_want "$_i")
+	while [ "$_i" -lt "$(( OUT_FORCED * (n - 1) ))" ]; do
+		set -- $(dapm_forced_want_out "$OUTPUT" "$_i")
 		_j=$(( FORCED_START + _i ))
 		check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$1"
 		check "f$_j mask" "$(rv "$FLOG" "f${_j}_mask")" "$2"
@@ -530,6 +624,14 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	      "$(printf '%02x' $(( 0x$(rv "$RPOST" rdacclk_0x30d) & 0x06 )))" "00"
 	check "volumes back to boot values" \
 	      "$(rv "$RPOST" gain_field_r) $(rv "$POST" gain_field) $(rv "$RPOST" vol_0x2bf)" "14 14 00"
+	if [ -n "${OPOST:-}" ]; then
+		check "speaker and earpiece at their minimum, PAs off" \
+		      "$(rv "$OPOST" spk_field) $(rv "$OPOST" ear_field) $(rv "$OPOST" spk_pa) $(rv "$OPOST" ear_pa)" "8 7 0 0"
+		check "speaker gain restored" "$(rv "$OPOST" spkgain_0x1e0)" "$(rv "$OPRE" spkgain_0x1e0)"
+		check "earpiece gain restored" "$(rv "$OPOST" eargain_0x1bd)" "$(rv "$OPRE" eargain_0x1bd)"
+		check "earpiece fully off" "$(rv "$OPOST" ear_0x1bc)" "00"
+		check "RX7 off" "$(rv "$OPOST" rx7_on)" "0"
+	fi
 
 	hdr "dapm events (dmesg)"
 	dmesg | grep -E 'dapm: |mclk: (get|put)' | tail -n 40

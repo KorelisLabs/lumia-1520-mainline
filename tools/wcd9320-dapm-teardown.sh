@@ -28,7 +28,9 @@ DIR=$(dirname "$0")
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null || echo unknown)
 JOURNAL="${C3A_JOURNAL:-/var/log/wcd9320-c3a-journal.txt}"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
-PIN="${DAPM_PIN:-Headphones Switch}"
+# r187: every output pin, not just the headphones -- the speaker and the
+# earpiece are DAPM outputs too. A pin that fails does not stop the others.
+PINS="${DAPM_PINS:-${DAPM_PIN:-Headphones Switch}|Speaker Switch|Earpiece Switch}"
 PLAYER="${DAPM_PLAYER:-pcm-tone}"
 
 note() {
@@ -46,15 +48,26 @@ done
 
 # 1. the pin
 if [ -z "$SETCTL" ]; then
-	note "NO alsa-setctl -- the pin could not be switched off"
-elif _td_out=$("$SETCTL" -D "$CTLDEV" --set "$PIN" 0 2>&1) &&
-     printf '%s\n' "$_td_out" | grep -q '^readback=0$'; then
-	note "pin OFF ($PIN), read back 0"
+	note "NO alsa-setctl -- the pins could not be switched off"
 else
-	note "PIN OFF FAILED ($PIN): $(printf '%s' "$_td_out" | tr '\n' ' ')"
+	_td_ifs=$IFS; IFS='|'
+	for PIN in $PINS; do
+		IFS=$_td_ifs
+		if _td_out=$("$SETCTL" -D "$CTLDEV" --set "$PIN" 0 2>&1) &&
+		   printf '%s
+' "$_td_out" | grep -q '^readback=0$'; then
+			note "pin OFF ($PIN), read back 0"
+		elif printf '%s
+' "$_td_out" | grep -q '^found=0$'; then
+			note "no $PIN control on this card"
+		else
+			note "PIN OFF FAILED ($PIN): $(printf '%s' "$_td_out" | tr '
+' ' ')"
+		fi
+		IFS='|'
+	done
+	IFS=$_td_ifs
 fi
-
-# 2. the player
 if pkill -x "$PLAYER" 2>/dev/null; then
 	note "player $PLAYER killed"
 else
