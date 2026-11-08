@@ -1,7 +1,7 @@
 # DAPM for the HPHL path: ordinary playback powers the chain (r184 map)
 
-**Status:** built as r184 `dapm-hphl-rc1` (section 4a), not yet run on
-hardware. Mapped 2026-11-07, after r183.
+**Status:** DONE. r184 `dapm-hphl-rc1` passed on hardware 2026-11-08: plain
+playback heard, analyser 2/2 (section 4b). Mapped 2026-11-07, after r183.
 
 **The goal.** `aplay` on the Q6 card, with nothing else, produces sound on
 the left earcup. Today the same sound needs the C3a runner, which writes six
@@ -273,6 +273,29 @@ write was issued.
 - **The fix, in the runner only:** poll `dapm_state` and `slim_stream_state`
   (no chip reads) until `held=3f` and the channel is up, for up to 5 s, then
   take the chip-read sample inside the tone.
+
+**Second fresh boot: #3 DONE** (`wcd9320-dapm-listen-*-20260901T150352Z.txt`).
+The fixed runner made two streams, each with its own chat approval:
+
+- **Each stream:**
+  - pin on with no stream: `held=00`;
+  - live: `held=3f`, PA `a0`, one MCLK user, codec on MCLK, `0x1b3=08`;
+  - after the stream: `held=00`, PA `80`, pin off;
+  - the fail-safe was disarmed on a chip-verified PA-off.
+- **Timing:** DAPM took 62 ms from MCLK to PA. Trigger START to SLIMbus UP
+  took 4 ms. The 1.2 s and 630 ms of the first boot were the runner's chip
+  reads contending with the stream start.
+- **Heard by the operator.** `c3a-capture.py` PASS 2/2: 1000.00 Hz and 999.93
+  Hz, contrast 27.7 and 28.9 dB.
+- **End-of-run checks, 41/0** (`wcd9320-dapm-postcheck.sh`, against the
+  unchanged state):
+  - DAPM ups/downs 12/12, no refusals, no failures;
+  - forced writes 8, in the mapped order;
+  - every prep register restored to baseline;
+  - no C3 abort, `cache_check` 0.
+- **The report is truncated.** Its per-stream loop was missing an increment,
+  so it repeated stream 1 until it was killed. The loop is fixed, and stream
+  2's values are in the journal.
 
 ## 5. Order of work
 

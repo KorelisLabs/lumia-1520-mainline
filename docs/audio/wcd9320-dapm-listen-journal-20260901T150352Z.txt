@@ -1,0 +1,141 @@
+20260901T150352Z ================ DAPM listen run 20260901T150352Z ================
+20260901T150352Z stimulus -40 dBFS, 2 stream(s), gain field 00
+20260901T150352Z module dapm-hphl-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260901T150352Z baseline idle: dapm held 00, pin off, RCO, PA off
+20260901T150352Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260901T150519Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T150519Z gain field 00 set and read back
+20260901T150519Z forced-write journal starts this run at 0 of 16
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260901T150520Z abort watcher armed, pid 949
+20260901T150520Z front-end mixer enabled
+20260901T150520Z === stream 1: begin ===
+20260901T150520Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T150549Z GATE dapm-c1: APPROVED (chat)
+20260901T150549Z fail-safe armed: 30 s, phase stream-c1
+20260901T150549Z pin ON; with no stream: held=00 ups=0 downs=0 refusals=0 failures=0 mclk_users=0 pa_on=0
+20260901T150549Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260901T150549Z path wait: ~100 ms, held=3f slim_up=1
+20260901T150550Z live: held=3f ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=1 | 0x1ab=a0 ocp=0 | mclk_users=1 on_mclk=1 | 1b3=08 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.955
+final_rc=0
+complete=1
+20260901T150551Z tone finished rc=0
+20260901T150551Z after the stream (~0 ms): held=00 ups=6 downs=6 refusals=0 failures=0 mclk_users=0 pa_on=0 | 0x1ab=80
+20260901T150552Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T150552Z === stream 1: complete ===
+20260901T150552Z === stream 2: begin ===
+20260901T150552Z GATE dapm-c2: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T150639Z GATE dapm-c2: APPROVED (chat)
+20260901T150639Z fail-safe armed: 30 s, phase stream-c2
+20260901T150639Z pin ON; with no stream: held=00 ups=6 downs=6 refusals=0 failures=0 mclk_users=0 pa_on=0
+20260901T150639Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260901T150642Z path wait: ~400 ms, held=3f slim_up=1
+20260901T150642Z live: held=3f ups=12 downs=6 refusals=0 failures=0 mclk_users=1 pa_on=1 | 0x1ab=a0 ocp=0 | mclk_users=1 on_mclk=1 | 1b3=08 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.114
+final_rc=0
+complete=1
+20260901T150644Z tone finished rc=0
+20260901T150644Z after the stream (~0 ms): held=00 ups=12 downs=12 refusals=0 failures=0 mclk_users=0 pa_on=0 | 0x1ab=80
+20260901T150644Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T150645Z === stream 2: complete ===

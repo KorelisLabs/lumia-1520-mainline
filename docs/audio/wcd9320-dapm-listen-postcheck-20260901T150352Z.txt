@@ -1,0 +1,50 @@
+
+=== end-of-run checks, 2 stream(s) from a boot-fresh DAPM state ===
+dapm_state: held=00 ups=12 downs=12 refusals=0 failures=0 mclk_users=0 pa_on=0
+  PASS  card module version              q6-card-rc4
+  PASS  DAPM ups                         12
+  PASS  DAPM downs                       12
+  PASS  DAPM refusals                    0
+  PASS  DAPM failures                    0
+  PASS  DAPM holds nothing               00
+  PASS  pin OFF                          0
+  PASS  nobody holds MCLK                0
+  PASS  codec back on RCO                0
+  PASS  PA off (0x1ab)                   80
+  PASS  guard never tripped              0
+  PASS  no OCP fault                     0
+  PASS  PA enables == disables           2
+  PASS  PA enables                       2
+  PASS  C3 aborts                        0
+  PASS  forced operations                8
+  PASS  f0 register                      314
+  PASS  f0 direction                     set
+  PASS  f1 register                      30d
+  PASS  f1 direction                     set
+  PASS  f2 register                      30d
+  PASS  f2 direction                     clear
+  PASS  f3 register                      314
+  PASS  f3 direction                     clear
+  PASS  f4 register                      314
+  PASS  f4 direction                     set
+  PASS  f5 register                      30d
+  PASS  f5 direction                     set
+  PASS  f6 register                      30d
+  PASS  f6 direction                     clear
+  PASS  f7 register                      314
+  PASS  f7 direction                     clear
+  PASS  gain restored                    00
+  PASS  wg ctl restored                  da
+  PASS  wg time restored                 15
+  PASS  wg ocp restored                  2a
+  PASS  chopper restored                 a4
+  PASS  DAC off                          00
+  PASS  DSM mux cleared                  00
+  PASS  RX bias released                 0
+cache_check: cacheable_checked=456 mismatches=0 volatile_checked=213 volatile_moved=0 read_errors=0 
+  PASS  cache mismatches                 0
+
+=== verdict ===
+mode   : wcd9320-dapm-postcheck
+checks : 41 passed, 0 failed
+VERDICT: PASS (wcd9320-dapm-postcheck)

@@ -1,0 +1,282 @@
+[  204.883850] wcd9320 217:a0:1:0: slim-stream: ASoC startup (dai wcd9320-slim-rx1) -> 0
+[  204.890658] wcd9320-lumia-q6 sound: BE hw_params: cpu=SLIMBUS_0_RX codec=wcd9320-slim-rx1 rate=48000 ch=1 ch_map={144} (reported by the codec)
+[  204.891279] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_params (dai wcd9320-slim-rx1, rate 48000, ch 1, fmt 2)
+[  204.944726] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 01 -> read 01
+[  204.945434] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 05 -> read 05
+[  204.971778] wcd9320 217:a0:1:0: rx-port 16: PROGRAMMED, 2 write(s) total
+[  204.972100] wcd9320 217:a0:1:0: slim-stream: config port 16 (mask 0x10000) channel 144 rate 48000 bps 16
+[  204.983089] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) before the switch
+[  204.983844] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) before the switch
+[  204.984555] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) before the switch
+[  204.985270] wcd9320 217:a0:1:0: clk-src: CHIP_CTL measured 08 before the switch (not written yet)
+[  204.986899] wcd9320 217:a0:1:0: clk-src block-off step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  204.988030] wcd9320 217:a0:1:0: clk-src block-off step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  204.989375] wcd9320 217:a0:1:0: clk-src block-off step  3/3: reg 0x108 (VE 0x0908) old=0d mask=05 want=00 -> read=08  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  204.989531] wcd9320 217:a0:1:0: clk-src block-off: all 3 steps applied cleanly
+[  204.990992] wcd9320 217:a0:1:0: clk-src mclk-desel step  1/1: reg 0x108 (VE 0x0908) old=08 mask=08 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN1: stop selecting the RC oscillator]
+[  204.991145] wcd9320 217:a0:1:0: clk-src mclk-desel: all 1 steps applied cleanly
+[  204.991923] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  205.009303] wcd9320 217:a0:1:0: clk-src rco-shutdown step  1/3: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2 = 0x02 (a full write downstream, not a masked one)]
+[  205.012684] wcd9320 217:a0:1:0: clk-src rco-shutdown step  2/3: reg 0x105 (VE 0x0905) old=17 mask=01 want=00 -> read=16  delay=0us  OK  [BIAS_OSC_BG_CTL: clear bit 0]
+[  205.017195] wcd9320 217:a0:1:0: clk-src rco-shutdown step  3/3: reg 0x1fa (VE 0x09fa) old=c6 mask=80 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: RC oscillator OFF -- no warm fallback past this row]
+[  205.017837] wcd9320 217:a0:1:0: clk-src rco-shutdown: all 3 steps applied cleanly
+[  205.019307] wcd9320 217:a0:1:0: clk-src mclk-tail step  1/5: reg 0x108 (VE 0x0908) old=00 mask=0c want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN1: source = external, reference = VBG]
+[  205.022250] wcd9320 217:a0:1:0: clk-src mclk-tail step  2/5: reg 0x108 (VE 0x0908) old=04 mask=01 want=01 -> read=05  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  205.023638] wcd9320 217:a0:1:0: clk-src mclk-tail step  3/5: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  205.024770] wcd9320 217:a0:1:0: clk-src mclk-tail step  4/5: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  205.025889] wcd9320 217:a0:1:0: clk-src mclk-tail step  5/5: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  205.026529] wcd9320 217:a0:1:0: clk-src mclk-tail: all 5 steps applied cleanly
+[  205.026930] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  205.027535] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  205.027935] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  205.028037] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  205.029490] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  205.030053] wcd9320 217:a0:1:0: mclk: get, users 0 -> 1, codec on MCLK (cdc_alive 1)
+[  205.030147] wcd9320 217:a0:1:0: dapm: mclk up, held 01
+[  205.033099] wcd9320 217:a0:1:0: c2b: 0x1ae mask 20 want 20 -> chip 20  [HPHL gain source = this register]
+[  205.033617] wcd9320 217:a0:1:0: c2b: 0x1ae mask 1f want 00 -> chip 20  [HPHL gain field (inverted control) -- hphl_pa_gain, default minimum]
+[  205.034584] wcd9320 217:a0:1:0: c2b: 0x1ac mask ff want db -> chip db  [wavegen control - compander OFF half]
+[  205.035121] wcd9320 217:a0:1:0: c2b: 0x1ad mask ff want 58 -> chip 58  [wavegen timer 20 ms - compander OFF half]
+[  205.035970] wcd9320 217:a0:1:0: c2b: 0x1a9 mask ff want 1a -> chip 1a  [wavegen and OCP bias - compander OFF half]
+[  205.036950] wcd9320 217:a0:1:0: c2b: 0x1a5 mask 80 want 00 -> chip 24  [chopper off - compander OFF half]
+[  205.039349] wcd9320 217:a0:1:0: c3a: prep applied - register gain at the mapped minimum and the compander-OFF pop/click pairing
+[  205.039471] wcd9320 217:a0:1:0: dapm: class-h prep up, held 03
+[  205.040125] wcd9320 217:a0:1:0: clk-prereq: 0x314 measured 00 before any write
+[  205.040640] wcd9320 217:a0:1:0: forced: 0x314 mask ff <- 03  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [CDC_CLK_POWER_CTL = 0x03]
+[  205.040787] wcd9320 217:a0:1:0: clk-prereq: ISSUED 0x314 = 03; chip reads 00, which this part cannot verify either way
+[  205.040883] wcd9320 217:a0:1:0: dapm: cdc prereq up, held 07
+[  205.040958] wcd9320 217:a0:1:0: rx1-digital: 0x2b4 = 78, rate field 60 = 48 kHz (asserted, not written)
+[  205.042014] wcd9320 217:a0:1:0: rx1-digital: 0x380 mask 0f want 05 -> read 05  [MIX1 INP1 = RX1]
+[  205.042182] wcd9320 217:a0:1:0: rx1-digital: 0x301 mask 01 want 01 -> read 01  [interpolator reset asserted]
+[  205.042345] wcd9320 217:a0:1:0: rx1-digital: 0x301 mask 01 want 00 -> read 00  [interpolator reset released]
+[  205.042502] wcd9320 217:a0:1:0: rx1-digital: 0x30f mask 01 want 01 -> read 01  [RX1 interpolator clock on]
+[  205.049395] wcd9320 217:a0:1:0: rx1-digital: 0x2b7 mask ff want 00 -> read 00  [digital gain latched]
+[  205.050532] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  205.050639] wcd9320 217:a0:1:0: rx1-digital: PATH ENABLED, 6 write(s) total
+[  205.050716] wcd9320 217:a0:1:0: dapm: rx1 up, held 0f
+[  205.051352] wcd9320 217:a0:1:0: c2b: register gain source verified on the chip, 0x1ae = 20
+[  205.052311] wcd9320 217:a0:1:0: c2b: 0x314 reads 00; issued but unverifiable on this part, continuing by design
+[  205.052420] wcd9320 217:a0:1:0: c2b: HPHL DAC enable, map stages 3-7 (0x314 = 00)
+[  205.053271] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 10 -> chip 10  [CLASS_H_DSM MUX = DSM_HPHL_RX1]
+[  205.054492] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 04 -> chip 14  [ZOH mux, derived from the source select]
+[  205.055424] wcd9320 217:a0:1:0: c2b: 0x1a2 mask 80 want 80 -> chip 80  [RX bias on (refs 0 -> 1)]
+[  205.056327] wcd9320 217:a0:1:0: forced: 0x30d mask 02 <- 02  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [HPHL RDAC clock on]
+[  205.056505] wcd9320 217:a0:1:0: clsh: HPHL enable, from downstream state_hph_l()
+[  205.063962] wcd9320 217:a0:1:0: clsh: ENABLED, 46 write(s), B1_CTL = a7 (predicted a7)
+[  205.069747] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 40 want 40 -> chip 40  [HPHL DAC input switch (bit 6)]
+[  205.070519] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 80 want 80 -> chip c0  [HPHL DAC power (bit 7)]
+[  205.071309] wcd9320 217:a0:1:0: c2b: HPHL DAC ENABLED, 14 chip-verified write(s), 0x1b1 = c0 (predicted c0)
+[  205.071418] wcd9320 217:a0:1:0: dapm: hphl dac up, held 1f
+[  205.072599] wcd9320 217:a0:1:0: c3a: HPHL PA enable, map steps 9-11 (settle 13000 us)
+[  205.073315] wcd9320 217:a0:1:0: c2b: 0x1ab mask 20 want 20 -> chip a0  [HPHL PA enable (bit 5)]
+[  205.088558] wcd9320 217:a0:1:0: c2b: 0x185 mask 02 want 00 -> chip 00  [POST_PA buck mode5 bit 1]
+[  205.089327] wcd9320 217:a0:1:0: c2b: 0x194 mask 20 want 00 -> chip 08  [POST_PA ncp static bit 5]
+[  205.090061] wcd9320 217:a0:1:0: c2b: 0x183 mask 04 want 04 -> chip c6  [POST_PA buck mode3 bit 2]
+[  205.090807] wcd9320 217:a0:1:0: c2b: 0x183 mask 08 want 08 -> chip ce  [POST_PA buck mode3 bit 3]
+[  205.091896] wcd9320 217:a0:1:0: c3a: HPHL PA ENABLED, 0x1ab = a0 (predicted a0), HPHR bit 4 clear
+[  205.092003] wcd9320 217:a0:1:0: dapm: hphl pa up, held 3f
+[  205.102280] wcd9320 217:a0:1:0: slim-stream: ASoC trigger START (dai wcd9320-slim-rx1)
+[  205.103207] wcd9320 217:a0:1:0: slim-stream: prepare -> 0 (CONNECT_SINK to the manager)
+[  205.106651] wcd9320 217:a0:1:0: slim-stream: enable -> 0 (SLIM_USR_MC_DEF_ACT_CHAN)
+[  205.106754] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  206.049268] wcd9320 217:a0:1:0: slim-stream: ASoC trigger STOP (dai wcd9320-slim-rx1)
+[  206.051386] wcd9320 217:a0:1:0: slim-stream: disable -> 0 (no-op here: the NGD drops every reconfiguration message)
+[  206.055726] wcd9320 217:a0:1:0: slim-stream: unprepare -> 0 (DISCONNECT_PORT -- the real teardown)
+[  206.055840] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[  206.056769] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_free (dai wcd9320-slim-rx1)
+[  206.057310] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 00 -> read 00
+[  206.057849] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 00 -> read 00
+[  206.130828] wcd9320 217:a0:1:0: rx-port 16: TORN DOWN, 4 write(s) total
+[  206.131164] wcd9320 217:a0:1:0: slim-stream: ASoC shutdown (dai wcd9320-slim-rx1)
+[  206.153027] wcd9320 217:a0:1:0: c2b: 0x1ab mask 20 want 00 -> chip 80  [HPHL PA disable (bit 5)]
+[  206.168510] wcd9320 217:a0:1:0: clsh: DISABLED, 52 write(s), B1_CTL = a6 (predicted a6)
+[  206.175006] wcd9320 217:a0:1:0: c3a: HPHL PA DISABLED, 0x1ab = 80 (predicted 80)
+[  206.175358] wcd9320 217:a0:1:0: dapm: hphl pa down, held 1f
+[  206.176759] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 80 want 00 -> chip 40  [HPHL DAC power off]
+[  206.177634] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 40 want 00 -> chip 00  [HPHL DAC input switch off]
+[  206.199310] wcd9320 217:a0:1:0: forced: 0x30d mask 02 <- 00  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [HPHL RDAC clock off (mandatory)]
+[  206.200531] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 00 -> chip 10  [ZOH mux cleared]
+[  206.229291] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 00 -> chip 00  [CLASS_H_DSM MUX = ZERO]
+[  206.250256] wcd9320 217:a0:1:0: c2b: 0x1a2 mask 80 want 00 -> chip 00  [RX bias off (refs 1 -> 0)]
+[  206.270233] wcd9320 217:a0:1:0: c2b: HPHL DAC DISABLED, 26 chip-verified write(s), 0x1b1 = 00 (predicted 00)
+[  206.275355] wcd9320 217:a0:1:0: dapm: hphl dac down, held 0f
+[  206.319729] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]
+[  206.352521] wcd9320 217:a0:1:0: rx1-digital: 0x30f mask 01 want 00 -> read 00  [RX1 interpolator clock off]
+[  206.375485] wcd9320 217:a0:1:0: rx1-digital: 0x380 mask 0f want 00 -> read 00  [MIX1 INP1 = ZERO]
+[  206.402748] wcd9320 217:a0:1:0: rx1-digital: PATH DISABLED, 9 write(s) total
+[  206.407727] wcd9320 217:a0:1:0: dapm: rx1 down, held 07
+[  206.439963] wcd9320 217:a0:1:0: forced: 0x314 mask ff <- 00  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [CDC_CLK_POWER_CTL restored (mandatory)]
+[  206.469236] wcd9320 217:a0:1:0: clk-prereq: RESTORED to 00
+[  206.474229] wcd9320 217:a0:1:0: dapm: cdc prereq down, held 03
+[  206.496193] wcd9320 217:a0:1:0: c2b: 0x1a5 mask 80 want a4 -> chip a4  [C3a prep restored to its measured baseline]
+[  206.519822] wcd9320 217:a0:1:0: c2b: 0x1a9 mask ff want 2a -> chip 2a  [C3a prep restored to its measured baseline]
+[  206.525418] wcd9320 217:a0:1:0: c2b: 0x1ad mask ff want 15 -> chip 15  [C3a prep restored to its measured baseline]
+[  206.549823] wcd9320 217:a0:1:0: c2b: 0x1ac mask ff want da -> chip da  [C3a prep restored to its measured baseline]
+[  206.559261] wcd9320 217:a0:1:0: c2b: 0x1ae mask 1f want 00 -> chip 20  [C3a prep restored to its measured baseline]
+[  206.579677] wcd9320 217:a0:1:0: c2b: 0x1ae mask 20 want 00 -> chip 00  [C3a prep restored to its measured baseline]
+[  206.584531] wcd9320 217:a0:1:0: c3a: prep restored to the measured baseline
+[  206.608554] wcd9320 217:a0:1:0: dapm: class-h prep down, held 01
+[  206.625241] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  206.652834] wcd9320 217:a0:1:0: clk-src block-off (restore) step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  206.682756] wcd9320 217:a0:1:0: clk-src block-off (restore) step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  206.700280] wcd9320 217:a0:1:0: clk-src block-off (restore) step  3/3: reg 0x108 (VE 0x0908) old=05 mask=05 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  206.729268] wcd9320 217:a0:1:0: clk-src block-off (restore): all 3 steps applied cleanly
+[  206.738939] wcd9320 217:a0:1:0: clk-src rco-restore step  1/11: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[  206.775071] wcd9320 217:a0:1:0: clk-src rco-restore step  2/11: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[  206.802860] wcd9320 217:a0:1:0: clk-src rco-restore step  3/11: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[  206.830299] wcd9320 217:a0:1:0: clk-src rco-restore step  4/11: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[  206.864822] wcd9320 217:a0:1:0: clk-src rco-restore step  5/11: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[  206.890151] wcd9320 217:a0:1:0: clk-src rco-restore step  6/11: reg 0x108 (VE 0x0908) old=00 mask=08 want=08 -> read=08  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[  206.916213] wcd9320 217:a0:1:0: clk-src rco-restore step  7/11: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[  206.944192] wcd9320 217:a0:1:0: clk-src rco-restore step  8/11: reg 0x108 (VE 0x0908) old=08 mask=01 want=01 -> read=09  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  206.972691] wcd9320 217:a0:1:0: clk-src rco-restore step  9/11: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  207.002779] wcd9320 217:a0:1:0: clk-src rco-restore step 10/11: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  207.022800] wcd9320 217:a0:1:0: clk-src rco-restore step 11/11: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  207.051903] wcd9320 217:a0:1:0: clk-src rco-restore: all 11 steps applied cleanly
+[  207.059258] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  207.084241] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  207.099677] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  207.104736] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  207.127049] wcd9320 217:a0:1:0: mclk: put, users 1 -> 0, codec back on RCO, vote released
+[  207.149271] wcd9320 217:a0:1:0: dapm: mclk down, held 00
+[  255.319431] wcd9320 217:a0:1:0: slim-stream: ASoC startup (dai wcd9320-slim-rx1) -> 0
+[  255.329372] wcd9320-lumia-q6 sound: BE hw_params: cpu=SLIMBUS_0_RX codec=wcd9320-slim-rx1 rate=48000 ch=1 ch_map={144} (reported by the codec)
+[  255.409507] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_params (dai wcd9320-slim-rx1, rate 48000, ch 1, fmt 2)
+[  255.529363] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 01 -> read 01
+[  255.539842] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 05 -> read 05
+[  255.668658] wcd9320 217:a0:1:0: rx-port 16: PROGRAMMED, 6 write(s) total
+[  255.703515] wcd9320 217:a0:1:0: slim-stream: config port 16 (mask 0x10000) channel 144 rate 48000 bps 16
+[  255.760189] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) before the switch
+[  255.769560] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) before the switch
+[  255.789242] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) before the switch
+[  255.826979] wcd9320 217:a0:1:0: clk-src: CHIP_CTL measured 08 before the switch (not written yet)
+[  255.840817] wcd9320 217:a0:1:0: clk-src block-off step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  255.895514] wcd9320 217:a0:1:0: clk-src block-off step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  255.928165] wcd9320 217:a0:1:0: clk-src block-off step  3/3: reg 0x108 (VE 0x0908) old=09 mask=05 want=00 -> read=08  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  255.962198] wcd9320 217:a0:1:0: clk-src block-off: all 3 steps applied cleanly
+[  255.995140] wcd9320 217:a0:1:0: clk-src mclk-desel step  1/1: reg 0x108 (VE 0x0908) old=08 mask=08 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN1: stop selecting the RC oscillator]
+[  256.041489] wcd9320 217:a0:1:0: clk-src mclk-desel: all 1 steps applied cleanly
+[  256.059585] wcd9320 217:a0:1:0: clk-src: RC_OSC_FREQ = c6, shutting the RC oscillator down (config_mode 0)
+[  256.082040] wcd9320 217:a0:1:0: clk-src rco-shutdown step  1/3: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2 = 0x02 (a full write downstream, not a masked one)]
+[  256.129969] wcd9320 217:a0:1:0: clk-src rco-shutdown step  2/3: reg 0x105 (VE 0x0905) old=17 mask=01 want=00 -> read=16  delay=0us  OK  [BIAS_OSC_BG_CTL: clear bit 0]
+[  256.174788] wcd9320 217:a0:1:0: clk-src rco-shutdown step  3/3: reg 0x1fa (VE 0x09fa) old=c6 mask=80 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: RC oscillator OFF -- no warm fallback past this row]
+[  256.218448] wcd9320 217:a0:1:0: clk-src rco-shutdown: all 3 steps applied cleanly
+[  256.252187] wcd9320 217:a0:1:0: clk-src mclk-tail step  1/5: reg 0x108 (VE 0x0908) old=00 mask=0c want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN1: source = external, reference = VBG]
+[  256.295288] wcd9320 217:a0:1:0: clk-src mclk-tail step  2/5: reg 0x108 (VE 0x0908) old=04 mask=01 want=01 -> read=05  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  256.339945] wcd9320 217:a0:1:0: clk-src mclk-tail step  3/5: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  256.382493] wcd9320 217:a0:1:0: clk-src mclk-tail step  4/5: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  256.435813] wcd9320 217:a0:1:0: clk-src mclk-tail step  5/5: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  256.480710] wcd9320 217:a0:1:0: clk-src mclk-tail: all 5 steps applied cleanly
+[  256.516167] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the switch to MCLK
+[  256.539348] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the switch to MCLK
+[  256.579238] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the switch to MCLK
+[  256.585118] wcd9320 217:a0:1:0: clk-src: SWITCHED to MCLK, CDC block RESPONDING (a clock is arriving)
+[  256.642079] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 02 : 08 -> 0a (predicted 0a)  LATCHED  [rate 9.6 MHz, retried ON MCLK]
+[  256.679260] wcd9320 217:a0:1:0: mclk: get, users 0 -> 1, codec on MCLK (cdc_alive 1)
+[  256.685158] wcd9320 217:a0:1:0: dapm: mclk up, held 01
+[  256.736792] wcd9320 217:a0:1:0: c2b: 0x1ae mask 20 want 20 -> chip 20  [HPHL gain source = this register]
+[  256.771010] wcd9320 217:a0:1:0: c2b: 0x1ae mask 1f want 00 -> chip 20  [HPHL gain field (inverted control) -- hphl_pa_gain, default minimum]
+[  256.819328] wcd9320 217:a0:1:0: c2b: 0x1ac mask ff want db -> chip db  [wavegen control - compander OFF half]
+[  256.832003] wcd9320 217:a0:1:0: c2b: 0x1ad mask ff want 58 -> chip 58  [wavegen timer 20 ms - compander OFF half]
+[  256.864664] wcd9320 217:a0:1:0: c2b: 0x1a9 mask ff want 1a -> chip 1a  [wavegen and OCP bias - compander OFF half]
+[  256.883520] wcd9320 217:a0:1:0: c2b: 0x1a5 mask 80 want 00 -> chip 24  [chopper off - compander OFF half]
+[  256.919308] wcd9320 217:a0:1:0: c3a: prep applied - register gain at the mapped minimum and the compander-OFF pop/click pairing
+[  256.925290] wcd9320 217:a0:1:0: dapm: class-h prep up, held 03
+[  256.998691] wcd9320 217:a0:1:0: clk-prereq: 0x314 measured 00 before any write
+[  257.060387] wcd9320 217:a0:1:0: forced: 0x314 mask ff <- 03  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [CDC_CLK_POWER_CTL = 0x03]
+[  257.115654] wcd9320 217:a0:1:0: clk-prereq: ISSUED 0x314 = 03; chip reads 00, which this part cannot verify either way
+[  257.150929] wcd9320 217:a0:1:0: dapm: cdc prereq up, held 07
+[  257.159242] wcd9320 217:a0:1:0: rx1-digital: 0x2b4 = 78, rate field 60 = 48 kHz (asserted, not written)
+[  257.165392] wcd9320 217:a0:1:0: rx1-digital: 0x380 mask 0f want 05 -> read 05  [MIX1 INP1 = RX1]
+[  257.203941] wcd9320 217:a0:1:0: rx1-digital: 0x301 mask 01 want 01 -> read 01  [interpolator reset asserted]
+[  257.221899] wcd9320 217:a0:1:0: rx1-digital: 0x301 mask 01 want 00 -> read 00  [interpolator reset released]
+[  257.227986] wcd9320 217:a0:1:0: rx1-digital: 0x30f mask 01 want 01 -> read 01  [RX1 interpolator clock on]
+[  257.255076] wcd9320 217:a0:1:0: rx1-digital: 0x2b7 mask ff want 00 -> read 00  [digital gain latched]
+[  257.279646] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 20 -> read a8  [RX1 CHAIN enabled]
+[  257.285678] wcd9320 217:a0:1:0: rx1-digital: PATH ENABLED, 15 write(s) total
+[  257.309264] wcd9320 217:a0:1:0: dapm: rx1 up, held 0f
+[  257.336451] wcd9320 217:a0:1:0: c2b: register gain source verified on the chip, 0x1ae = 20
+[  257.349910] wcd9320 217:a0:1:0: c2b: 0x314 reads 00; issued but unverifiable on this part, continuing by design
+[  257.355888] wcd9320 217:a0:1:0: c2b: HPHL DAC enable, map stages 3-7 (0x314 = 00)
+[  257.386829] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 10 -> chip 10  [CLASS_H_DSM MUX = DSM_HPHL_RX1]
+[  257.410303] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 04 -> chip 14  [ZOH mux, derived from the source select]
+[  257.429606] wcd9320 217:a0:1:0: c2b: 0x1a2 mask 80 want 80 -> chip 80  [RX bias on (refs 0 -> 1)]
+[  257.436703] wcd9320 217:a0:1:0: forced: 0x30d mask 02 <- 02  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [HPHL RDAC clock on]
+[  257.473530] wcd9320 217:a0:1:0: clsh: HPHL enable, from downstream state_hph_l()
+[  257.496365] wcd9320 217:a0:1:0: clsh: ENABLED, 98 write(s), B1_CTL = a7 (predicted a7)
+[  257.520057] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 40 want 40 -> chip 40  [HPHL DAC input switch (bit 6)]
+[  257.526598] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 80 want 80 -> chip c0  [HPHL DAC power (bit 7)]
+[  257.549889] wcd9320 217:a0:1:0: c2b: HPHL DAC ENABLED, 48 chip-verified write(s), 0x1b1 = c0 (predicted c0)
+[  257.555906] wcd9320 217:a0:1:0: dapm: hphl dac up, held 1f
+[  257.584990] wcd9320 217:a0:1:0: c3a: HPHL PA enable, map steps 9-11 (settle 13000 us)
+[  257.602208] wcd9320 217:a0:1:0: c2b: 0x1ab mask 20 want 20 -> chip a0  [HPHL PA enable (bit 5)]
+[  257.634125] wcd9320 217:a0:1:0: c2b: 0x185 mask 02 want 00 -> chip 00  [POST_PA buck mode5 bit 1]
+[  257.649686] wcd9320 217:a0:1:0: c2b: 0x194 mask 20 want 00 -> chip 08  [POST_PA ncp static bit 5]
+[  257.659247] wcd9320 217:a0:1:0: c2b: 0x183 mask 04 want 04 -> chip c6  [POST_PA buck mode3 bit 2]
+[  257.689584] wcd9320 217:a0:1:0: c2b: 0x183 mask 08 want 08 -> chip ce  [POST_PA buck mode3 bit 3]
+[  257.696301] wcd9320 217:a0:1:0: c3a: HPHL PA ENABLED, 0x1ab = a0 (predicted a0), HPHR bit 4 clear
+[  257.719269] wcd9320 217:a0:1:0: dapm: hphl pa up, held 3f
+[  257.775378] wcd9320 217:a0:1:0: slim-stream: ASoC trigger START (dai wcd9320-slim-rx1)
+[  257.808675] wcd9320 217:a0:1:0: slim-stream: prepare -> 0 (CONNECT_SINK to the manager)
+[  257.854686] wcd9320 217:a0:1:0: slim-stream: enable -> 0 (SLIM_USR_MC_DEF_ACT_CHAN)
+[  257.879314] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[  258.819377] wcd9320 217:a0:1:0: slim-stream: ASoC trigger STOP (dai wcd9320-slim-rx1)
+[  258.846313] wcd9320 217:a0:1:0: slim-stream: disable -> 0 (no-op here: the NGD drops every reconfiguration message)
+[  258.852412] wcd9320 217:a0:1:0: slim-stream: unprepare -> 0 (DISCONNECT_PORT -- the real teardown)
+[  258.857892] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[  258.889498] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_free (dai wcd9320-slim-rx1)
+[  258.899248] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 00 -> read 00
+[  258.919689] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 00 -> read 00
+[  258.975932] wcd9320 217:a0:1:0: rx-port 16: TORN DOWN, 8 write(s) total
+[  258.989249] wcd9320 217:a0:1:0: slim-stream: ASoC shutdown (dai wcd9320-slim-rx1)
+[  259.022002] wcd9320 217:a0:1:0: c2b: 0x1ab mask 20 want 00 -> chip 80  [HPHL PA disable (bit 5)]
+[  259.041803] wcd9320 217:a0:1:0: clsh: DISABLED, 104 write(s), B1_CTL = a6 (predicted a6)
+[  259.060069] wcd9320 217:a0:1:0: c3a: HPHL PA DISABLED, 0x1ab = 80 (predicted 80)
+[  259.065234] wcd9320 217:a0:1:0: dapm: hphl pa down, held 1f
+[  259.090239] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 80 want 00 -> chip 40  [HPHL DAC power off]
+[  259.112359] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 40 want 00 -> chip 00  [HPHL DAC input switch off]
+[  259.118354] wcd9320 217:a0:1:0: forced: 0x30d mask 02 <- 00  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [HPHL RDAC clock off (mandatory)]
+[  259.149822] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 00 -> chip 10  [ZOH mux cleared]
+[  259.159698] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 00 -> chip 00  [CLASS_H_DSM MUX = ZERO]
+[  259.184443] wcd9320 217:a0:1:0: c2b: 0x1a2 mask 80 want 00 -> chip 00  [RX bias off (refs 1 -> 0)]
+[  259.200061] wcd9320 217:a0:1:0: c2b: HPHL DAC DISABLED, 60 chip-verified write(s), 0x1b1 = 00 (predicted 00)
+[  259.205159] wcd9320 217:a0:1:0: dapm: hphl dac down, held 0f
+[  259.227171] wcd9320 217:a0:1:0: rx1-digital: 0x2b5 mask 20 want 00 -> read 88  [RX1 CHAIN disabled]
+[  259.249430] wcd9320 217:a0:1:0: rx1-digital: 0x30f mask 01 want 00 -> read 00  [RX1 interpolator clock off]
+[  259.254690] wcd9320 217:a0:1:0: rx1-digital: 0x380 mask 0f want 00 -> read 00  [MIX1 INP1 = ZERO]
+[  259.274176] wcd9320 217:a0:1:0: rx1-digital: PATH DISABLED, 18 write(s) total
+[  259.291748] wcd9320 217:a0:1:0: dapm: rx1 down, held 07
+[  259.307632] wcd9320 217:a0:1:0: forced: 0x314 mask ff <- 00  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [CDC_CLK_POWER_CTL restored (mandatory)]
+[  259.329250] wcd9320 217:a0:1:0: clk-prereq: RESTORED to 00
+[  259.334290] wcd9320 217:a0:1:0: dapm: cdc prereq down, held 03
+[  259.365817] wcd9320 217:a0:1:0: c2b: 0x1a5 mask 80 want a4 -> chip a4  [C3a prep restored to its measured baseline]
+[  259.372727] wcd9320 217:a0:1:0: c2b: 0x1a9 mask ff want 2a -> chip 2a  [C3a prep restored to its measured baseline]
+[  259.399800] wcd9320 217:a0:1:0: c2b: 0x1ad mask ff want 15 -> chip 15  [C3a prep restored to its measured baseline]
+[  259.405384] wcd9320 217:a0:1:0: c2b: 0x1ac mask ff want da -> chip da  [C3a prep restored to its measured baseline]
+[  259.424442] wcd9320 217:a0:1:0: c2b: 0x1ae mask 1f want 00 -> chip 20  [C3a prep restored to its measured baseline]
+[  259.442319] wcd9320 217:a0:1:0: c2b: 0x1ae mask 20 want 00 -> chip 00  [C3a prep restored to its measured baseline]
+[  259.447242] wcd9320 217:a0:1:0: c3a: prep restored to the measured baseline
+[  259.469274] wcd9320 217:a0:1:0: dapm: class-h prep down, held 01
+[  259.480545] wcd9320 217:a0:1:0: chip-ctl: 0x000 mask 06 want 00 : 0a -> 08 (predicted 08)  LATCHED  [CHIP_CTL restored, still on MCLK]
+[  259.510845] wcd9320 217:a0:1:0: clk-src block-off (restore) step  1/3: reg 0x109 (VE 0x0909) old=04 mask=04 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN2: clock off]
+[  259.545961] wcd9320 217:a0:1:0: clk-src block-off (restore) step  2/3: reg 0x109 (VE 0x0909) old=00 mask=02 want=02 -> read=02  delay=0us  OK  [CLK_BUFF_EN2: set bit 1]
+[  259.572757] wcd9320 217:a0:1:0: clk-src block-off (restore) step  3/3: reg 0x108 (VE 0x0908) old=05 mask=05 want=00 -> read=00  delay=50us  OK  [CLK_BUFF_EN1: disable buffer and source select]
+[  259.599318] wcd9320 217:a0:1:0: clk-src block-off (restore): all 3 steps applied cleanly
+[  259.605025] wcd9320 217:a0:1:0: clk-src rco-restore step  1/11: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[  259.635089] wcd9320 217:a0:1:0: clk-src rco-restore step  2/11: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[  259.662692] wcd9320 217:a0:1:0: clk-src rco-restore step  3/11: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[  259.692758] wcd9320 217:a0:1:0: clk-src rco-restore step  4/11: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[  259.730244] wcd9320 217:a0:1:0: clk-src rco-restore step  5/11: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[  259.758260] wcd9320 217:a0:1:0: clk-src rco-restore step  6/11: reg 0x108 (VE 0x0908) old=00 mask=08 want=08 -> read=08  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[  259.791443] wcd9320 217:a0:1:0: clk-src rco-restore step  7/11: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[  259.821696] wcd9320 217:a0:1:0: clk-src rco-restore step  8/11: reg 0x108 (VE 0x0908) old=08 mask=01 want=01 -> read=09  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[  259.850195] wcd9320 217:a0:1:0: clk-src rco-restore step  9/11: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[  259.872712] wcd9320 217:a0:1:0: clk-src rco-restore step 10/11: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[  259.902819] wcd9320 217:a0:1:0: clk-src rco-restore step 11/11: reg 0x311 (VE 0x0b11) old=01 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[  259.929303] wcd9320 217:a0:1:0: clk-src rco-restore: all 11 steps applied cleanly
+[  259.939271] wcd9320 217:a0:1:0: clk-src: positive control 0x2b4 CDC_RX1_B5_CTL = 78 (want 78) after the restore to RCO
+[  259.959275] wcd9320 217:a0:1:0: clk-src: positive control 0x370 COMP1_B1_CTL   = 30 (want 30) after the restore to RCO
+[  259.971752] wcd9320 217:a0:1:0: clk-src: positive control 0x373 COMP1_B4_CTL   = 37 (want 37) after the restore to RCO
+[  259.976853] wcd9320 217:a0:1:0: clk-src: RESTORED to RCO, CDC block RESPONDING
+[  260.004606] wcd9320 217:a0:1:0: mclk: put, users 1 -> 0, codec back on RCO, vote released
+[  260.021802] wcd9320 217:a0:1:0: dapm: mclk down, held 00

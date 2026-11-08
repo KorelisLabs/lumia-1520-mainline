@@ -410,6 +410,9 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" held)" "$DAPM_HELD_NONE"
 		check "s$c PA off after" "$(pa_masked "$(rv "$_f" pa_0x1ab)")" "00"
 		check "s$c pin OFF after" "$_pin" "0"
+		# r184: this increment was missing on the first full run, and the
+		# report wrote stream 1's checks to /var/log until it was killed.
+		c=$((c + 1))
 	done
 
 	say ""

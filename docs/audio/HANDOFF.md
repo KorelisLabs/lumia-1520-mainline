@@ -1031,6 +1031,36 @@ re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
   The tag does not claim a scope measurement, HPHR as an output, or MCLK
   bring-up inside the driver.
 
+**r184 `dapm-hphl-rc1`: PLAIN PLAYBACK MAKES SOUND THROUGH DAPM (2026-11-08,
+[wcd9320-dapm-hphl-mapping.md](wcd9320-dapm-hphl-mapping.md) sections 4a
+and 4b).** This is the current build. Install the codec `.ko` together with
+the card `snd-soc-lumia1520-q6.ko` (`q6-card-rc4`).
+
+- **How it works.** The codec has eight SND_SOC_NOPM widgets. Five ordered
+  supplies call the proven C3a functions: MCLK, prep, prereq, RX1, DAC. The
+  HPHL PGA calls the PA path.
+- **The gate.** The card adds a "Headphones Switch" pin, which is off at
+  boot. With it off, nothing on the codec powers.
+- **To play:**
+  ```
+  alsa-setctl --set "SLIMBUS_0_RX Audio Mixer MultiMedia1" 1
+  alsa-setctl --set "Headphones Switch" 1
+  ```
+  Then play. The gain is whatever `hphl_pa_gain` holds: 14 (minimum) at
+  boot, and 00 for listening.
+- **Results on a fresh boot:**
+  - digital gate (pin off) 31/0;
+  - mclk-own 90/0, vm 57/0, zdet 34/0 (14.4 mV);
+  - DAPM listen run: two streams, heard, analyser PASS 2/2 (+28 dB at
+    1000.0 Hz), end-of-run checks 41/0.
+- **Timing.** The path is up 62 ms after prepare, and the SLIMbus channel 4 ms
+  after the trigger. One stream costs 4 forced writes, the same as a C3a cycle.
+- **Not in r184:** HPHR, a volume control, and jack detection driving the pin.
+- **Runners:** `wcd9320-dapm-evidence.sh` is the digital gate.
+  `wcd9320-dapm-listen.sh` is the acoustic gate; its approval gates are
+  `dapm-c<n>`. `wcd9320-dapm-postcheck.sh` holds the end-of-run checks. The
+  C3a runner now refuses while the pin is on.
+
 **r181 STILL MAKES SOUND (2026-11-07, zdet map section 9c).** Fresh boot,
 listening run first: PASS 2/2, heard, -63/-66 dBFS. Same boot after the vm
 and zdet gates: heard, 1 kHz +34 dB at -68 dBFS (analyser REJECT on a
@@ -1043,7 +1073,7 @@ dBFS), not to the driver.
 - C3a heard on both cycles through the driver-owned MCLK.
 - RPM leaves the ÷2 factor alone across vote transitions, though it does
   toggle `EN_CTL`.
-- **The current build is r183 `mclkpin-rc1`:** r182 plus gpio15 at HIGH
+- **r183 `mclkpin-rc1`** (superseded by r184): r182 plus gpio15 at HIGH
   strength with no pull, as downstream and the Lumia's ACPI configure it.
   It passes mclk-own 90/0 and C3a 2/2 (map section 7b).
 

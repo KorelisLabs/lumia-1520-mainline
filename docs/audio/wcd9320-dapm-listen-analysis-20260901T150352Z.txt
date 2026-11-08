@@ -1,0 +1,36 @@
+c3a-capture.py analyse, recording c3a-dapm-r184b.wav (sha256 6501C044591071410DB5A7A9D8355A30AD79AA3DFFDB0724AF5B2B3A5A3CA11C, archived in ~/c3a-evidence)
+r184 dapm-hphl-rc1 + q6-card-rc4, fresh boot. DAPM listen run 20260901T150352Z (phone clock): the Headphones pin on, plain pcm-tone,
+DAPM powering MCLK, prep, prereq, RX1, DAC, PA; no research attribute powered anything. Gain field 00. Operator heard stream 1; analyser PASS 2/2.
+
+file                : c3a-dapm-r184b.wav (659.9 s at 48000 Hz)
+floor at 1 kHz      : -87.4 dBFS (median over the recording)
+events found        : 9
+  [0] t=  86.630 s  REJECT  contrast  10.1 dB
+       tone  -68.6  silence  -82.9  tone  -72.8  silence  -83.3  dBFS
+       peak 1067.35 / 989.66 Hz   narrowband -12.4 / -5.7 dB   -- broadband (narrow -12.4 dB); frequency 1067.35,989.66
+  [1] t=  88.260 s  REJECT  contrast  14.3 dB
+       tone  -66.5  silence  -84.4  tone  -63.1  silence  -80.8  dBFS
+       peak 1011.19 / 1063.01 Hz   narrowband -9.4 / -3.8 dB   -- broadband (narrow -9.4 dB); frequency 1011.19,1063.01
+  [2] t=  92.340 s  REJECT  contrast  10.4 dB
+       tone  -76.6  silence  -88.0  tone  -77.7  silence  -90.5  dBFS
+       peak 965.10 / 910.21 Hz   narrowband -6.6 / 0.5 dB   -- broadband (narrow -6.6 dB); frequency 965.10,910.21
+  [3] t= 118.090 s  PASS    contrast  27.7 dB
+       tone  -60.6  silence  -88.5  tone  -60.8  silence  -91.3  dBFS
+       peak 1000.00 / 999.94 Hz   narrowband 24.8 / 26.6 dB
+  [4] t= 170.910 s  PASS    contrast  28.9 dB
+       tone  -58.7  silence  -87.5  tone  -58.6  silence  -90.3  dBFS
+       peak 999.93 / 999.97 Hz   narrowband 22.7 / 28.5 dB
+  [5] t= 445.200 s  REJECT  contrast  14.7 dB
+       tone  -62.2  silence  -79.5  tone  -64.7  silence  -85.2  dBFS
+       peak 1066.60 / 978.84 Hz   narrowband -2.3 / 2.1 dB   -- broadband (narrow -2.3 dB); frequency 1066.60,978.84
+  [6] t= 448.060 s  REJECT  contrast  11.7 dB
+       tone  -61.7  silence  -73.4  tone  -61.0  silence  -84.7  dBFS
+       peak 993.87 / 992.34 Hz   narrowband 3.2 / -1.8 dB   -- broadband (narrow -1.8 dB); frequency 993.87,992.34
+  [7] t= 450.560 s  REJECT  contrast  12.0 dB
+       tone  -73.0  silence  -85.1  tone  -70.3  silence  -85.8  dBFS
+       peak 923.79 / 997.98 Hz   narrowband -5.7 / -4.3 dB   -- broadband (narrow -5.7 dB); frequency 923.79,997.98
+  [8] t= 455.330 s  REJECT  contrast  11.3 dB
+       tone  -69.3  silence  -84.8  tone  -63.8  silence  -80.6  dBFS
+       peak 900.84 / 999.68 Hz   narrowband -6.9 / -2.5 dB   -- broadband (narrow -6.9 dB); frequency 900.84,999.68
+events_pass=2 events_weak=0 events_reject=7
+VERDICT: PASS (expected 2 tracking event(s), found 2)

@@ -1,0 +1,37 @@
+
+=== what this run can and cannot establish ===
+That plain playback, with the Headphones pin on, powers the proven
+HPHL path through DAPM in the mapped order and takes it down when the
+stream stops. WHETHER IT WAS HEARD is decided by tools/c3a-capture.py on
+the PC recording and by the operator, not by this file.
+
+=== the run ===
+aborted     : 0 
+streams run : 2 of 2
+stimulus    : -40 dBFS, 1 kHz, tone/silence/tone/silence
+gain field  : 00
+stream 1: held pin-on 00 live 3f (~100 ms up) after 00 (~0 ms down) | hph 1b3=08 1b9=04
+stream 2: held pin-on 00 live 3f (~400 ms up) after 00 (~0 ms down) | hph 1b3=08 1b9=04
+
+=== checks ===
+  PASS  module version                   dapm-hphl-rc1
+  PASS  card module version              q6-card-rc4
+  PASS  the run was not aborted          0
+  PASS  streams completed                2
+
+-- stream 1 --
+  PASS  s1 pin alone powers nothing      00
+  PASS  s1 DAPM holds the whole path live 3f
+  PASS  s1 PA live masked                20
+  PASS  s1 HPHR stayed clear             00
+  PASS  s1 one MCLK user live            1
+  PASS  s1 codec on MCLK live            1
+  PASS  s1 0x1b3 clocked live            08
+  PASS  s1 tone played                   0
+  PASS  s1 DAPM holds nothing after      00
+  PASS  s1 PA off after                  00
+  PASS  s1 pin OFF after                 0
+
+
+[TRUNCATED: the report looped on stream 1 (missing increment, fixed after this run) and was killed after 33346 lines.
+ The end-of-run checks are in wcd9320-dapm-listen-postcheck-20260901T150352Z.txt, run against the unchanged state.]
