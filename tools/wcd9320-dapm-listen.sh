@@ -208,7 +208,33 @@ stream() {	# stream <n>
 	jrn "tone: 1 kHz, $DBFS dBFS, 250 ms tone/silence/tone/silence, one stream, DAPM-powered"
 	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >>"$JOURNAL" 2>&1 &
 	TPID=$!
-	sleep 0.3
+	#
+	# WAIT FOR THE PATH, DON'T ASSUME IT. DAPM powers the whole chain inside
+	# PCM prepare -- measured 1.2 s on the first r184 stream, because every
+	# write is chip-verified -- and the SLIMbus channel only comes up in the
+	# trigger after that. The first run sampled at a fixed 0.3 s like C3a (whose
+	# path was up before the tone), saw held=03, and aborted a stream that was
+	# still coming up. Its chip reads also landed on top of the channel setup.
+	#
+	# So: poll only cheap, lock-light state (dapm_state, slim_stream_state, no
+	# chip reads) until DAPM holds all six stages AND the channel is up, then
+	# take the chip-read sample inside the tone. Not there within the limit is
+	# an abort, as before.
+	#
+	_w=0; _l=""; _up=0
+	while [ "$_w" -lt "${LIVE_WAIT_DS:-50}" ]; do
+		_l=$(cat "$PGD/dapm_state" 2>/dev/null)
+		_up=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
+		[ "$(dapm_held_is "$_l" "$DAPM_HELD_ALL")" = "OK" ] && [ "$_up" = "1" ] && break
+		kill -0 "$TPID" 2>/dev/null || break
+		[ -e "$FLAG" ] && break
+		sleep 0.1
+		_w=$((_w + 1))
+	done
+	eval "S${_n}_UP_MS=$((_w * 100))"
+	jrn "path wait: ~$((_w * 100)) ms, held=$(dapm_kv "$_l" held) slim_up=$_up"
+	flag_ok "path-wait-c$_n" || return 1
+	sleep 0.1
 	_l=$(cat "$PGD/dapm_state" 2>/dev/null)
 	_p=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 	_hs=$(hph_status)
@@ -357,7 +383,8 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	c=1
 	while [ "$c" -lt "$n" ]; do
 		eval "_pi=\${S${c}_PINON:-}; _l=\${S${c}_LIVE:-}; _a=\${S${c}_AFTER:-}; _ms=\${S${c}_DOWN_MS:-?}; _hs=\${S${c}_HS:-?}"
-		say "stream $c: held pin-on $(dapm_kv "$_pi" held) live $(dapm_kv "$_l" held) after $(dapm_kv "$_a" held) (~$_ms ms down) | hph $_hs"
+		eval "_ums=\${S${c}_UP_MS:-?}"
+		say "stream $c: held pin-on $(dapm_kv "$_pi" held) live $(dapm_kv "$_l" held) (~$_ums ms up) after $(dapm_kv "$_a" held) (~$_ms ms down) | hph $_hs"
 		c=$((c + 1))
 	done
 

@@ -1,0 +1,126 @@
+WCD9320 r179 zdet: the HPH channel's scale
+mode              : wcd9320-hphl-zdet
+stamp             : 20260901T144342Z
+module            : dapm-hphl-rc1 (expect dapm-hphl-rc1, manifest)
+control function  : 217:a0:1:0
+design            : docs/audio/wcd9320-hph-zdet-mapping.md section 7
+stimulus          : downstream static PA on BOTH channels, ramp to ~50 mV for ~36 ms, inside hphl_zdet only
+
+=== 1. refusals ===
+  PASS  zdet on RCO is refused           yes
+  PASS  nothing ran on RCO               0
+  PASS  the write sets did not move on refusal same
+  PASS  C3a prep applied for the test    0
+  PASS  zdet with the prep up is refused yes
+  PASS  nothing ran with the prep up     0
+  PASS  both refusals counted            2
+
+=== the clock ===
+  PASS  divider factor (board state)     2
+  PASS  gpio15 on divclk (board state)   2
+  PASS  switch to MCLK                   0
+  PASS  on_mclk                          1
+  PASS  cdc_alive                        1
+
+=== 2. repeatability, 5 measurements ===
+  run rc valid  L0     L1     L2     R0     R1     R2     L0'    L2'    Zl_mohm  Zr_mohm  uV/cnt16 uV/cnt4
+  1   0  1     -6240  5088   -5424  -6298  5000   -5542  -1562  -1358  51399    55332    61       245
+  PASS  run 1 rc                         0
+  PASS  run 1 valid                      1
+  PASS  run 1 restore mismatches         0
+  2   0  1     -6240  5092   -5426  -6298  5000   -5548  -1562  -1356  51544    55776    61       242
+  PASS  run 2 rc                         0
+  PASS  run 2 valid                      1
+  PASS  run 2 restore mismatches         0
+  3   0  1     -6240  5094   -5424  -6296  4998   -5542  -1562  -1356  51425    55458    61       242
+  PASS  run 3 rc                         0
+  PASS  run 3 valid                      1
+  PASS  run 3 restore mismatches         0
+  4   0  1     -6240  5094   -5426  -6300  5000   -5542  -1562  -1358  51551    55195    61       245
+  PASS  run 4 rc                         0
+  PASS  run 4 valid                      1
+  PASS  run 4 restore mismatches         0
+  5   0  1     -6240  5092   -5422  -6296  4996   -5540  -1560  -1356  51292    55302    61       245
+  PASS  run 5 rc                         0
+  PASS  run 5 valid                      1
+  PASS  run 5 restore mismatches         0
+  ....  Zl mean / spread (mohm)          51442 / 259
+  ....  Zr mean / spread (mohm)          55412 / 581
+  ....  scale navg16 mean / spread       61 / 0 uV per count
+  ....  scale navg4 mean / spread        243 / 3 uV per count
+
+=== 3. the cross-check: a plausible headset ===
+  PASS  Zl and Zr within 16000..64000 mohm Zl 51442 Zr 55412 mohm
+  PASS  Zl and Zr within 100 permille of each other differ by 74 permille
+
+=== 4. sum or mean ===
+  ....  (L2-L0) navg16 / (L2'-L0') navg4 3982 permille (~4000 if STA sums, ~1000 if it averages)
+
+=== 5. restore ===
+  PASS  both write sets identical across the five runs same
+  PASS  back on RCO, identical to the start same
+  PASS  0x1ab at the end                 80
+  PASS  no forced write by this run      0
+
+=== 6. THE ANSWER: option 1's PA-on shift in millivolts ===
+  ....  option 1 shift                   59.6 counts (navg 4)
+  ....  scale (navg 4)                   243 uV per count
+  ....  PA-on DC offset                  14.4 mV   (contract: <= 50 mV)
+  ....  cross-check                      PASS
+CONTRACT: |Von - Voff| = 14.4 mV <= 50 mV -- WITHIN, qualified as on-chip
+
+=== safety ===
+  PASS  PA masked 00 at every sample outside the zdet 0
+PA samples: start:00 mclk:00 prep-refusal:00 z1:00 z2:00 z3:00 z4:00 z5:00 end:00
+
+-- forced journal --
+forced_n=4 ring=16
+f0_reg=314 f0_mask=ff f0_val=03 f0_hw=00 f0_dir=set
+f1_reg=30d f1_mask=02 f1_val=02 f1_hw=00 f1_dir=set
+
+-- dmesg, zdet lines --
+[  178.813059] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.012819] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.207756] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.401999] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.598232] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.792826] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  179.987652] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  180.185060] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  180.378919] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  180.573680] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  180.768746] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  180.963968] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  181.157529] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  181.353401] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  181.551073] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  181.745798] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  181.942774] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  182.138276] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  182.332060] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  182.526002] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  182.724028] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  182.921684] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  183.110380] WARNING: CPU: 0 PID: 1233 at drivers/spmi/spmi-pmic-arb.c:321 pmic_arb_wait_for_done+0x194/0x1c4
+[  215.472039] wcd9320 217:a0:1:0: zdet: refusing -- the codec is not on MCLK
+[  219.075523] wcd9320 217:a0:1:0: zdet: refusing -- the analog path is not idle (pa 0 prep 1 dac 0 rx1 0 comp1 0 clsh 0 prereq 0)
+[  222.161215] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[  222.275286] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[  222.328517] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5088 -5424 R -6298 5000 -5542 L0'/L2' -1562 -1358, 0 restore mismatch(es), rc 0
+[  222.433890] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[  222.563304] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[  222.613783] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5092 -5426 R -6298 5000 -5548 L0'/L2' -1562 -1356, 0 restore mismatch(es), rc 0
+[  222.722475] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[  222.845581] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[  222.899305] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5094 -5424 R -6296 4998 -5542 L0'/L2' -1562 -1356, 0 restore mismatch(es), rc 0
+[  223.004454] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[  223.129051] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[  223.186394] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5094 -5426 R -6300 5000 -5542 L0'/L2' -1562 -1358, 0 restore mismatch(es), rc 0
+[  223.292307] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 30 -> chip b0  [zdet static PA on, BOTH channels]
+[  223.410054] wcd9320 217:a0:1:0: c2b: 0x1ab mask 30 want 00 -> chip 80  [zdet static PA off, both channels]
+[  223.466328] wcd9320 217:a0:1:0: zdet: valid 1 L -6240 5092 -5422 R -6296 4996 -5540 L0'/L2' -1560 -1356, 0 restore mismatch(es), rc 0
+
+=== verdict ===
+mode   : wcd9320-hphl-zdet
+checks : 34 passed, 0 failed
+VERDICT: PASS (wcd9320-hphl-zdet)

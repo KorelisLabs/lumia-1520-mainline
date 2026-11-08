@@ -240,6 +240,40 @@ Three deviations from section 3, each found while building:
 **The emergency path** is `tools/wcd9320-dapm-teardown.sh`: pin off, kill the
 player, then the C3 abort unconditionally.
 
+## 4b. Hardware, r184 fresh boot (phone clock 2026-09-01)
+
+**Digital gate: PASS 31/0** (`wcd9320-dapm-20260901T144127Z.txt`). The pin was
+off throughout. During the stream the RX1 DAI's endpoint reached every widget
+on the path (AIF1 PB, HPHL, HEADPHONE and Headphones each showed `in 1`), and
+`out` stayed 0 everywhere. Nothing powered, no DAPM event ran, and no forced
+write was issued.
+
+**Regressions on the same boot:** mclk-own 90/0, vm 57/0, zdet 34/0
+(|Von - Voff| 14.4 mV).
+
+**First acoustic stream: aborted by the runner, not by the driver**
+(`wcd9320-dapm-listen-aborted-20260901T145843Z*`).
+
+- **DAPM did its job.** All six stages powered in the mapped order inside PCM
+  prepare and took 1.2 s. The chip-verified writes are slow: MCLK at 1166.28,
+  PA `a0` at 1167.47. Everything came down in exact reverse.
+- **The runner sampled too early.** It sampled at a fixed 0.3 s after launching
+  the tone, copied from C3a, where the path was already up before the tone. It
+  saw `held=03`, aborted, and killed the tone, which is the early trigger STOP.
+- **The stream start was slow.** Trigger START to SLIMbus UP took 630 ms, with
+  RCU expedited stalls. The runner's chip reads were running at the same time.
+  The data-plane runs measured about 2 ms.
+- **The emergency path worked:**
+  1. the pin went off and read back 0;
+  2. the C3 abort ran and the PA was chip-verified `80`;
+  3. the fail-safe was disarmed;
+  4. `cache_check` stayed clean.
+- **One extra forced write.** The abort's unconditional 0x30d inverse added
+  it, so the boot used 9 of 16.
+- **The fix, in the runner only:** poll `dapm_state` and `slim_stream_state`
+  (no chip reads) until `held=3f` and the channel is up, for up to 5 s, then
+  take the chip-read sample inside the tone.
+
 ## 5. Order of work
 
 Fences first, then driver and card, then selftests, then the gates.

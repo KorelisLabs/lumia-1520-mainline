@@ -1,0 +1,74 @@
+20260901T145843Z ================ DAPM listen run 20260901T145843Z ================
+20260901T145843Z stimulus -40 dBFS, 2 stream(s), gain field 00
+20260901T145843Z module dapm-hphl-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260901T145843Z baseline idle: dapm held 00, pin off, RCO, PA off
+20260901T145843Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260901T145859Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T145859Z gain field 00 set and read back
+20260901T145859Z forced-write journal starts this run at 4 of 16
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260901T145900Z abort watcher armed, pid 6013
+20260901T145900Z front-end mixer enabled
+20260901T145900Z === stream 1: begin ===
+20260901T145900Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T145934Z GATE dapm-c1: APPROVED (chat)
+20260901T145935Z fail-safe armed: 30 s, phase stream-c1
+20260901T145935Z pin ON; with no stream: held=00 ups=0 downs=0 refusals=0 failures=0 mclk_users=0 pa_on=0
+20260901T145935Z tone: 1 kHz, -40 dBFS, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260901T145937Z live: held=03 ups=2 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=0 | 0x1ab=80 ocp=0 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+20260901T145938Z THE PATH IS NOT IN ITS ONE LEGAL LIVE STATE: held=03 pa=80
+20260901T145938Z ABORT reason=live-state
+20260901T145938Z dapm-teardown: invoked, reason=live-state
+20260901T145938Z   20260901T145938Z dapm-teardown: invoked, reason=live-state
+20260901T145938Z dapm-teardown: pin OFF (Headphones Switch), read back 0
+20260901T145939Z   20260901T145938Z dapm-teardown: pin OFF (Headphones Switch), read back 0
+20260901T145938Z dapm-teardown: no pcm-tone running
+20260901T145940Z   20260901T145938Z dapm-teardown: no pcm-tone running
+20260901T145940Z teardown: invoked, reason=dapm-live-state
+20260901T145940Z teardown: skipping /sys/bus/slimbus/devices/217:a0:0:0 -- the interface function, not the codec
+20260901T145940Z teardown: codec at /sys/bus/slimbus/devices/217:a0:1:0
+20260901T145940Z teardown: abort accepted by the driver
+20260901T145940Z teardown: state: pa_on=0 prep_on=0 enables=1 disables=1 aborts=1
+20260901T145940Z teardown: state: settle_us=13000 guard_tripped=0 ocp_seen=0 gain_field=00
+20260901T145940Z teardown: state: pa_0x1ab=80 lgain_0x1ae=00 dac_0x1b1=00
+20260901T145940Z teardown: state: wgctl_0x1ac=da wgtime_0x1ad=15 wgocp_0x1a9=2a chop_0x1a5=a4
+20260901T145940Z teardown: state: ocpctl_0x1aa=69 clsh_0x320=a6
+20260901T145940Z teardown: state: postpa buck3_0x183=ce buck5_0x185=00 ncps_0x194=08
+20260901T145940Z teardown: PA_AFTER_TEARDOWN 0x1ab=80 masked=00 expected=00
+20260901T145940Z teardown: complete
+20260901T145938Z dapm-teardown: C3 abort issued
+20260901T145940Z   20260901T145938Z dapm-teardown: C3 abort issued
+20260901T145940Z PA chip-verified off after the abort (0x1ab=80); fail-safe disarmed
+20260901T145941Z ABORT complete
+20260901T145942Z evidence written to /var/log/wcd9320-dapm-listen-20260901T145843Z.txt
