@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 08:25:32.213912381 -0500
-@@ -0,0 +1,11024 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 11:01:33.442270967 -0500
+@@ -0,0 +1,12108 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -411,6 +411,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#include <sound/pcm.h>
 +#include <sound/pcm_params.h>	/* params_format(); params_rate() alone is not enough */
 +#include <sound/soc.h>
++#include <sound/jack.h>	/* r185: SND_JACK_HEADPHONE */
++#include <sound/tlv.h>	/* r185: the digital volume scale */
 +
 +/*
 + * RESEARCH ONLY. Leaves the codec powered and out of reset when this
@@ -886,7 +888,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * afterwards and is EVIDENCE ONLY -- it documents the phenomenon and never
 + * asserts that the register reached the value.
 + */
-+#define WCD9320_FORCED_LOG	16
++/*
++ * r185: 16 -> 64. A recording limit, not a hardware one: it was binding on
++ * every boot, and one stereo stream issues 6 forced writes.
++ */
++#define WCD9320_FORCED_LOG	64
 +struct wcd9320_forced_rec {
 +	u16 reg;
 +	u8 mask;
@@ -1804,7 +1810,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * declared here and its members are sized by them. Their meaning is documented
 + * at the C3a register block, not here, so there is one explanation and not two.
 + */
-+#define WCD9320_PA_PREP_N		6	/* the C3a prep writes */
++#define WCD9320_PA_PREP_N		8	/* the C3a prep writes; r185 adds 0x1b4 */
 +#define WCD9320_PA_IRQ_SAMPLES		16	/* INTR_STATUS2 stage samples */
 +
 +struct wcd9320 {
@@ -1851,6 +1857,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* insert-detect research hook; every write it makes is logged */
 +	bool mbhc_detect_on;
++	/* r185: jack detection drives the card's Headphones pin */
++	struct snd_soc_jack *jack;
++	bool jack_on;			/* armed: 0x14a programmed, JACK_SWITCH requested */
++	bool jack_pending;		/* set_jack arrived before core_ready */
++	bool jack_inserted;
++	int jack_virq;
++	u8 jack_status;			/* the last 0x14b read */
++	unsigned int jack_irqs, jack_reports;
 +	bool mbhc_hphl_10k;		/* the optional second write */
 +	const char *mbhc_detect_variant;
 +	struct wcd9320_reg_write mbhc_writes[WCD9320_MBHC_WRITE_LOG_MAX];
@@ -1912,7 +1926,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* ---- RX slave-port programming ---- */
 +	bool rx_port_on;		/* this driver has a port enabled */
-+	unsigned int rx_port_num;	/* which one */
++	unsigned int rx_port_num;	/* which one (the first, for a set) */
++	unsigned int rx_port_n;		/* r185: ports programmed as one set, 0 = by hand */
 +	unsigned int rx_port_writes;	/* register writes made */
 +	/*
 +	 * Who last entered the port path. Recorded by the CALLER immediately
@@ -1930,7 +1945,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct mutex slim_stream_lock;
 +	struct slim_stream_runtime *sruntime;
 +	struct slim_stream_config sconfig;
-+	unsigned int slim_chs[1];	/* cfg->chs storage; one channel */
++	unsigned int slim_chs[2];	/* cfg->chs storage; r185: up to two */
 +	bool slim_stream_up;
 +	unsigned int slim_stream_port;
 +	unsigned int slim_stream_ch;
@@ -1954,6 +1969,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int rx1_enables;
 +	unsigned int rx1_disables;
 +	unsigned int rx1_writes;
++	/* r185: the RX2 chain, the same sequence through the same function */
++	bool rx2_digital_on;
++	unsigned int rx2_enables;
++	unsigned int rx2_disables;
++	unsigned int rx2_writes;
 +	bool comp1_on;
 +	unsigned int comp1_enables;
 +	unsigned int comp1_disables;
@@ -1969,6 +1989,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool hphl_dac_on;
 +	unsigned int hphl_dac_enables;
 +	unsigned int hphl_dac_disables;
++	/* r185: HPHR joins an HPHL path that is already up, and leaves first */
++	bool hphr_dac_on;
++	bool hphr_bias_held;	/* this path holds an RX bias reference */
++	bool clsh_r_on;		/* class-H state includes HPHR */
++	unsigned int hphr_dac_enables;
++	unsigned int hphr_dac_disables;
 +	/*
 +	 * One counter for every write this branch verifies against the chip --
 +	 * the compander's included, since C2b owns that sequence now.
@@ -2094,6 +2120,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool pa_prep_on;		/* gain and pop/click established */
 +	unsigned int hphl_pa_enables;
 +	unsigned int hphl_pa_disables;
++	bool hphr_pa_on;		/* r185: only ever while hphl_pa_on */
++	unsigned int hphr_pa_enables;
++	unsigned int hphr_pa_disables;
 +	unsigned int c3_aborts;
 +	unsigned int pa_settle_us;	/* 13000 comp-off, 3000 comp-on */
 +	/*
@@ -2119,6 +2148,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * this struct is zeroed at allocation and zero here means MAXIMUM.
 +	 */
 +	u8 pa_gain_field;
++	u8 pa_gain_field_r;		/* r185: HPHR, 0x1b4, the same inverted field */
++	bool vm_right;			/* r185: the voltmeter reads HPHR (mux 0xa0) */
 +};
 +
 +/*
@@ -2408,6 +2439,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * needs no ordering guarantees of its own.
 + */
 +static int wcd9320_core_init(struct wcd9320 *wcd);
++static void wcd9320_jack_resume(struct wcd9320 *wcd);
 +
 +/*
 + * Idempotent, and shared by both routes in: a genuine device_status(UP) after
@@ -2453,6 +2485,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 * every milestone before this one.
 +		 */
 +		wcd9320_core_init(wcd);
++		/* r185: a jack handed over before the core was ready */
++		wcd9320_jack_resume(wcd);
 +	}
 +
 +	return ret;
@@ -3654,6 +3688,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	mutex_lock(&wcd->wake_lock);
 +
++	/* r185: jack detection owns JACK_SWITCH and 0x14a while it is on */
++	if (wcd->jack_on && !sysfs_streq(buf, "disarm")) {
++		dev_err(dev, "mbhc test: refused -- jack detection is on (echo off > jack_detect)\n");
++		ret = -EBUSY;
++		goto out;
++	}
++
 +	if (sysfs_streq(buf, "arm") || sysfs_streq(buf, "arm-switch")) {
 +		/*
 +		 * Which source is the jack, and why there are two options.
@@ -4126,7 +4167,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +static int wcd9320_insert_detect_set(struct wcd9320 *wcd, bool on, u8 base,
-+				     bool hphl_10k)
++				     bool hphl_10k, bool ins)
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	int ret;
@@ -4159,8 +4200,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +				    WCD9320_MBHC_DET_EN, 0);
 +	if (ret)
 +		return ret;
++	/*
++	 * r185: the polarity is an argument. wcd9xxx_insert_detect_setup(ins)
++	 * sets DET_INS to wait for an insertion and clears it to wait for a
++	 * removal; every research caller passes true, as before.
++	 */
 +	ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
-+				    0xff, base | WCD9320_MBHC_DET_INS);
++				    0xff, base | (ins ? WCD9320_MBHC_DET_INS : 0));
 +	if (ret)
 +		return ret;
 +	ret = wcd9320_logged_update(wcd, WCD9320_A_MBHC_INSERT_DETECT,
@@ -4242,17 +4288,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +
 +	mutex_lock(&wcd->wake_lock);
++	if (wcd->jack_on) {
++		mutex_unlock(&wcd->wake_lock);
++		dev_err(dev, "insert-detect: refused -- jack detection owns 0x14a (echo off > jack_detect)\n");
++		return -EBUSY;
++	}
 +	if (sysfs_streq(buf, "on"))
 +		ret = wcd9320_insert_detect_set(wcd, true,
-+						WCD9320_MBHC_DET_BASE, false);
++						WCD9320_MBHC_DET_BASE, false, true);
 +	else if (sysfs_streq(buf, "on-alt"))
 +		ret = wcd9320_insert_detect_set(wcd, true,
-+						WCD9320_MBHC_DET_BASE_ALT, false);
++						WCD9320_MBHC_DET_BASE_ALT, false, true);
 +	else if (sysfs_streq(buf, "on-hphl"))
 +		ret = wcd9320_insert_detect_set(wcd, true,
-+						WCD9320_MBHC_DET_BASE, true);
++						WCD9320_MBHC_DET_BASE, true, true);
 +	else if (sysfs_streq(buf, "off"))
-+		ret = wcd9320_insert_detect_set(wcd, false, 0, false);
++		ret = wcd9320_insert_detect_set(wcd, false, 0, false, false);
 +	else
 +		ret = -EINVAL;
 +	mutex_unlock(&wcd->wake_lock);
@@ -4542,25 +4593,29 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +static void __wcd9320_slim_config(struct wcd9320 *wcd, unsigned int port,
 +				  unsigned int ch, unsigned int rate,
-+				  unsigned int bps)
++				  unsigned int bps, unsigned int nch)
 +{
 +	struct device *dev = &wcd->sdev->dev;
++	unsigned int i;
 +
++	/* r185: one or two channels, consecutive ports and channel numbers */
++	nch = clamp(nch, 1U, (unsigned int)ARRAY_SIZE(wcd->slim_chs));
 +	wcd->slim_stream_port = port;
 +	wcd->slim_stream_ch = ch;
-+	wcd->slim_chs[0] = ch;
++	for (i = 0; i < nch; i++)
++		wcd->slim_chs[i] = ch + i;
 +
 +	memset(&wcd->sconfig, 0, sizeof(wcd->sconfig));
 +	wcd->sconfig.rate = rate;
 +	wcd->sconfig.bps = bps;
-+	wcd->sconfig.ch_count = 1;
++	wcd->sconfig.ch_count = nch;
 +	wcd->sconfig.chs = wcd->slim_chs;
-+	wcd->sconfig.port_mask = BIT(port);
++	wcd->sconfig.port_mask = GENMASK(port + nch - 1, port);
 +	wcd->sconfig.direction = SNDRV_PCM_STREAM_PLAYBACK;
 +
 +	dev_info(dev,
-+		 "slim-stream: config port %u (mask 0x%lx) channel %u rate %u bps %u\n",
-+		 port, wcd->sconfig.port_mask, ch, rate, bps);
++		 "slim-stream: config port %u (mask 0x%lx) channel %u x%u rate %u bps %u\n",
++		 port, wcd->sconfig.port_mask, ch, nch, rate, bps);
 +}
 +
 +static int __wcd9320_slim_start(struct wcd9320 *wcd)
@@ -4671,7 +4726,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		goto err_port;
 +
-+	__wcd9320_slim_config(wcd, port, ch, rate, bps);
++	__wcd9320_slim_config(wcd, port, ch, rate, bps, 1);
 +
 +	ret = __wcd9320_slim_start(wcd);
 +	if (ret)
@@ -5053,10 +5108,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_RX1_CHAIN_BIT		BIT(5)
 +
 +/*
++ * r185: the RX2 chain -- RX1's addresses moved by downstream's own rule
++ * (CONN_RX2 = CONN_RX1 + 3, RX2_B* = RX1_B* + 8, the interpolator one bit up).
++ * SLIM RX2 is slave port 17, channel 145.
++ */
++#define WCD9320_CDC_CONN_RX2_B1_CTL	0x383
++#define WCD9320_CDC_RX2_VOL_CTL_B2_CTL	0x2bf
++#define WCD9320_CDC_RX2_B6_CTL		0x2bd
++#define WCD9320_CDC_RX2_B5_CTL		0x2bc
++#define WCD9320_RX_MIX1_INP_RX2		0x06	/* rx_mix1_text index of "RX2" */
++#define WCD9320_RX2_INTERP_BIT		BIT(1)
++
++/*
 + * Compander 1. Declared here rather than beside its own code, because
 + * rx1_digital_state_show() reads these registers and sits earlier in the
 + * file than the compander functions -- which must stay where they are,
-+ * after wcd9320_rx1_write(), since they call it.
++ * after wcd9320_rx_write(), since they call it.
 + */
 +#define WCD9320_CDC_COMP1_B1_CTL		0x370
 +#define WCD9320_CDC_COMP1_B2_CTL		0x371
@@ -5073,9 +5140,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_COMP1_B2_DIV_5		0x50
 +#define WCD9320_COMP1_B3_RMS		0x01
 +
-+/* One verified write, logged the way the RX-port path already logs its own. */
-+static int wcd9320_rx1_write(struct wcd9320 *wcd, unsigned int reg, u8 mask,
-+			     u8 want, const char *what)
++/*
++ * One verified write, logged the way the RX-port path already logs its own.
++ * r185: per channel -- channel 0 logs "rx1-digital", exactly as before.
++ */
++static int wcd9320_rx_write(struct wcd9320 *wcd, unsigned int ch,
++			    unsigned int reg, u8 mask, u8 want,
++			    const char *what)
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	unsigned int got;
@@ -5083,42 +5154,82 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	ret = regmap_update_bits(wcd->regmap, reg, mask, want);
 +	if (ret) {
-+		dev_err(dev, "rx1-digital: 0x%03x write failed: %d\n", reg, ret);
++		dev_err(dev, "rx%u-digital: 0x%03x write failed: %d\n",
++			ch + 1, reg, ret);
 +		return ret;
 +	}
-+	wcd->rx1_writes++;
++	if (ch)
++		wcd->rx2_writes++;
++	else
++		wcd->rx1_writes++;
 +
 +	ret = regmap_read(wcd->regmap, reg, &got);
 +	if (ret) {
-+		dev_err(dev, "rx1-digital: 0x%03x readback failed: %d\n", reg, ret);
++		dev_err(dev, "rx%u-digital: 0x%03x readback failed: %d\n",
++			ch + 1, reg, ret);
 +		return ret;
 +	}
 +
-+	dev_info(dev, "rx1-digital: 0x%03x mask %02x want %02x -> read %02x  [%s]\n",
-+		 reg, mask, want, got & 0xff, what);
++	dev_info(dev, "rx%u-digital: 0x%03x mask %02x want %02x -> read %02x  [%s]\n",
++		 ch + 1, reg, mask, want, got & 0xff, what);
 +
 +	if ((got & mask) != (want & mask)) {
-+		dev_err(dev, "rx1-digital: 0x%03x did not take\n", reg);
++		dev_err(dev, "rx%u-digital: 0x%03x did not take\n", ch + 1, reg);
 +		return -EIO;
 +	}
 +
 +	return 0;
 +}
 +
-+static int wcd9320_rx1_digital_path(struct wcd9320 *wcd, bool enable)
++/*
++ * r185: the RX chains as a table. RX2 is RX1 with every address moved by
++ * downstream's rule, fed from SLIM RX2 (port 17), so the proven sequence runs
++ * once, from one function, for either channel. Channel 0 is RX1.
++ */
++struct wcd9320_rx_chain {
++	unsigned int conn;	/* RXn MIX1 INP1 select */
++	unsigned int vol;	/* RXn digital gain, latched after the interpolator */
++	unsigned int b6;	/* RXn CHAIN, bit 5 */
++	unsigned int b5;	/* RXn rate, asserted, never written */
++	u8 inp;			/* rx_mix1_text index of SLIM RXn */
++	u8 bit;			/* the interpolator's bit in 0x301 and 0x30f */
++};
++
++static const struct wcd9320_rx_chain wcd9320_rx_chains[2] = {
++	{ WCD9320_CDC_CONN_RX1_B1_CTL, WCD9320_CDC_RX1_VOL_CTL_B2_CTL,
++	  WCD9320_CDC_RX1_B6_CTL, WCD9320_CDC_RX1_B5_CTL,
++	  WCD9320_RX_MIX1_INP_RX1, WCD9320_RX1_INTERP_BIT },
++	{ WCD9320_CDC_CONN_RX2_B1_CTL, WCD9320_CDC_RX2_VOL_CTL_B2_CTL,
++	  WCD9320_CDC_RX2_B6_CTL, WCD9320_CDC_RX2_B5_CTL,
++	  WCD9320_RX_MIX1_INP_RX2, WCD9320_RX2_INTERP_BIT },
++};
++
++static int wcd9320_rx_digital_path(struct wcd9320 *wcd, unsigned int ch,
++				   bool enable)
 +{
 +	struct device *dev = &wcd->sdev->dev;
-+	unsigned int fs, gain;
++	const struct wcd9320_rx_chain *c;
++	unsigned int fs, gain, n = ch + 1;
++	unsigned int *ens, *dis, *writes;
++	bool *on;
 +	int ret;
 +
 +	if (wcd->is_ifd)
 +		return -ENODEV;
++	if (ch >= ARRAY_SIZE(wcd9320_rx_chains))
++		return -EINVAL;
++	c = &wcd9320_rx_chains[ch];
++	on = ch ? &wcd->rx2_digital_on : &wcd->rx1_digital_on;
++	ens = ch ? &wcd->rx2_enables : &wcd->rx1_enables;
++	dis = ch ? &wcd->rx2_disables : &wcd->rx1_disables;
++	writes = ch ? &wcd->rx2_writes : &wcd->rx1_writes;
++
 +	if (!wcd->online) {
-+		dev_err(dev, "rx1-digital: codec is not online\n");
++		dev_err(dev, "rx%u-digital: codec is not online\n", n);
 +		return -ENODEV;
 +	}
 +	if (!wcd->core_ready) {
-+		dev_err(dev, "rx1-digital: core is not ready\n");
++		dev_err(dev, "rx%u-digital: core is not ready\n", n);
 +		return -EAGAIN;
 +	}
 +
@@ -5129,41 +5240,39 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * The rate is asserted, not written: 48 kHz is the reset value and the
 +	 * only rate this path supports today.
 +	 */
-+	ret = regmap_read(wcd->regmap, WCD9320_CDC_RX1_B5_CTL, &fs);
++	ret = regmap_read(wcd->regmap, c->b5, &fs);
 +	if (ret)
 +		return ret;
 +	if ((fs & WCD9320_RX1_FS_MASK) != WCD9320_RX1_FS_48K) {
 +		dev_err(dev,
-+			"rx1-digital: 0x2b4 rate field is %02x, expected %02x (48 kHz)\n",
-+			fs & WCD9320_RX1_FS_MASK, WCD9320_RX1_FS_48K);
++			"rx%u-digital: 0x%03x rate field is %02x, expected %02x (48 kHz)\n",
++			n, c->b5, fs & WCD9320_RX1_FS_MASK, WCD9320_RX1_FS_48K);
 +		return -EINVAL;
 +	}
-+	dev_info(dev, "rx1-digital: 0x2b4 = %02x, rate field %02x = 48 kHz (asserted, not written)\n",
-+		 fs & 0xff, fs & WCD9320_RX1_FS_MASK);
++	dev_info(dev, "rx%u-digital: 0x%03x = %02x, rate field %02x = 48 kHz (asserted, not written)\n",
++		 n, c->b5, fs & 0xff, fs & WCD9320_RX1_FS_MASK);
 +
-+	/* 1. the input mux: RX1 MIX1 INP1 <- SLIM RX1 */
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CONN_RX1_B1_CTL,
-+				WCD9320_RX_MIX1_INP_MASK,
-+				WCD9320_RX_MIX1_INP_RX1, "MIX1 INP1 = RX1");
++	/* 1. the input mux: RXn MIX1 INP1 <- SLIM RXn */
++	ret = wcd9320_rx_write(wcd, ch, c->conn, WCD9320_RX_MIX1_INP_MASK,
++			       c->inp, ch ? "MIX1 INP1 = RX2" : "MIX1 INP1 = RX1");
 +	if (ret)
 +		goto unwind;
 +
 +	/* 2. the interpolator reset pulse, before enabling its clock */
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_RESET_CTL,
-+				WCD9320_RX1_INTERP_BIT, WCD9320_RX1_INTERP_BIT,
-+				"interpolator reset asserted");
++	ret = wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_RESET_CTL,
++			       c->bit, c->bit, "interpolator reset asserted");
 +	if (ret)
 +		goto unwind;
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_RESET_CTL,
-+				WCD9320_RX1_INTERP_BIT, 0,
-+				"interpolator reset released");
++	ret = wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_RESET_CTL,
++			       c->bit, 0, "interpolator reset released");
 +	if (ret)
 +		goto unwind;
 +
 +	/* 3. the interpolator clock */
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B1_CTL,
-+				WCD9320_RX1_INTERP_BIT, WCD9320_RX1_INTERP_BIT,
-+				"RX1 interpolator clock on");
++	ret = wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_B1_CTL,
++			       c->bit, c->bit,
++			       ch ? "RX2 interpolator clock on"
++				  : "RX1 interpolator clock on");
 +	if (ret)
 +		goto unwind;
 +
@@ -5173,46 +5282,53 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * what takes effect, not the value. Writing the value we just read
 +	 * keeps the gain unchanged and makes the latch explicit.
 +	 */
-+	ret = regmap_read(wcd->regmap, WCD9320_CDC_RX1_VOL_CTL_B2_CTL, &gain);
++	ret = regmap_read(wcd->regmap, c->vol, &gain);
 +	if (ret)
 +		goto unwind;
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_VOL_CTL_B2_CTL, 0xff,
-+				gain & 0xff, "digital gain latched");
++	ret = wcd9320_rx_write(wcd, ch, c->vol, 0xff, gain & 0xff,
++			       "digital gain latched");
 +	if (ret)
 +		goto unwind;
 +
 +	/* 5. the chain output */
-+	ret = wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_B6_CTL,
-+				WCD9320_RX1_CHAIN_BIT, WCD9320_RX1_CHAIN_BIT,
-+				"RX1 CHAIN enabled");
++	ret = wcd9320_rx_write(wcd, ch, c->b6, WCD9320_RX1_CHAIN_BIT,
++			       WCD9320_RX1_CHAIN_BIT,
++			       ch ? "RX2 CHAIN enabled" : "RX1 CHAIN enabled");
 +	if (ret)
 +		goto unwind;
 +
-+	wcd->rx1_digital_on = true;
-+	wcd->rx1_enables++;
-+	dev_info(dev, "rx1-digital: PATH ENABLED, %u write(s) total\n",
-+		 wcd->rx1_writes);
++	*on = true;
++	(*ens)++;
++	dev_info(dev, "rx%u-digital: PATH ENABLED, %u write(s) total\n",
++		 n, *writes);
 +	return 0;
 +
 +unwind:
-+	dev_err(dev, "rx1-digital: enable failed, unwinding\n");
++	dev_err(dev, "rx%u-digital: enable failed, unwinding\n", n);
 +teardown:
 +	/* Reverse order, and best-effort: every step is attempted. */
-+	wcd9320_rx1_write(wcd, WCD9320_CDC_RX1_B6_CTL,
-+			  WCD9320_RX1_CHAIN_BIT, 0, "RX1 CHAIN disabled");
-+	wcd9320_rx1_write(wcd, WCD9320_CDC_CLK_RX_B1_CTL,
-+			  WCD9320_RX1_INTERP_BIT, 0, "RX1 interpolator clock off");
-+	wcd9320_rx1_write(wcd, WCD9320_CDC_CONN_RX1_B1_CTL,
-+			  WCD9320_RX_MIX1_INP_MASK, 0, "MIX1 INP1 = ZERO");
++	wcd9320_rx_write(wcd, ch, c->b6, WCD9320_RX1_CHAIN_BIT, 0,
++			 ch ? "RX2 CHAIN disabled" : "RX1 CHAIN disabled");
++	wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_B1_CTL, c->bit, 0,
++			 ch ? "RX2 interpolator clock off"
++			    : "RX1 interpolator clock off");
++	wcd9320_rx_write(wcd, ch, c->conn, WCD9320_RX_MIX1_INP_MASK, 0,
++			 "MIX1 INP1 = ZERO");
 +
-+	if (wcd->rx1_digital_on) {
-+		wcd->rx1_digital_on = false;
-+		wcd->rx1_disables++;
-+		dev_info(dev, "rx1-digital: PATH DISABLED, %u write(s) total\n",
-+			 wcd->rx1_writes);
++	if (*on) {
++		*on = false;
++		(*dis)++;
++		dev_info(dev, "rx%u-digital: PATH DISABLED, %u write(s) total\n",
++			 n, *writes);
 +	}
 +
 +	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/* The RX1 entry point every caller before r185 used, unchanged in meaning. */
++static int wcd9320_rx1_digital_path(struct wcd9320 *wcd, bool enable)
++{
++	return wcd9320_rx_digital_path(wcd, 0, enable);
 +}
 +
 +/*
@@ -5300,7 +5416,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_A_RX_HPH_L_GAIN			0x1ae
 +#define WCD9320_A_RX_HPH_L_DAC_CTL		0x1b1	/* the HPHL DAC */
 +#define WCD9320_A_RX_HPH_R_GAIN			0x1b4
-+#define WCD9320_A_RX_HPH_R_DAC_CTL		0x1b7	/* r179 zdet static PA only */
++#define WCD9320_A_RX_HPH_R_DAC_CTL		0x1b7	/* the HPHR DAC (r185), and the zdet */
 +#define WCD9320_A_RX_EAR_EN			0x1bc	/* off limits */
 +#define WCD9320_A_RX_LINE_1_DAC_CTL		0x1cf	/* off limits */
 +#define WCD9320_A_SPKR_DRV_EN			0x1df	/* off limits */
@@ -5496,6 +5612,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_A_INTR_STATUS2			0x09a
 +#define WCD9320_INTR2_OCPL_FAULT		0x01
 +#define WCD9320_INTR2_HPHL_PA_STARTUP		0x08
++/* r185: the right PA's over-current, a hard abort like the left's */
++#define WCD9320_INTR2_OCPR_FAULT		0x02
++#define WCD9320_INTR2_OCP_ANY			(WCD9320_INTR2_OCPL_FAULT | \
++						 WCD9320_INTR2_OCPR_FAULT)
 +/* WCD9320_PA_IRQ_SAMPLES is 16 and is defined above struct wcd9320. */
 +
 +/*
@@ -5534,6 +5654,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_HPHL_DAC_SWITCH			0x40
 +
 +/*
++ * r185: the HPHR DAC, 0x1b7. The same two bits: taiko_hphr_dac_event() sets
++ * bit 6 itself (no switch kcontrol on a DAC_E), the widget owns bit 7.
++ */
++#define WCD9320_HPHR_DAC_PWR			0x80
++#define WCD9320_HPHR_DAC_SWITCH			0x40
++
++static int wcd9320_hphr_dac_path(struct wcd9320 *wcd, bool enable);
++static int wcd9320_hphr_pa_path(struct wcd9320 *wcd, bool enable);
++
++/*
 + * 0x3b0: bits[5:4] are the CLASS_H_DSM source enum
 + * (SOC_ENUM_SINGLE(0x3b0, 4, 3) over {ZERO, DSM_HPHL_RX1, DSM_SPKR_RX7}), and
 + * bits[3:2] are the ZOH mux the mux event DERIVES from them.
@@ -5547,6 +5677,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +#define WCD9320_RX_BIAS_ENABLE			0x80
 +#define WCD9320_RDAC_HPHL_CLK			0x02	/* 0x30d bit 1, HPHL */
++#define WCD9320_RDAC_HPHR_CLK			0x04	/* 0x30d bit 2, HPHR (r185) */
 +#define WCD9320_HPH_GAIN_SRC_BIT		0x20	/* 0 = compander, 1 = register */
 +
 +/*
@@ -5564,7 +5695,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +/*
 + * One write, verified against the CHIP rather than the cache.
 + *
-+ * WHY THIS EXISTS ALONGSIDE wcd9320_rx1_write()
++ * WHY THIS EXISTS ALONGSIDE wcd9320_rx_write()
 + *
 + * Every register this branch touches -- 0x1a2, 0x1ab, 0x1ae, 0x1b1, 0x1b4,
 + * 0x30d, 0x3b0 and the whole 0x370 block -- is NON-VOLATILE in our regmap, so
@@ -8307,6 +8438,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 */
 +	wcd9320_pa_guard(wcd, "before teardown");
 +
++	/* r185: the right channel joined this one, so it leaves first */
++	if (wcd->hphr_dac_on)
++		wcd9320_hphr_dac_path(wcd, false);
++
 +	/* 1. the DAC: power off, then its input switch */
 +	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_L_DAC_CTL,
 +			  WCD9320_HPHL_DAC_PWR, 0, "HPHL DAC power off");
@@ -8519,6 +8654,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	  "wavegen and OCP bias - compander OFF half" },
 +	{ WCD9320_A_RX_HPH_CHOP_CTL, WCD9320_CHOP_CTL_CHOPPER, 0,
 +	  "chopper off - compander OFF half" },
++	/*
++	 * r185: HPHR, 0x1b4 -- the same layout as 0x1ae, the same minimum.
++	 * Appended, so rows 0..5 keep the indices every gate already reads.
++	 */
++	{ WCD9320_A_RX_HPH_R_GAIN, WCD9320_HPHL_GAIN_SRC,
++	  WCD9320_HPHL_GAIN_SRC, "HPHR gain source = this register" },
++	{ WCD9320_A_RX_HPH_R_GAIN, WCD9320_HPHL_GAIN_FIELD,
++	  WCD9320_HPHL_GAIN_MIN,
++	  "HPHR gain field (inverted control) -- default minimum" },
 +};
 +
 +/*
@@ -8544,6 +8688,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->pa_ocp_seen = true;
 +		dev_err(dev,
 +			"c3a: HPH_PA_OCPL_FAULT asserted at %s -- INTR_STATUS2 = %02x\n",
++			when, st & 0xff);
++	} else if (st & WCD9320_INTR2_OCPR_FAULT) {
++		wcd->pa_ocp_seen = true;
++		dev_err(dev,
++			"c3a: HPH_PA_OCPR_FAULT asserted at %s -- INTR_STATUS2 = %02x\n",
 +			when, st & 0xff);
 +	} else if (st & WCD9320_INTR2_HPHL_PA_STARTUP) {
 +		dev_info(dev,
@@ -8620,6 +8769,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->pa_gain_field, WCD9320_HPHL_GAIN_MIN);
 +		return -EINVAL;
 +	}
++	if (wcd->pa_gain_field_r > WCD9320_HPHL_GAIN_MIN) {
++		dev_err(dev, "c3a: HPHR gain field %02x is outside 0x00..0x%02x -- refusing\n",
++			wcd->pa_gain_field_r, WCD9320_HPHL_GAIN_MIN);
++		return -EINVAL;
++	}
 +	ret = wcd9320_pa_guard(wcd, "before the C3a prep");
 +	if (ret)
 +		return ret;
@@ -8639,9 +8793,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	for (i = 0; i < WCD9320_PA_PREP_N; i++) {
 +		u8 val = wcd9320_pa_prep_set[i].val;
 +
-+		/* the gain FIELD row takes the per-run setting */
++		/* the gain FIELD rows take the per-run setting, per channel */
 +		if (wcd9320_pa_prep_set[i].mask == WCD9320_HPHL_GAIN_FIELD)
-+			val = wcd->pa_gain_field;
++			val = wcd9320_pa_prep_set[i].reg == WCD9320_A_RX_HPH_R_GAIN ?
++			      wcd->pa_gain_field_r : wcd->pa_gain_field;
 +		ret = wcd9320_c2b_write(wcd, wcd9320_pa_prep_set[i].reg,
 +					wcd9320_pa_prep_set[i].mask, val,
 +					wcd9320_pa_prep_set[i].what);
@@ -8657,6 +8812,37 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	dev_info(dev,
 +		 "c3a: prep applied - register gain at the mapped minimum and the compander-OFF pop/click pairing\n");
 +	return 0;
++}
++
++/*
++ * wcd9xxx_clsh_enable_post_pa(). Four masked writes, baseline relative,
++ * values transcribed from the downstream function rather than from
++ * whole-register predictions -- this range is fuse-loaded and a predicted
++ * whole register is the mistake C2a was caught by.
++ *
++ * r185: A HELPER, BECAUSE DOWNSTREAM RUNS IT FOR EVERY PA. clsh_fsm(POST_PA,
++ * ENABLE) calls it for HPHL and for HPHR alike, so both PA paths call this one
++ * copy. After HPHL it changes nothing, and c2b_write() still reads each one
++ * back from the chip.
++ */
++static int wcd9320_clsh_post_pa(struct wcd9320 *wcd)
++{
++	int ret;
++
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_5, 0x02, 0x00,
++				"POST_PA buck mode5 bit 1");
++	if (ret)
++		return ret;
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_NCP_STATIC, 0x20, 0x00,
++				"POST_PA ncp static bit 5");
++	if (ret)
++		return ret;
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x04, 0x04,
++				"POST_PA buck mode3 bit 2");
++	if (ret)
++		return ret;
++	return wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x08, 0x08,
++				 "POST_PA buck mode3 bit 3");
 +}
 +
 +/*
@@ -8762,7 +8948,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	if (wcd9320_pa_irq_sample(wcd, "before the PA enable")
-+	    & WCD9320_INTR2_OCPL_FAULT) {
++	    & WCD9320_INTR2_OCP_ANY) {
 +		dev_err(dev,
 +			"c3a: an OCP fault is already latched -- refusing to enable the PA\n");
 +		return -EIO;
@@ -8796,7 +8982,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	usleep_range(wcd->pa_settle_us, wcd->pa_settle_us + 1000);
 +
 +	if (wcd9320_pa_irq_sample(wcd, "after the PA settle")
-+	    & WCD9320_INTR2_OCPL_FAULT) {
++	    & WCD9320_INTR2_OCP_ANY) {
 +		dev_err(dev, "c3a: OCP fault after the PA settle -- unwinding\n");
 +		ret = -EIO;
 +		goto unwind;
@@ -8808,20 +8994,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * than from whole-register predictions -- this range is fuse-loaded
 +	 * and a predicted whole register is the mistake C2a was caught by.
 +	 */
-+	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_5, 0x02, 0x00,
-+				"POST_PA buck mode5 bit 1");
-+	if (ret)
-+		goto unwind;
-+	ret = wcd9320_c2b_write(wcd, WCD9320_A_NCP_STATIC, 0x20, 0x00,
-+				"POST_PA ncp static bit 5");
-+	if (ret)
-+		goto unwind;
-+	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x04, 0x04,
-+				"POST_PA buck mode3 bit 2");
-+	if (ret)
-+		goto unwind;
-+	ret = wcd9320_c2b_write(wcd, WCD9320_A_BUCK_MODE_3, 0x08, 0x08,
-+				"POST_PA buck mode3 bit 3");
++	ret = wcd9320_clsh_post_pa(wcd);
 +	if (ret)
 +		goto unwind;
 +
@@ -8852,6 +9025,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * THE BIT DROPS FIRST. There is no PRE_PMD, so the settle follows the
 +	 * write, and only then does class-H unwind.
 +	 */
++	/* r185: HPHR came up after HPHL, so it goes down before it */
++	if (wcd->hphr_pa_on)
++		wcd9320_hphr_pa_path(wcd, false);
++
 +	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
 +			  WCD9320_HPH_PA_HPHL, 0, "HPHL PA disable (bit 5)");
 +
@@ -8889,6 +9066,417 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	return enable ? (ret ? ret : -EIO) : 0;
 +}
++
++/* ------------------------------------------- r185: the right channel -- */
++
++/*
++ * CLASS-H, THE SECOND CHANNEL. Downstream's FSM state is a bitmask: PRE_DAC
++ * ORs a channel in, POST_PA disable ANDs it out.
++ *
++ *   join   HPHL -> HPHL|HPHR   state_hph_st(enable):
++ *                                comp_req(HPH_L, on), comp_req(HPH_R, on)
++ *   leave  HPHL|HPHR -> HPHL   state_hph_l(disable, req HPHR):
++ *                                comp_req(HPH_R, off)
++ *
++ * comp_req writes CLSH_B1 bit 3 (L) or bit 2 (R) with the COND_HPH value, and
++ * COND_HPH is clear here (no resmgr, no MBHC report -- see the C2a note), so
++ * both directions write 0. Bit 2 is POR 1 and downstream never sets it back:
++ * after the first stereo stream 0x320 reads a3 live and a2 idle.
++ *
++ * HPHR only ever joins an HPHL state that is already up, and leaves before it
++ * does, so the proven IDLE <-> HPHL transitions are untouched.
++ */
++static int wcd9320_clsh_hphr(struct wcd9320 *wcd, bool join)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int b1;
++	int ret;
++
++	if (join) {
++		if (!wcd->clsh_on) {
++			dev_err(dev, "clsh: HPHR joins an HPHL class-H state, and there is none\n");
++			return -EAGAIN;
++		}
++		ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x08, 0x00,
++				       "comp req HPH_L (state hph_st)");
++		if (!ret)
++			ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL,
++					       0x04, 0x00,
++					       "comp req HPH_R (state hph_st)");
++		if (ret)
++			return ret;
++		wcd->clsh_r_on = true;
++	} else {
++		wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x04, 0x00,
++				 "comp req HPH_R off (state hph_l)");
++		wcd->clsh_r_on = false;
++	}
++	regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
++	dev_info(dev, "clsh: HPHR %s, B1_CTL = %02x\n",
++		 join ? "JOINED" : "LEFT", b1 & 0xff);
++	return 0;
++}
++
++/*
++ * The HPHR DAC, from taiko_hphr_dac_event() and the HPHR DAC widget:
++ *
++ *   (supply)  RX_BIAS
++ *   PRE_PMU   0x30d |= 04 (RDAC HPHR clock), 0x1b7 |= 40, clsh(HPHR, PRE_DAC)
++ *   (widget)  0x1b7 |= 80
++ *   (widget)  0x1b7 &= ~80
++ *   POST_PMD  0x30d &= ~04, 0x1b7 &= ~40
++ *
++ * PREREQUISITES ARE REFUSED, NOT SUPPLIED: the HPHL DAC path (class-H, the
++ * 0x314 prerequisite and an RX bias reference all come with it), RX2, no PA
++ * yet, and the register gain source verified on the chip -- the same check
++ * the HPHL path makes of 0x1ae. Register-gain mode only.
++ */
++static int wcd9320_hphr_dac_path(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int rgain, dac;
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "hphr: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	if (!enable)
++		goto teardown;
++
++	if (wcd->hphr_dac_on) {
++		dev_err(dev, "hphr: DAC already enabled\n");
++		return -EBUSY;
++	}
++	if (!wcd->hphl_dac_on || !wcd->clsh_on || !wcd->clk_prereq_on) {
++		dev_err(dev,
++			"hphr: needs the HPHL DAC path first (dac=%d clsh=%d prereq=%d)\n",
++			wcd->hphl_dac_on, wcd->clsh_on, wcd->clk_prereq_on);
++		return -EAGAIN;
++	}
++	if (!wcd->rx2_digital_on) {
++		dev_err(dev, "hphr: needs the RX2 chain first\n");
++		return -EAGAIN;
++	}
++	if (wcd->hphl_pa_on || wcd->hphr_pa_on) {
++		dev_err(dev, "hphr: the DAC comes up before any PA, never beside one\n");
++		return -EAGAIN;
++	}
++	if (wcd->comp1_on) {
++		dev_err(dev, "hphr: register gain mode requires compander 1 OFF\n");
++		return -EINVAL;
++	}
++	ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_GAIN, &rgain);
++	if (ret) {
++		dev_err(dev, "hphr: 0x1b4 chip read failed: %d\n", ret);
++		return ret;
++	}
++	if ((rgain & WCD9320_HPHL_GAIN_CHECK) !=
++	    (WCD9320_HPHL_GAIN_SRC | wcd->pa_gain_field_r)) {
++		dev_err(dev,
++			"hphr: 0x1b4 reads %02x -- need %02x under mask %02x; the prep must establish the HPHR register gain first\n",
++			rgain & 0xff, WCD9320_HPHL_GAIN_SRC | wcd->pa_gain_field_r,
++			WCD9320_HPHL_GAIN_CHECK);
++		return -EAGAIN;
++	}
++
++	ret = wcd9320_pa_guard(wcd, "before the HPHR DAC");
++	if (ret)
++		return ret;
++
++	dev_info(dev, "hphr: DAC enable, 0x1b4 = %02x verified on the chip\n",
++		 rgain & 0xff);
++
++	/* the RX_BIAS supply, refcounted with HPHL's */
++	ret = wcd9320_rx_bias(wcd, true);
++	if (ret)
++		goto unwind;
++	wcd->hphr_bias_held = true;
++
++	/* PRE_PMU: the RDAC clock (forced, its inverse is mandatory) ... */
++	ret = wcd9320_forced_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++				   WCD9320_RDAC_HPHR_CLK, WCD9320_RDAC_HPHR_CLK,
++				   "HPHR RDAC clock on");
++	if (ret)
++		goto unwind;
++	/* ... bit 6, which the event sets itself on a DAC_E ... */
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_R_DAC_CTL,
++				WCD9320_HPHR_DAC_SWITCH, WCD9320_HPHR_DAC_SWITCH,
++				"HPHR DAC input (bit 6, from the event)");
++	if (ret)
++		goto unwind;
++	/* ... and class-H PRE_DAC: HPHR joins the HPHL state */
++	ret = wcd9320_clsh_hphr(wcd, true);
++	if (ret)
++		goto unwind;
++
++	/* the widget's own write */
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_R_DAC_CTL,
++				WCD9320_HPHR_DAC_PWR, WCD9320_HPHR_DAC_PWR,
++				"HPHR DAC power (bit 7)");
++	if (ret)
++		goto unwind;
++
++	ret = wcd9320_pa_guard(wcd, "after the HPHR DAC");
++	if (ret)
++		goto unwind;
++
++	wcd->hphr_dac_on = true;
++	wcd->hphr_dac_enables++;
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL, &dac);
++	dev_info(dev, "hphr: DAC ENABLED, 0x1b7 = %02x (predicted c0)\n",
++		 dac & 0xff);
++	return 0;
++
++unwind:
++	dev_err(dev, "hphr: DAC enable failed, unwinding\n");
++teardown:
++	/* Best-effort, every step attempted; the guard is advisory here. */
++	wcd9320_pa_guard(wcd, "before the HPHR DAC teardown");
++	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_R_DAC_CTL,
++			  WCD9320_HPHR_DAC_PWR, 0, "HPHR DAC power off");
++	/* POST_PMD: the RDAC clock, MANDATORY INVERSE, then bit 6 */
++	wcd9320_forced_write(wcd, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL,
++			     WCD9320_RDAC_HPHR_CLK, 0,
++			     "HPHR RDAC clock off (mandatory)");
++	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_R_DAC_CTL,
++			  WCD9320_HPHR_DAC_SWITCH, 0, "HPHR DAC input off");
++	if (wcd->clsh_r_on)
++		wcd9320_clsh_hphr(wcd, false);
++	if (wcd->hphr_bias_held) {
++		wcd9320_rx_bias(wcd, false);
++		wcd->hphr_bias_held = false;
++	}
++
++	if (wcd->hphr_dac_on) {
++		wcd->hphr_dac_on = false;
++		wcd->hphr_dac_disables++;
++		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL,
++				     &dac);
++		dev_info(dev, "hphr: DAC DISABLED, 0x1b7 = %02x (predicted 00)\n",
++			 dac & 0xff);
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ * The HPHR PA: taiko_hph_pa_event() for w->shift == 4, the same steps as
++ * HPHL's with req_clsh_state = HPHR.
++ *
++ *   (widget)  0x1ab bit 4 <- 1
++ *   POST_PMU  settle, clsh_fsm(HPHR, ENABLE, POST_PA) = enable_post_pa()
++ *   (widget)  0x1ab bit 4 <- 0
++ *   POST_PMD  settle, clsh_fsm(HPHR, DISABLE, POST_PA) = the class-H leave
++ *
++ * STEREO ONLY, AND HPHL FIRST. Refused unless the HPHL PA is already on, so
++ * the PA register's only legal states stay {00, 20, 30}. This function and
++ * wcd9320_zdet_static_pa() are the only places the HPHR bit is written.
++ */
++static int wcd9320_hphr_pa_path(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int dac, pa;
++	u8 l_expect;
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!wcd->online || !wcd->core_ready) {
++		dev_err(dev, "hphr: codec not ready\n");
++		return -EAGAIN;
++	}
++
++	wcd->pa_settle_us = wcd->comp1_on ? WCD9320_HPH_PA_SETTLE_COMP_ON_US
++					  : WCD9320_HPH_PA_SETTLE_COMP_OFF_US;
++
++	if (!enable)
++		goto teardown;
++
++	if (wcd->hphr_pa_on) {
++		dev_err(dev, "hphr: PA already enabled\n");
++		return -EBUSY;
++	}
++	if (!wcd->hphl_pa_on) {
++		dev_err(dev, "hphr: the HPHR PA follows the HPHL PA -- stereo only\n");
++		return -EAGAIN;
++	}
++	if (!wcd->hphr_dac_on || !wcd->pa_prep_on) {
++		dev_err(dev, "hphr: the HPHR DAC and the prep must be up first\n");
++		return -EAGAIN;
++	}
++
++	/* 0x1b7 MUST READ c0 BEFORE THE PA IS TOUCHED, as 0x1b1 does for HPHL */
++	ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL,
++				   &dac);
++	if (ret)
++		return ret;
++	if ((dac & 0xff) != (WCD9320_HPHR_DAC_PWR | WCD9320_HPHR_DAC_SWITCH)) {
++		dev_err(dev,
++			"hphr: 0x1b7 reads %02x -- the DAC must be powered with its input connected (c0) before the PA\n",
++			dac & 0xff);
++		return -EIO;
++	}
++
++	if (wcd9320_pa_irq_sample(wcd, "before the HPHR PA enable")
++	    & WCD9320_INTR2_OCP_ANY) {
++		dev_err(dev, "hphr: an OCP fault is already latched -- refusing\n");
++		return -EIO;
++	}
++
++	ret = wcd9320_pa_guard_expect(wcd, "before the HPHR PA enable",
++				      WCD9320_HPH_PA_HPHL);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "hphr: PA enable (settle %u us)\n", wcd->pa_settle_us);
++
++	/* the widget's own write: 0x1ab bit 4. HPHR ALONE. */
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
++				WCD9320_HPH_PA_HPHR, WCD9320_HPH_PA_HPHR,
++				"HPHR PA enable (bit 4)");
++	if (ret)
++		goto unwind;
++
++	/* both channels, and nothing else, from here until the disable */
++	ret = wcd9320_pa_guard_expect(wcd, "after the HPHR PA enable",
++				      WCD9320_HPH_PA_MASK);
++	if (ret)
++		goto unwind;
++
++	usleep_range(wcd->pa_settle_us, wcd->pa_settle_us + 1000);
++
++	if (wcd9320_pa_irq_sample(wcd, "after the HPHR PA settle")
++	    & WCD9320_INTR2_OCP_ANY) {
++		dev_err(dev, "hphr: OCP fault after the PA settle -- unwinding\n");
++		ret = -EIO;
++		goto unwind;
++	}
++
++	ret = wcd9320_clsh_post_pa(wcd);
++	if (ret)
++		goto unwind;
++
++	ret = wcd9320_pa_guard_expect(wcd, "after the HPHR class-H POST_PA",
++				      WCD9320_HPH_PA_MASK);
++	if (ret)
++		goto unwind;
++
++	wcd->hphr_pa_on = true;
++	wcd->hphr_pa_enables++;
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++	dev_info(dev, "hphr: PA ENABLED, 0x1ab = %02x (predicted b0)\n",
++		 pa & 0xff);
++	return 0;
++
++unwind:
++	dev_err(dev, "hphr: PA enable failed, unwinding\n");
++teardown:
++	/* the bit drops first, then the settle, then class-H -- as HPHL */
++	wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
++			  WCD9320_HPH_PA_HPHR, 0, "HPHR PA disable (bit 4)");
++
++	usleep_range(wcd->pa_settle_us, wcd->pa_settle_us + 1000);
++
++	if (wcd->clsh_r_on)
++		wcd9320_clsh_hphr(wcd, false);
++
++	wcd9320_pa_irq_sample(wcd, "after the HPHR PA teardown");
++
++	l_expect = wcd->hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0;
++	wcd9320_pa_guard_expect(wcd, "after the HPHR PA teardown", l_expect);
++
++	if (wcd->hphr_pa_on) {
++		wcd->hphr_pa_on = false;
++		wcd->hphr_pa_disables++;
++		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++		dev_info(dev, "hphr: PA DISABLED, 0x1ab = %02x\n", pa & 0xff);
++	}
++
++	return enable ? (ret ? ret : -EIO) : 0;
++}
++
++/*
++ * Research entry point for the right channel, in the C3a pattern: the trigger
++ * is research, the path is production. Serialised on c3_lock.
++ *
++ *   echo rx2-on | rx2-off | dac-on | dac-off | pa-on | pa-off > hphr_test
++ */
++static ssize_t hphr_test_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++
++	mutex_lock(&wcd->c3_lock);
++	if (sysfs_streq(buf, "rx2-on"))
++		ret = wcd9320_rx_digital_path(wcd, 1, true);
++	else if (sysfs_streq(buf, "rx2-off"))
++		ret = wcd9320_rx_digital_path(wcd, 1, false);
++	else if (sysfs_streq(buf, "dac-on"))
++		ret = wcd9320_hphr_dac_path(wcd, true);
++	else if (sysfs_streq(buf, "dac-off"))
++		ret = wcd9320_hphr_dac_path(wcd, false);
++	else if (sysfs_streq(buf, "pa-on"))
++		ret = wcd9320_hphr_pa_path(wcd, true);
++	else if (sysfs_streq(buf, "pa-off"))
++		ret = wcd9320_hphr_pa_path(wcd, false);
++	else
++		ret = -EINVAL;
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_WO(hphr_test);
++
++/* Everything the right channel's gates read, from the CHIP. */
++static ssize_t hphr_state_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int rgain = 0, rdac = 0, rstat = 0, pa = 0, mux = 0;
++	unsigned int chain = 0, vol = 0, rate = 0, clsh = 0, rdclk = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_GAIN, &rgain);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL, &rdac);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_STATUS, &rstat);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CONN_RX2_B1_CTL, &mux);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_RX2_B6_CTL, &chain);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_RX2_VOL_CTL_B2_CTL, &vol);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_RX2_B5_CTL, &rate);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &clsh);
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RDAC_CLK_EN_CTL, &rdclk);
++
++	return sysfs_emit(buf,
++			  "rx2_on=%u rx2_enables=%u rx2_disables=%u rx2_writes=%u\n"
++			  "dac_on=%u dac_enables=%u dac_disables=%u bias_held=%u clsh_r_on=%u\n"
++			  "pa_on=%u pa_enables=%u pa_disables=%u gain_field_r=%02x\n"
++			  "rgain_0x1b4=%02x rdac_0x1b7=%02x rstatus_0x1b9=%02x pa_0x1ab=%02x\n"
++			  "mux_0x383=%02x chain_0x2bd=%02x vol_0x2bf=%02x rate_0x2bc=%02x\n"
++			  "clsh_0x320=%02x rdacclk_0x30d=%02x\n",
++			  wcd->rx2_digital_on, wcd->rx2_enables, wcd->rx2_disables,
++			  wcd->rx2_writes,
++			  wcd->hphr_dac_on, wcd->hphr_dac_enables,
++			  wcd->hphr_dac_disables, wcd->hphr_bias_held,
++			  wcd->clsh_r_on,
++			  wcd->hphr_pa_on, wcd->hphr_pa_enables,
++			  wcd->hphr_pa_disables, wcd->pa_gain_field_r,
++			  rgain & 0xff, rdac & 0xff, rstat & 0xff, pa & 0xff,
++			  mux & 0xff, chain & 0xff, vol & 0xff, rate & 0xff,
++			  clsh & 0xff, rdclk & 0xff);
++}
++static DEVICE_ATTR_RO(hphr_state);
 +
 +/*
 + * THE EMERGENCY TEARDOWN. One operation, idempotent, best-effort, complete.
@@ -9302,7 +9890,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static int wcd9320_hphl_vm(struct wcd9320 *wcd, enum wcd9320_vm_mode mode)
 +{
 +	struct device *dev = &wcd->sdev->dev;
-+	u8 pa_expect = wcd->hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0;
++	u8 pa_expect = (wcd->hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0) |
++		      (wcd->hphr_pa_on ? WCD9320_HPH_PA_HPHR : 0);
 +	u8 masks[WCD9320_NUM_IRQ_REGS];
 +	unsigned int i, v, n, gap_us, micb_mv, fir_read = 0;
 +	int ret, rret;
@@ -9450,11 +10039,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		goto restore;
 +
-+	/* ---- S4: HPHL, the L0 sample -- no ical, no PA ramp ---- */
++	/*
++	 * ---- S4: HPHL, the L0 sample -- no ical, no PA ramp ----
++	 * r185: or HPHR, downstream's R0 -- MUX_1 = a0 over the same MUX_2,
++	 * exactly the zdet's R0 state. Passive either way.
++	 */
 +	ret = wcd9320_vm_wr(wcd, WCD9320_A_MAD_ANA_CTRL, 0x10, 0x00);
 +	if (!ret)
 +		ret = wcd9320_vm_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_1, 0xff,
-+				    WCD9320_VM_MUX1_HPH_ADC7);
++				    wcd->vm_right ? WCD9320_ZDET_MUX1_HPHR
++						  : WCD9320_VM_MUX1_HPH_ADC7);
 +	if (!ret)
 +		ret = wcd9320_vm_wr(wcd, WCD9320_A_MBHC_SCALING_MUX_2, 0xff,
 +				    WCD9320_VM_MUX2_HPHL_NO_ICAL);
@@ -9532,9 +10126,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +
 +	mutex_lock(&wcd->c3_lock);
-+	if (sysfs_streq(buf, "measure"))
++	/* r185: "-r" reads HPHR; everything else about the measurement is HPHL's */
++	wcd->vm_right = sysfs_streq(buf, "measure-r") || sysfs_streq(buf, "window-r");
++	if (sysfs_streq(buf, "measure") || sysfs_streq(buf, "measure-r"))
 +		ret = wcd9320_hphl_vm(wcd, WCD9320_VM_MEASURE);
-+	else if (sysfs_streq(buf, "window"))
++	else if (sysfs_streq(buf, "window") || sysfs_streq(buf, "window-r"))
 +		ret = wcd9320_hphl_vm(wcd, WCD9320_VM_WINDOW);
 +	else if (sysfs_streq(buf, "measure-1200"))
 +		ret = wcd9320_hphl_vm(wcd, WCD9320_VM_ALT);
@@ -9577,12 +10173,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	n += sysfs_emit_at(buf, n,
-+			   "runs=%u refusals=%u last_rc=%d mode=%s micb_mv=%u sta_z=%d sta_mb=%d span=%d n=%u gap_us=%u restore_mismatch=%u writes=%u\n",
++			   "runs=%u refusals=%u last_rc=%d mode=%s micb_mv=%u sta_z=%d sta_mb=%d span=%d n=%u gap_us=%u restore_mismatch=%u writes=%u ch=%s\n",
 +			   wcd->vm_runs, wcd->vm_refusals, wcd->vm_last_rc,
 +			   wcd->vm_mode ? wcd->vm_mode : "none", wcd->vm_micb_mv,
 +			   wcd->vm_z, wcd->vm_mb, wcd->vm_mb - wcd->vm_z,
 +			   wcd->vm_n, wcd->vm_gap_us, wcd->vm_restore_mismatch,
-+			   wcd->vm_writes);
++			   wcd->vm_writes, wcd->vm_right ? "r" : "l");
 +	if (wcd->vm_n && i == wcd->vm_n)
 +		n += sysfs_emit_at(buf, n,
 +				   "mv10_mean=%lld mv10_min=%d mv10_max=%d mv10_drift=%d\n",
@@ -10150,13 +10746,25 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + *
 + * Lock order: the DAPM mutex, then c3_lock. No research hook calls DAPM.
 + */
++/*
++ * r185: NINE STAGES, ALL SUPPLIES. The right channel adds RX2, the HPHR DAC
++ * and the HPHR PA. Two PGA_E widgets for the PAs would have no defined order
++ * between them -- dapm_seq_compare() falls through to list order -- so every
++ * stage is a SUPPLY_S and the subsequence alone orders them: ascending up (L
++ * before R at each level), descending down (R before L). They all feed one
++ * NOPM PGA with no event. The ownership chain, the idle start, the abort and
++ * the power-down rule are r184's, unchanged; the full mask is 1ff.
++ */
 +enum wcd9320_dapm_stage {
 +	WCD9320_DS_MCLK,
 +	WCD9320_DS_PREP,
 +	WCD9320_DS_PREREQ,
 +	WCD9320_DS_RX1,
-+	WCD9320_DS_DAC,
-+	WCD9320_DS_PA,
++	WCD9320_DS_RX2,
++	WCD9320_DS_DACL,
++	WCD9320_DS_DACR,
++	WCD9320_DS_PAL,
++	WCD9320_DS_PAR,
 +	WCD9320_DS_N,
 +};
 +
@@ -10165,23 +10773,30 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	[WCD9320_DS_PREP]	= "class-h prep",
 +	[WCD9320_DS_PREREQ]	= "cdc prereq",
 +	[WCD9320_DS_RX1]	= "rx1",
-+	[WCD9320_DS_DAC]	= "hphl dac",
-+	[WCD9320_DS_PA]		= "hphl pa",
++	[WCD9320_DS_RX2]	= "rx2",
++	[WCD9320_DS_DACL]	= "hphl dac",
++	[WCD9320_DS_DACR]	= "hphr dac",
++	[WCD9320_DS_PAL]	= "hphl pa",
++	[WCD9320_DS_PAR]	= "hphr pa",
 +};
 +
++/* What wcd9320_c3_abort() takes down: everything but MCLK, RX1 and RX2. */
 +#define WCD9320_DS_ABORTED \
 +	(BIT(WCD9320_DS_PREP) | BIT(WCD9320_DS_PREREQ) | \
-+	 BIT(WCD9320_DS_DAC) | BIT(WCD9320_DS_PA))
++	 BIT(WCD9320_DS_DACL) | BIT(WCD9320_DS_DACR) | \
++	 BIT(WCD9320_DS_PAL) | BIT(WCD9320_DS_PAR))
 +
 +/* Nothing on the C3 path is up, and nobody holds the clock. */
 +static bool wcd9320_dapm_idle(struct wcd9320 *wcd)
 +{
 +	return !wcd->mclk_users && !wcd->pa_prep_on && !wcd->clk_prereq_on &&
 +	       !wcd->rx1_digital_on && !wcd->hphl_dac_on && !wcd->hphl_pa_on &&
-+	       !wcd->comp1_on && !wcd->clsh_on && !wcd->rx_bias_refs;
++	       !wcd->rx2_digital_on && !wcd->hphr_dac_on && !wcd->hphr_pa_on &&
++	       !wcd->comp1_on && !wcd->clsh_on && !wcd->clsh_r_on &&
++	       !wcd->rx_bias_refs;
 +}
 +
-+/* The six proven functions, and nothing else. Under c3_lock. */
++/* The proven functions, and nothing else. Under c3_lock. */
 +static int wcd9320_dapm_stage_call(struct wcd9320 *wcd, unsigned int stage,
 +				   bool on)
 +{
@@ -10193,12 +10808,18 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case WCD9320_DS_PREREQ:
 +		return wcd9320_cdc_clk_prereq(wcd, on);
 +	case WCD9320_DS_RX1:
-+		return wcd9320_rx1_digital_path(wcd, on);
-+	case WCD9320_DS_DAC:
++		return wcd9320_rx_digital_path(wcd, 0, on);
++	case WCD9320_DS_RX2:
++		return wcd9320_rx_digital_path(wcd, 1, on);
++	case WCD9320_DS_DACL:
 +		return wcd9320_hphl_dac_path(wcd, on, true,
 +					     WCD9320_GAIN_SRC_REGISTER);
-+	case WCD9320_DS_PA:
++	case WCD9320_DS_DACR:
++		return wcd9320_hphr_dac_path(wcd, on);
++	case WCD9320_DS_PAL:
 +		return wcd9320_hphl_pa_path(wcd, on);
++	case WCD9320_DS_PAR:
++		return wcd9320_hphr_pa_path(wcd, on);
 +	}
 +	return -EINVAL;
 +}
@@ -10222,7 +10843,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		if (wcd->dapm_held != below) {
 +			wcd->dapm_refusals++;
 +			dev_err(dev,
-+				"dapm: %s REFUSED -- DAPM holds %02x, this stage needs exactly %02x below it\n",
++				"dapm: %s REFUSED -- DAPM holds %03x, this stage needs exactly %03x below it\n",
 +				wcd9320_dapm_stage_name[stage], wcd->dapm_held, below);
 +			ret = -EAGAIN;
 +			goto out;
@@ -10230,11 +10851,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		if (stage == WCD9320_DS_MCLK && !wcd9320_dapm_idle(wcd)) {
 +			wcd->dapm_refusals++;
 +			dev_err(dev,
-+				"dapm: REFUSED -- the C3 path is not idle (mclk_users=%u prep=%d prereq=%d rx1=%d dac=%d pa=%d comp1=%d clsh=%d rx_bias=%u)\n",
++				"dapm: REFUSED -- the C3 path is not idle (mclk_users=%u prep=%d prereq=%d rx1=%d rx2=%d dac=%d/%d pa=%d/%d comp1=%d clsh=%d/%d rx_bias=%u)\n",
 +				wcd->mclk_users, wcd->pa_prep_on,
 +				wcd->clk_prereq_on, wcd->rx1_digital_on,
-+				wcd->hphl_dac_on, wcd->hphl_pa_on, wcd->comp1_on,
-+				wcd->clsh_on, wcd->rx_bias_refs);
++				wcd->rx2_digital_on, wcd->hphl_dac_on,
++				wcd->hphr_dac_on, wcd->hphl_pa_on,
++				wcd->hphr_pa_on, wcd->comp1_on, wcd->clsh_on,
++				wcd->clsh_r_on, wcd->rx_bias_refs);
 +			ret = -EBUSY;
 +			goto out;
 +		}
@@ -10249,7 +10872,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		wcd->dapm_held |= BIT(stage);
 +		wcd->dapm_ups++;
-+		dev_info(dev, "dapm: %s up, held %02x\n",
++		dev_info(dev, "dapm: %s up, held %03x\n",
 +			 wcd9320_dapm_stage_name[stage], wcd->dapm_held);
 +	} else {
 +		if (!(wcd->dapm_held & BIT(stage))) {
@@ -10267,7 +10890,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd9320_c3_abort(wcd);
 +			wcd->dapm_held &= ~WCD9320_DS_ABORTED;
 +		} else {
-+			dev_info(dev, "dapm: %s down, held %02x\n",
++			dev_info(dev, "dapm: %s down, held %03x\n",
 +				 wcd9320_dapm_stage_name[stage], wcd->dapm_held);
 +		}
 +	}
@@ -10291,23 +10914,37 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	SND_SOC_DAPM_SUPPLY_S("RX1 CHAIN", 3, SND_SOC_NOPM, WCD9320_DS_RX1, 0,
 +			      wcd9320_dapm_event,
 +			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
-+	SND_SOC_DAPM_SUPPLY_S("HPHL DAC", 4, SND_SOC_NOPM, WCD9320_DS_DAC, 0,
++	SND_SOC_DAPM_SUPPLY_S("RX2 CHAIN", 4, SND_SOC_NOPM, WCD9320_DS_RX2, 0,
 +			      wcd9320_dapm_event,
 +			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
-+	SND_SOC_DAPM_PGA_E("HPHL", SND_SOC_NOPM, WCD9320_DS_PA, 0, NULL, 0,
-+			   wcd9320_dapm_event,
-+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("HPHL DAC", 5, SND_SOC_NOPM, WCD9320_DS_DACL, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("HPHR DAC", 6, SND_SOC_NOPM, WCD9320_DS_DACR, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("HPHL PA", 7, SND_SOC_NOPM, WCD9320_DS_PAL, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_SUPPLY_S("HPHR PA", 8, SND_SOC_NOPM, WCD9320_DS_PAR, 0,
++			      wcd9320_dapm_event,
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_PGA("HPH", SND_SOC_NOPM, 0, 0, NULL, 0),
 +	SND_SOC_DAPM_OUTPUT("HEADPHONE"),
 +};
 +
 +static const struct snd_soc_dapm_route wcd9320_dapm_routes[] = {
-+	{ "HPHL", NULL, "AIF1 PB" },
-+	{ "HEADPHONE", NULL, "HPHL" },
-+	{ "HPHL", NULL, "MCLK" },
-+	{ "HPHL", NULL, "CLASS_H PREP" },
-+	{ "HPHL", NULL, "CDC PREREQ" },
-+	{ "HPHL", NULL, "RX1 CHAIN" },
-+	{ "HPHL", NULL, "HPHL DAC" },
++	{ "HPH", NULL, "AIF1 PB" },
++	{ "HEADPHONE", NULL, "HPH" },
++	{ "HPH", NULL, "MCLK" },
++	{ "HPH", NULL, "CLASS_H PREP" },
++	{ "HPH", NULL, "CDC PREREQ" },
++	{ "HPH", NULL, "RX1 CHAIN" },
++	{ "HPH", NULL, "RX2 CHAIN" },
++	{ "HPH", NULL, "HPHL DAC" },
++	{ "HPH", NULL, "HPHR DAC" },
++	{ "HPH", NULL, "HPHL PA" },
++	{ "HPH", NULL, "HPHR PA" },
 +};
 +
 +static ssize_t dapm_state_show(struct device *dev,
@@ -10320,14 +10957,393 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +	mutex_lock(&wcd->c3_lock);
 +	n = sysfs_emit(buf,
-+		       "held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u pa_on=%d\n",
++		       "held=%03x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u pa_on=%d pa_r_on=%d\n",
 +		       wcd->dapm_held, wcd->dapm_ups, wcd->dapm_downs,
 +		       wcd->dapm_refusals, wcd->dapm_failures, wcd->mclk_users,
-+		       wcd->hphl_pa_on);
++		       wcd->hphl_pa_on, wcd->hphr_pa_on);
 +	mutex_unlock(&wcd->c3_lock);
 +	return n;
 +}
 +static DEVICE_ATTR_RO(dapm_state);
++
++/* -------------------------------------------- r185: volume controls -- */
++
++/*
++ * EXT controls, not register-backed. The prep restores 0x1ae / 0x1b4 to their
++ * measured baseline -- 00, the MAXIMUM on the inverted field -- whenever the
++ * path is idle, so a register-backed control would read "loudest" whenever
++ * nothing plays. These hold the setting the next prep writes, and move the
++ * chip too while the prep is live, so the DAC path's chip check and the
++ * setting can never disagree. All under c3_lock, all through c2b_write().
++ *
++ *   HPHx Volume          0..20, 20 loudest; field = 20 - v. Boots at 0.
++ *                        No TLV: this field's step size is unmeasured here.
++ *   RXn Digital Volume   0..84 = -84..0 dB, 1 dB per step. Capped at 0 dB --
++ *                        it can only cut (downstream allows +40).
++ */
++#define WCD9320_HPH_VOL_STEPS	WCD9320_HPHL_GAIN_MIN
++#define WCD9320_DIG_VOL_STEPS	84
++
++static const DECLARE_TLV_DB_SCALE(wcd9320_digital_tlv, -8400, 100, 0);
++
++static const unsigned int wcd9320_dig_vol_reg[2] = {
++	WCD9320_CDC_RX1_VOL_CTL_B2_CTL, WCD9320_CDC_RX2_VOL_CTL_B2_CTL,
++};
++
++static struct wcd9320 *wcd9320_kc_wcd(struct snd_kcontrol *kc)
++{
++	return dev_get_drvdata(snd_soc_kcontrol_component(kc)->dev);
++}
++
++static int wcd9320_hph_vol_get(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct soc_mixer_control *mc = (struct soc_mixer_control *)kc->private_value;
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	u8 field;
++
++	mutex_lock(&wcd->c3_lock);
++	field = mc->reg ? wcd->pa_gain_field_r : wcd->pa_gain_field;
++	mutex_unlock(&wcd->c3_lock);
++	uc->value.integer.value[0] = WCD9320_HPHL_GAIN_MIN - field;
++	return 0;
++}
++
++static int wcd9320_hph_vol_put(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct soc_mixer_control *mc = (struct soc_mixer_control *)kc->private_value;
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	long v = uc->value.integer.value[0];
++	u8 *field, want;
++	int ret = 0;
++
++	if (v < 0 || v > WCD9320_HPH_VOL_STEPS)
++		return -EINVAL;
++	want = WCD9320_HPHL_GAIN_MIN - v;
++
++	mutex_lock(&wcd->c3_lock);
++	field = mc->reg ? &wcd->pa_gain_field_r : &wcd->pa_gain_field;
++	if (*field == want)
++		goto out;
++	if (wcd->pa_prep_on)
++		ret = wcd9320_c2b_write(wcd, mc->reg ? WCD9320_A_RX_HPH_R_GAIN
++						     : WCD9320_A_RX_HPH_L_GAIN,
++					WCD9320_HPHL_GAIN_FIELD, want,
++					mc->reg ? "HPHR Volume (ALSA, live)"
++						: "HPHL Volume (ALSA, live)");
++	if (!ret) {
++		*field = want;
++		ret = 1;
++	}
++out:
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
++static int wcd9320_dig_vol_get(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct soc_mixer_control *mc = (struct soc_mixer_control *)kc->private_value;
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	unsigned int val = 0;
++	int db;
++
++	if (mc->reg >= ARRAY_SIZE(wcd9320_dig_vol_reg))
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	regmap_read(wcd->regmap, wcd9320_dig_vol_reg[mc->reg], &val);
++	mutex_unlock(&wcd->c3_lock);
++	db = (s8)(val & 0xff);
++	uc->value.integer.value[0] = clamp(db + WCD9320_DIG_VOL_STEPS, 0,
++					   WCD9320_DIG_VOL_STEPS);
++	return 0;
++}
++
++static int wcd9320_dig_vol_put(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct soc_mixer_control *mc = (struct soc_mixer_control *)kc->private_value;
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	long v = uc->value.integer.value[0];
++	unsigned int cur = 0;
++	u8 want;
++	int ret;
++
++	if (mc->reg >= ARRAY_SIZE(wcd9320_dig_vol_reg))
++		return -EINVAL;
++	if (v < 0 || v > WCD9320_DIG_VOL_STEPS)
++		return -EINVAL;
++	want = (u8)(s8)(v - WCD9320_DIG_VOL_STEPS);
++
++	mutex_lock(&wcd->c3_lock);
++	ret = regmap_read(wcd->regmap, wcd9320_dig_vol_reg[mc->reg], &cur);
++	if (!ret && (cur & 0xff) != want)
++		ret = wcd9320_c2b_write(wcd, wcd9320_dig_vol_reg[mc->reg], 0xff,
++					want, mc->reg ? "RX2 Digital Volume (ALSA)"
++						      : "RX1 Digital Volume (ALSA)") ?: 1;
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
++static const struct snd_kcontrol_new wcd9320_controls[] = {
++	SOC_SINGLE_EXT("HPHL Volume", 0, 0, WCD9320_HPH_VOL_STEPS, 0,
++		       wcd9320_hph_vol_get, wcd9320_hph_vol_put),
++	SOC_SINGLE_EXT("HPHR Volume", 1, 0, WCD9320_HPH_VOL_STEPS, 0,
++		       wcd9320_hph_vol_get, wcd9320_hph_vol_put),
++	SOC_SINGLE_EXT_TLV("RX1 Digital Volume", 0, 0, WCD9320_DIG_VOL_STEPS, 0,
++			   wcd9320_dig_vol_get, wcd9320_dig_vol_put,
++			   wcd9320_digital_tlv),
++	SOC_SINGLE_EXT_TLV("RX2 Digital Volume", 1, 0, WCD9320_DIG_VOL_STEPS, 0,
++			   wcd9320_dig_vol_get, wcd9320_dig_vol_put,
++			   wcd9320_digital_tlv),
++};
++
++/* --------------------------------------------- r185: jack detection -- */
++
++/*
++ * MBHC_JACK_SWITCH DRIVES THE CARD'S HEADPHONES PIN. Operator decision
++ * 2026-11-08; docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md s5.
++ *
++ * Downstream's codec-insert-detect path, minimum form, which is exactly what
++ * wcd9320-irq-proven proved for insertion:
++ *
++ *   level     0x14b bit 2 is the REMOVED level (wcd9xxx_swch_level_remove)
++ *   arm       wcd9xxx_insert_detect_setup(ins): EN off, 6c | ins << 1, EN on
++ *   event     debounce 5 ms, read the level, report, re-arm the other way
++ *
++ * Headphone only: no headset typing, no mic, no buttons, no COND_HPH.
++ *
++ * Locks: wake_lock around 0x14a / 0x14b (the research hooks' lock), dropped
++ * before the report, which takes the DAPM mutex -- and DAPM events take
++ * c3_lock under it. Nothing here takes c3_lock.
++ */
++#define WCD9320_JACK_DEBOUNCE_US	5000	/* SWCH_IRQ_DEBOUNCE_TIME_US */
++
++static int wcd9320_jack_level(struct wcd9320 *wcd, bool *inserted)
++{
++	unsigned int st;
++	int ret;
++
++	ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_MBHC_INSERT_DET_STATUS,
++				   &st);
++	if (ret)
++		return ret;
++	wcd->jack_status = st & 0xff;
++	*inserted = !(st & WCD9320_MBHC_DET_STATUS_PRESENT);
++	return 0;
++}
++
++static void wcd9320_jack_report(struct wcd9320 *wcd, bool inserted)
++{
++	struct snd_soc_jack *jack = READ_ONCE(wcd->jack);
++
++	if (!jack)
++		return;
++	snd_soc_jack_report(jack, inserted ? SND_JACK_HEADPHONE : 0,
++			    SND_JACK_HEADPHONE);
++	wcd->jack_reports++;
++	dev_info(&wcd->sdev->dev, "jack: reported %s\n",
++		 inserted ? "INSERTED -- the Headphones pin follows it on"
++			  : "REMOVED -- the Headphones pin follows it off");
++}
++
++static irqreturn_t wcd9320_jack_thread(int irq, void *data)
++{
++	struct wcd9320 *wcd = data;
++	struct device *dev = &wcd->sdev->dev;
++	bool ins = false;
++	int ret;
++
++	usleep_range(WCD9320_JACK_DEBOUNCE_US, WCD9320_JACK_DEBOUNCE_US + 100);
++
++	mutex_lock(&wcd->wake_lock);
++	if (!wcd->jack_on) {
++		mutex_unlock(&wcd->wake_lock);
++		return IRQ_HANDLED;
++	}
++	wcd->jack_irqs++;
++	ret = wcd9320_jack_level(wcd, &ins);
++	if (!ret)
++		/* armed for the OTHER state, downstream's three writes */
++		ret = wcd9320_insert_detect_set(wcd, true, WCD9320_MBHC_DET_BASE,
++						false, !ins);
++	if (!ret)
++		wcd->jack_inserted = ins;
++	mutex_unlock(&wcd->wake_lock);
++
++	if (ret) {
++		dev_err(dev, "jack: irq #%u, level read or re-arm failed: %d\n",
++			wcd->jack_irqs, ret);
++		return IRQ_HANDLED;
++	}
++	dev_info(dev, "jack: irq #%u, 0x14b = %02x -> %s, re-armed for %s\n",
++		 wcd->jack_irqs, wcd->jack_status,
++		 ins ? "inserted" : "removed", ins ? "removal" : "insertion");
++	wcd9320_jack_report(wcd, ins);
++	return IRQ_HANDLED;
++}
++
++static int wcd9320_jack_enable(struct wcd9320 *wcd)
++{
++	struct device *dev = &wcd->sdev->dev;
++	bool ins = false;
++	int virq, ret;
++
++	if (!READ_ONCE(wcd->jack))
++		return -ENODEV;
++	if (!wcd->irq_data || !wcd->online || !wcd->core_ready) {
++		wcd->jack_pending = true;
++		dev_info(dev, "jack: the codec is not ready -- detection starts when it is\n");
++		return 0;
++	}
++
++	mutex_lock(&wcd->wake_lock);
++	if (wcd->jack_on) {
++		mutex_unlock(&wcd->wake_lock);
++		return 0;
++	}
++	if (wcd->mbhc_armed || wcd->mbhc_detect_on) {
++		mutex_unlock(&wcd->wake_lock);
++		dev_err(dev, "jack: refused -- an MBHC research hook owns 0x14a or the source\n");
++		return -EBUSY;
++	}
++	ret = wcd9320_jack_level(wcd, &ins);
++	if (!ret)
++		ret = wcd9320_insert_detect_set(wcd, true, WCD9320_MBHC_DET_BASE,
++						false, !ins);
++	if (ret) {
++		mutex_unlock(&wcd->wake_lock);
++		dev_err(dev, "jack: arming failed: %d\n", ret);
++		return ret;
++	}
++	wcd->jack_inserted = ins;
++	wcd->jack_on = true;
++	wcd->jack_pending = false;
++	mutex_unlock(&wcd->wake_lock);
++
++	virq = regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_MBHC_JACK_SWITCH);
++	ret = virq > 0 ? request_threaded_irq(virq, NULL, wcd9320_jack_thread,
++					      IRQF_ONESHOT, "wcd9320-jack", wcd)
++		       : -ENXIO;
++	if (ret) {
++		mutex_lock(&wcd->wake_lock);
++		wcd->jack_on = false;
++		wcd9320_insert_detect_set(wcd, false, 0, false, false);
++		mutex_unlock(&wcd->wake_lock);
++		dev_err(dev, "jack: JACK_SWITCH virq %d request failed: %d\n",
++			virq, ret);
++		return ret;
++	}
++	wcd->jack_virq = virq;
++	dev_info(dev, "jack: detection ON, JACK_SWITCH on virq %d, 0x14b = %02x, armed for %s\n",
++		 virq, wcd->jack_status, ins ? "removal" : "insertion");
++	wcd9320_jack_report(wcd, ins);
++	return 0;
++}
++
++static void wcd9320_jack_disable(struct wcd9320 *wcd, bool report)
++{
++	int virq;
++	bool was;
++
++	mutex_lock(&wcd->wake_lock);
++	was = wcd->jack_on;
++	wcd->jack_on = false;
++	wcd->jack_pending = false;
++	virq = wcd->jack_virq;
++	wcd->jack_virq = 0;
++	mutex_unlock(&wcd->wake_lock);
++	if (!was)
++		return;
++
++	/* outside wake_lock: free_irq() waits for a thread that takes it */
++	if (virq > 0)
++		free_irq(virq, wcd);
++	mutex_lock(&wcd->wake_lock);
++	wcd9320_insert_detect_set(wcd, false, 0, false, false);
++	wcd->jack_inserted = false;
++	mutex_unlock(&wcd->wake_lock);
++	dev_info(&wcd->sdev->dev, "jack: detection OFF, source freed, 0x14a restored\n");
++	if (report)
++		wcd9320_jack_report(wcd, false);
++}
++
++static void wcd9320_jack_resume(struct wcd9320 *wcd)
++{
++	if (wcd->jack_pending && READ_ONCE(wcd->jack))
++		wcd9320_jack_enable(wcd);
++}
++
++static int wcd9320_set_jack(struct snd_soc_component *component,
++			    struct snd_soc_jack *jack, void *data)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(component->dev);
++
++	if (!wcd || wcd->is_ifd)
++		return -ENODEV;
++	if (!jack) {
++		wcd9320_jack_disable(wcd, false);
++		WRITE_ONCE(wcd->jack, NULL);
++		return 0;
++	}
++	WRITE_ONCE(wcd->jack, jack);
++	return wcd9320_jack_enable(wcd);
++}
++
++static void wcd9320_component_remove(struct snd_soc_component *component)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(component->dev);
++
++	if (wcd && !wcd->is_ifd) {
++		wcd9320_jack_disable(wcd, false);
++		WRITE_ONCE(wcd->jack, NULL);
++	}
++}
++
++/*
++ *   cat jack_detect          state, 0x14a and 0x14b from the chip
++ *   echo off > jack_detect   free the source, 0x14a back to 00, report removal
++ *   echo on  > jack_detect   re-arm, and report the real state
++ *
++ * The voltmeter and the zdet refuse while it is on (insert detect on, a
++ * source unmasked), so research runners turn it off first.
++ */
++static ssize_t jack_detect_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int det = 0, st = 0;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_MBHC_INSERT_DETECT, &det);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_MBHC_INSERT_DET_STATUS, &st);
++	return sysfs_emit(buf,
++			  "on=%u pending=%u has_jack=%u inserted=%u irqs=%u reports=%u virq=%d detect_0x14a=%02x status_0x14b=%02x\n",
++			  wcd->jack_on, wcd->jack_pending, READ_ONCE(wcd->jack) ? 1 : 0,
++			  wcd->jack_inserted, wcd->jack_irqs, wcd->jack_reports,
++			  wcd->jack_virq, det & 0xff, st & 0xff);
++}
++
++static ssize_t jack_detect_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "on"))
++		ret = wcd9320_jack_enable(wcd);
++	else if (sysfs_streq(buf, "off"))
++		wcd9320_jack_disable(wcd, true);
++	else
++		ret = -EINVAL;
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(jack_detect);
 +
 +static struct attribute *wcd9320_attrs[] = {
 +	&dev_attr_rx_port_test.attr,
@@ -10377,6 +11393,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_clk_source_test.attr,
 +	&dev_attr_clk_source_state.attr,
 +	&dev_attr_dapm_state.attr,
++	&dev_attr_hphr_test.attr,
++	&dev_attr_hphr_state.attr,
++	&dev_attr_jack_detect.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -10585,6 +11604,53 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +/*
++ * r185: A SET OF PORTS. Ports 16..16+n-1 each carry the payload of the whole
++ * set, as wcd9xxx_cfg_slim_sch_rx() writes it: 1 << shift ORed over every
++ * channel in the stream, written to every port in it. Mono is 01 on port 16,
++ * the delta every earlier milestone proved; stereo is 03 on 16 and on 17.
++ * Teardown is the reverse, and best-effort.
++ */
++#define WCD9320_RX_SET_MAX	2
++
++static int wcd9320_rx_ports_program(struct wcd9320 *wcd, unsigned int n,
++				    bool enable)
++{
++	unsigned int i;
++	int ret = 0, r;
++	u8 mask;
++
++	if (n < 1 || n > WCD9320_RX_SET_MAX)
++		return -EINVAL;
++	mask = GENMASK(n - 1, 0);
++
++	if (!enable) {
++		for (i = n; i-- > 0; ) {
++			r = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST + i,
++						    0, false);
++			if (r && !ret)
++				ret = r;
++		}
++		wcd->rx_port_n = 0;
++		return ret;
++	}
++
++	for (i = 0; i < n; i++) {
++		ret = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST + i,
++					      mask, true);
++		if (ret) {
++			while (i-- > 0)
++				wcd9320_rx_port_program(wcd,
++							WCD9320_RX_PORT_FIRST + i,
++							0, false);
++			return ret;
++		}
++	}
++	wcd->rx_port_num = WCD9320_RX_PORT_FIRST;
++	wcd->rx_port_n = n;
++	return 0;
++}
++
++/*
 + * The ASoC component: registration only, and deliberately empty.
 + *
 + * Everything proven so far sits below ASoC -- enumeration, regmap, core init,
@@ -10612,6 +11678,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	.num_dapm_widgets = ARRAY_SIZE(wcd9320_dapm_widgets),
 +	.dapm_routes = wcd9320_dapm_routes,
 +	.num_dapm_routes = ARRAY_SIZE(wcd9320_dapm_routes),
++	/* r185: volume, and the jack */
++	.controls = wcd9320_controls,
++	.num_controls = ARRAY_SIZE(wcd9320_controls),
++	.set_jack = wcd9320_set_jack,
++	.remove = wcd9320_component_remove,
 +};
 +
 +/*
@@ -10658,19 +11729,23 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 dai->name, params_rate(params), params_channels(params),
 +		 (unsigned int)params_format(params));
 +
-+	ret = wcd9320_rx_port_program(wcd, WCD9320_RX_PORT_FIRST,
-+				      WCD9320_RX_CH_MASK_ONE, true);
++	/* r185: one port per channel, 16 (SLIM RX1) and 17 (SLIM RX2) */
++	if (params_channels(params) < 1 ||
++	    params_channels(params) > WCD9320_RX_SET_MAX)
++		return -EINVAL;
++	ret = wcd9320_rx_ports_program(wcd, params_channels(params), true);
 +	if (ret)
 +		return ret;
 +
 +	/*
 +	 * Configure the stream from the params ASoC actually negotiated,
-+	 * not from the hook's constants. The channel number still comes
-+	 * from this driver, which owns it -- see wcd9320_get_channel_map().
++	 * not from the hook's constants. The channel numbers still come
++	 * from this driver, which owns them -- see wcd9320_get_channel_map().
 +	 */
 +	mutex_lock(&wcd->slim_stream_lock);
 +	__wcd9320_slim_config(wcd, WCD9320_RX_PORT_FIRST, WCD9320_SLIM_RX1_CH,
-+			      params_rate(params), params_width(params));
++			      params_rate(params), params_width(params),
++			      params_channels(params));
 +	mutex_unlock(&wcd->slim_stream_lock);
 +
 +	return 0;
@@ -10690,7 +11765,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	dev_info(&wcd->sdev->dev, "RX path invocation: ASoC hw_free (dai %s)\n",
 +		 dai->name);
 +
-+	return wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
++	return wcd9320_rx_ports_program(wcd, wcd->rx_port_n ? wcd->rx_port_n : 1,
++					false);
 +}
 +
 +/*
@@ -10720,8 +11796,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!rx_num || !rx_slot)
 +		return -EINVAL;
 +
++	/* r185: SLIM RX1 and RX2, ports 16 and 17 -- taiko_rx_chs[] */
 +	rx_slot[0] = WCD9320_SLIM_RX1_CH;
-+	*rx_num = 1;
++	rx_slot[1] = WCD9320_SLIM_RX1_CH + 1;
++	*rx_num = 2;
 +
 +	return 0;
 +}
@@ -10866,7 +11944,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			.rate_min = 48000,
 +			.rate_max = 48000,
 +			.channels_min = 1,
-+			.channels_max = 1,
++			.channels_max = 2,	/* r185: stereo */
 +		},
 +		.ops = &wcd9320_rx_dai_ops,
 +	},
@@ -10919,6 +11997,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	mutex_init(&wcd->c3_lock);
 +	/* zero would mean MAXIMUM on this inverted field -- never rely on it */
 +	wcd->pa_gain_field = WCD9320_HPHL_GAIN_MIN;
++	wcd->pa_gain_field_r = WCD9320_HPHL_GAIN_MIN;
 +	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
 +	dev_set_drvdata(dev, wcd);
 +
@@ -11269,8 +12348,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_info(&sdev->dev,
 +			 "removing with RX port %u programmed: tearing it down first\n",
 +			 wcd->rx_port_num);
-+		wcd9320_rx_port_program(wcd, wcd->rx_port_num, 0, false);
++		wcd9320_rx_ports_program(wcd, wcd->rx_port_n ? wcd->rx_port_n : 1,
++					 false);
 +	}
++
++	/* r185: the jack source must be freed while the irq chip still exists */
++	if (wcd && !wcd->is_ifd)
++		wcd9320_jack_disable(wcd, false);
 +
 +	/*
 +	 * The MBHC test hook uses plain request_irq rather than devm, so that
@@ -11297,7 +12381,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		 * owns -- and would quietly invalidate the next run's baseline.
 +		 */
 +		if (wcd->mbhc_detect_on) {
-+			wcd9320_insert_detect_set(wcd, false, 0, false);
++			wcd9320_insert_detect_set(wcd, false, 0, false, false);
 +			dev_info(&sdev->dev,
 +				 "removing with insert-detect on: 0x14a restored first\n");
 +		}
@@ -11369,7 +12453,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("dapm-hphl-rc1");
++MODULE_VERSION("stereo-vol-jack-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

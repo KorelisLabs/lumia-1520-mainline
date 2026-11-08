@@ -3,19 +3,24 @@
 # r184 DIGITAL GATE: with the Headphones pin OFF, a played stream reaches the
 # codec's DAPM graph and powers NOTHING.
 #
+# r185: the stereo graph (nine stages, the event-less HPH PGA), a stereo tone,
+# and the pin FORCED off first -- jack detection turns it on for a plugged
+# headset, so the gate takes the manual override before it plays anything.
+# docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md, section 7.
+#
 # docs/audio/wcd9320-dapm-hphl-mapping.md, section 4. The PA cannot come on in
 # this run: the pin stays off throughout and is read back before, during and
 # after. So this needs no abort watcher and no approval, and it writes no
 # forced register.
 #
 # THE POSITIVE CONTROL. "Nothing powered" is only meaningful if the stream got
-# as far as the codec's graph. So during the tone the HPHL widget must show at
+# as far as the codec's graph. So during the tone the HPH widget must show at
 # least one connected INPUT endpoint (the RX1 DAI, active) and ZERO output
 # endpoints (the pin). in 0 would mean the stream never reached the codec, and
 # the run is a FAIL, not a pass -- the acoustic run would then be silent for a
 # reason this gate did not test.
 #
-# Usage:  EXPECT_VERSION=dapm-hphl-rc1 sudo -E sh wcd9320-dapm-evidence.sh
+# Usage:  EXPECT_VERSION=stereo-vol-jack-rc1 sudo -E sh wcd9320-dapm-evidence.sh
 # Exit:   0 pass, 1 checks failed, 2 invalid setup.
 
 set -u
@@ -30,7 +35,7 @@ OUTDIR="${OUTDIR:-/var/log}"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 DBFS="${DBFS:--40}"
-WIDGETS="MCLK|CLASS_H PREP|CDC PREREQ|RX1 CHAIN|HPHL DAC|HPHL|HEADPHONE|AIF1 PB"
+WIDGETS="MCLK|CLASS_H PREP|CDC PREREQ|RX1 CHAIN|RX2 CHAIN|HPHL DAC|HPHR DAC|HPHL PA|HPHR PA|HPH|HEADPHONE|AIF1 PB"
 
 TONE=""
 for c in "${PCM_TONE:-}" "$DIR/pcm-tone" /tmp/pcm-tone; do
@@ -50,8 +55,8 @@ require_module_version
 find_devices
 [ -e "$PGD/dapm_state" ] || { say "INVALID SETUP: no dapm_state -- not an r184 module"; exit 2; }
 
-# The codec's widget directory, found by its HPHL widget; the card's by its pin.
-WDIR=$(dirname "$(find /sys/kernel/debug/asoc -maxdepth 4 -path '*/dapm/HPHL' 2>/dev/null | head -n1)")
+# The codec's widget directory, found by its HPH widget; the card's by its pin.
+WDIR=$(dirname "$(find /sys/kernel/debug/asoc -maxdepth 4 -path '*/dapm/HPH' 2>/dev/null | head -n1)")
 PDIR=$(dirname "$(find /sys/kernel/debug/asoc -maxdepth 3 -path '*/dapm/Headphones' 2>/dev/null | head -n1)")
 [ -d "$WDIR" ] && [ -d "$PDIR" ] || {
 	say "INVALID SETUP: no DAPM debugfs (codec '$WDIR', card '$PDIR') -- is debugfs mounted?"; exit 2; }
@@ -73,6 +78,10 @@ wfield() { printf '%s' "$1" | tr ';' '\n' | sed -n "s/^$2=//p" | head -n1; }
 pin() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"; }
 
 # ------------------------------------------------- refuse before playing --
+# r185: the jack may have the pin on; the manual override takes it off. Any
+# later jack event during the run shows up as a pin check failing.
+JACK0=$(cat "$PGD/jack_detect" 2>/dev/null)
+"$SETCTL" -D "$CTLDEV" --set "$DAPM_PIN" 0 >/dev/null 2>&1
 CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
 _cok=$(dapm_card_ok "$CARDV" "$(pin)")
 [ "$_cok" = "OK" ] || { say "INVALID SETUP: ${_cok#REFUSE:}. Nothing was played."; exit 2; }
@@ -88,12 +97,15 @@ W0=$(widgets)
 # least it could do is quiet. The driver refuses while anything is up.
 echo 14 > "$PGD/hphl_pa_gain" 2>/dev/null
 G0=$(sed -n 's/^gain_field=\([0-9a-f]*\).*/\1/p' "$PGD/hphl_pa_gain" 2>/dev/null)
+# r185: and the right channel, through its ALSA control (0 = the minimum)
+"$SETCTL" -D "$CTLDEV" --set "HPHR Volume" 0 >/dev/null 2>&1
+GR0=$(rv "$(cat "$PGD/hphr_state" 2>/dev/null)" gain_field_r)
 
 "$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 >/dev/null 2>&1
 DM0=$(dmesg | wc -l)
 
 # ---------------------------------------------------------------- during --
-"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >/tmp/.dapm-tone.$$ 2>&1 &
+"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side B >/tmp/.dapm-tone.$$ 2>&1 &
 TPID=$!
 sleep 0.3
 D1=$(cat "$PGD/dapm_state" 2>/dev/null)
@@ -130,6 +142,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	say "widgets during : $W1"
 	say "widgets after  : $W2"
 	say "pin before/during/after : $PIN0 $PIN1 $PIN2"
+	say "jack before the override: $JACK0"
 	say "tone rc : $TRC"
 	say "codec debugfs : $WDIR"
 	say "card debugfs  : $PDIR"
@@ -141,6 +154,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	check "pin OFF during" "$PIN1" "0"
 	check "pin OFF after" "$PIN2" "0"
 	check "gain field at the minimum" "$G0" "14"
+	check "HPHR gain field at the minimum" "$GR0" "14"
 	check "DAPM holds nothing before" "$(dapm_held_is "$D0" "$DAPM_HELD_NONE")" "OK"
 	check "nobody holds MCLK before" "$(rv "$CS0" mclk_users)" "0"
 	check "PA off before (0x1ab)" "$(rv "$PA0" pa_0x1ab)" "80"
@@ -151,14 +165,14 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 
 	say ""
 	say "-- during the stream: reached the graph, powered nothing --"
-	_hp=$(wfield "$W1" HPHL)
-	check "HPHL off during" "${_hp%%/*}" "Off"
+	_hp=$(wfield "$W1" HPH)
+	check "HPH off during" "${_hp%%/*}" "Off"
 	_in=$(printf '%s' "$_hp" | cut -d/ -f2)
-	check_cond "HPHL sees the active DAI (in >= 1)" \
+	check_cond "HPH sees the active DAI (in >= 1)" \
 		"$([ "${_in:-0}" -ge 1 ] 2>/dev/null && echo 1 || echo 0)" \
 		"in=$_in -- the stream never reached the codec graph" "in=$_in"
-	check "HPHL sees no sink (out 0)" "$(printf '%s' "$_hp" | cut -d/ -f3)" "0"
-	for _w in MCLK CLASS_H_PREP CDC_PREREQ RX1_CHAIN HPHL_DAC; do
+	check "HPH sees no sink (out 0)" "$(printf '%s' "$_hp" | cut -d/ -f3)" "0"
+	for _w in MCLK CLASS_H_PREP CDC_PREREQ RX1_CHAIN RX2_CHAIN HPHL_DAC HPHR_DAC HPHL_PA HPHR_PA; do
 		check "$_w off during" "$(wfield "$W1" "$_w" | cut -d/ -f1)" "Off"
 	done
 	check "DAPM holds nothing during" "$(dapm_held_is "$D1" "$DAPM_HELD_NONE")" "OK"

@@ -149,7 +149,14 @@ EXPECT = {
     # r179: 97 = 90 + 7. The +4 is the zdet: the snapshot and the
     #            restore-verify loop for each of its two tables (the
     #            voltmeter's set and the static-PA set) in wcd9320_hphl_zdet().
-    "read_bypassed_calls": 97,
+    # r180-r184: 97, unchanged.
+    # r185: 116 = 109 + 7. The +19 is the right channel and the jack: 3 in
+    #            wcd9320_hphr_dac_path (the 0x1b4 gain check, 0x1b7 after the
+    #            enable and after the teardown), 3 in wcd9320_hphr_pa_path
+    #            (0x1b7 before the PA, 0x1ab after the enable and after the
+    #            teardown), 10 in hphr_state_show, 1 in wcd9320_jack_level and
+    #            2 in jack_detect_show (0x14a, 0x14b).
+    "read_bypassed_calls": 116,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -679,11 +686,18 @@ def main():
         the function and swallows the rest of the file, which turns every
         containment check below into a vacuous pass.
         """
-        m = re.search(r"^static\s+[A-Za-z_][\w \t*]*\b%s\s*\("
-                      % re.escape(name), ptext_all, re.M)
-        if not m:
-            return ""
-        i = ptext_all.find("{", m.start())
+        # A forward DECLARATION matches the same signature, and the next "{"
+        # after it belongs to some other function. r185 added two, and the
+        # HPHR fence read the wrong bodies until declarations were skipped:
+        # a definition reaches its "{" before any ";".
+        i = -1
+        for m in re.finditer(r"^static\s+[A-Za-z_][\w \t*]*\b%s\s*\("
+                             % re.escape(name), ptext_all, re.M):
+            b = ptext_all.find("{", m.start())
+            s = ptext_all.find(";", m.start())
+            if b >= 0 and (s < 0 or b < s):
+                i = b
+                break
         if i < 0:
             return ""
         depth, j, instr, esc = 0, i, False, False
@@ -709,6 +723,11 @@ def main():
 
     pa_path = func_body("wcd9320_hphl_pa_path")
     dac_path = func_body("wcd9320_hphl_dac_path")
+    # r185: the right channel, and the POST_PA writes moved into one helper
+    # that both PA paths call (downstream runs enable_post_pa for every PA).
+    r_pa_path = func_body("wcd9320_hphr_pa_path")
+    r_dac_path = func_body("wcd9320_hphr_dac_path")
+    post_pa = func_body("wcd9320_clsh_post_pa")
     guard_exp = func_body("wcd9320_pa_guard_expect")
     guard_old = func_body("wcd9320_pa_guard")
     abort_body = func_body("wcd9320_c3_abort")
@@ -718,6 +737,9 @@ def main():
     # rename from turning the whole fence into a vacuous pass.
     for nm, bd in (("wcd9320_hphl_pa_path", pa_path),
                    ("wcd9320_hphl_dac_path", dac_path),
+                   ("wcd9320_hphr_pa_path", r_pa_path),
+                   ("wcd9320_hphr_dac_path", r_dac_path),
+                   ("wcd9320_clsh_post_pa", post_pa),
                    ("wcd9320_pa_guard_expect", guard_exp),
                    ("wcd9320_pa_guard", guard_old),
                    ("wcd9320_c3_abort", abort_body)):
@@ -750,15 +772,31 @@ def main():
     # mask 0x30. Those two writes are confined to wcd9320_zdet_static_pa()
     # and fenced again in 5g. The two C3a writes are unchanged, HPHL alone,
     # in wcd9320_hphl_pa_path(). docs/audio/wcd9320-hph-zdet-mapping.md s5.
+    # r185: SIX, AND NO FURTHER -- the HPHR PA's enable and disable, masked to
+    # HPHR alone, inside wcd9320_hphr_pa_path(), which refuses unless the HPHL
+    # PA is already on. docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md.
     zsp = func_body("wcd9320_zdet_static_pa")
     pw_pa = PA_WRITE.findall(pa_path)
+    pw_r = PA_WRITE.findall(r_pa_path)
     pw_z = PA_WRITE.findall(zsp)
-    check("the PA writes go through the chip-verified helper", len(pw) == 4,
-          "%d matched wcd9320_c2b_write(0x1ab, mask, val) (want 4)" % len(pw))
-    check("every PA write is in one of the two mapped functions",
-          len(pw_pa) + len(pw_z) == len(pw),
-          "%d in wcd9320_hphl_pa_path, %d in wcd9320_zdet_static_pa, %d total"
-          % (len(pw_pa), len(pw_z), len(pw)))
+    check("the PA writes go through the chip-verified helper", len(pw) == 6,
+          "%d matched wcd9320_c2b_write(0x1ab, mask, val) (want 6)" % len(pw))
+    check("every PA write is in one of the three mapped functions",
+          len(pw_pa) + len(pw_r) + len(pw_z) == len(pw),
+          "%d in hphl_pa_path, %d in hphr_pa_path, %d in zdet_static_pa, %d total"
+          % (len(pw_pa), len(pw_r), len(pw_z), len(pw)))
+    check("the HPHR PA writes are masked to HPHR alone",
+          sorted(pw_r) == [("WCD9320_HPH_PA_HPHR", "0"),
+                           ("WCD9320_HPH_PA_HPHR", "WCD9320_HPH_PA_HPHR")],
+          "%s" % (pw_r or "none"))
+    i_r_on = r_pa_path.find("WCD9320_HPH_PA_HPHR, WCD9320_HPH_PA_HPHR,")
+    check("the HPHR PA refuses unless the HPHL PA is already on",
+          0 <= r_pa_path.find("if (!wcd->hphl_pa_on)") < i_r_on,
+          "stereo only, HPHL first: the legal states stay {00, 20, 30}")
+    check("the HPHR PA checks 0x1b7 = c0 and OCP before its write",
+          0 <= r_pa_path.find("WCD9320_HPHR_DAC_PWR | WCD9320_HPHR_DAC_SWITCH") < i_r_on
+          and 0 <= r_pa_path.find("WCD9320_INTR2_OCP_ANY") < i_r_on,
+          "as 0x1b1 and OCPL are checked for HPHL")
     check("the C3a PA writes are masked to HPHL alone",
           len(pw_pa) == 2 and all(m == "WCD9320_HPH_PA_HPHL" for m, _ in pw_pa),
           "masks: %s" % ([m for m, _ in pw_pa] or "none"))
@@ -786,8 +824,24 @@ def main():
     hphr_writes = [ln for ln in added
                    if "WCD9320_HPH_PA_HPHR" in ln
                    and any(c in ln for c in CALLS)]
-    check("the HPHR PA bit is never written", not hphr_writes,
-          "%d write call(s) naming WCD9320_HPH_PA_HPHR" % len(hphr_writes))
+    r_pa_lines = set(r_pa_path.splitlines())
+    # c2b_write puts the mask on its own continuation line, so the line that
+    # names the bit is what is matched; all of them must be inside the path.
+    hphr_named = [ln for ln in added if "WCD9320_HPH_PA_HPHR" in ln
+                  and not ln.lstrip().startswith(("*", "/*", "#define"))]
+    check("the HPHR PA bit is written only inside wcd9320_hphr_pa_path",
+          len(pw_r) == 2 and all(ln in r_pa_lines or "hphr_pa_on ?" in ln
+                                 for ln in hphr_named),
+          "%d line(s) name WCD9320_HPH_PA_HPHR, %d write call(s) on one line"
+          % (len(hphr_named), len(hphr_writes)))
+    check("the HPHL PA teardown takes HPHR down first",
+          0 <= pa_path.find("if (wcd->hphr_pa_on)\n\t\twcd9320_hphr_pa_path(wcd, false);")
+          < pa_path.find("WCD9320_HPH_PA_HPHL, 0,"),
+          "so the C3 abort, unchanged, takes both PAs down, right then left")
+    check("the HPHL DAC teardown takes the HPHR DAC down first",
+          0 <= dac_path.find("if (wcd->hphr_dac_on)\n\t\twcd9320_hphr_dac_path(wcd, false);")
+          < dac_path.find("WCD9320_HPHL_DAC_PWR, 0,"),
+          "nothing can leave the right DAC running on a left teardown")
 
     # ---- the guard: allowed states are exactly {00, 20} --------------
     #
@@ -829,24 +883,37 @@ def main():
           len(named) == len(vm_pa),
           "%d in the driver, %d inside wcd9320_hphl_vm" % (len(named), len(vm_pa)))
     nz_all = [v for v in nz_all if v != "pa_expect"]
-    # r179: the zdet expects 0x30 while its static PA is on -- permitted only
-    # inside wcd9320_hphl_zdet(), and excluded here only for those sites.
+    # r185: the HPHR PA's teardown expects whatever HPHL is (l_expect, 20 or
+    # 00), named once, and only there.
+    r_named = [v for v in nz_all if v == "l_expect"]
+    check("l_expect is used only inside the HPHR PA path",
+          len(r_named) == 1 and "l_expect" in r_pa_path
+          and "l_expect = wcd->hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0;" in r_pa_path,
+          "%d use(s)" % len(r_named))
+    nz_all = [v for v in nz_all if v != "l_expect"]
+    # r179: the zdet expects 0x30 while its static PA is on; r185: so does the
+    # HPHR PA path once both PAs are up. Nowhere else.
     zd_pa = [v for v in GEXP.findall(func_body("wcd9320_hphl_zdet"))
              if v == "WCD9320_HPH_PA_MASK"]
+    r_mask = [v for v in GEXP.findall(r_pa_path) if v == "WCD9320_HPH_PA_MASK"]
     zd_named = [v for v in nz_all if v == "WCD9320_HPH_PA_MASK"]
-    check("a 0x30 guard expectation exists only inside the zdet",
-          len(zd_named) == len(zd_pa) and len(zd_pa) >= 1,
-          "%d in the driver, %d inside wcd9320_hphl_zdet"
-          % (len(zd_named), len(zd_pa)))
+    check("a 0x30 guard expectation exists only in the zdet and HPHR PA",
+          len(zd_named) == len(zd_pa) + len(r_mask) and len(zd_pa) >= 1
+          and len(r_mask) == 2,
+          "%d in the driver, %d inside the zdet, %d inside hphr_pa_path"
+          % (len(zd_named), len(zd_pa), len(r_mask)))
     nz_all = [v for v in nz_all if v != "WCD9320_HPH_PA_MASK"]
     nz_pa = [v for v in GEXP.findall(pa_path) if v != "0"]
-    check("the only non-zero guard expectation is HPHL",
+    nz_r = [v for v in GEXP.findall(r_pa_path)
+            if v not in ("0", "WCD9320_HPH_PA_MASK", "l_expect")]
+    check("the remaining non-zero guard expectation is HPHL",
           nz_all and all(v == "WCD9320_HPH_PA_HPHL" for v in nz_all),
           "expectations: %s" % (sorted(set(nz_all)) or "none"))
-    check("non-zero expectations come only from the PA sequence",
-          len(nz_all) == len(nz_pa) and len(nz_pa) > 0,
-          "%d in the driver, %d of them in wcd9320_hphl_pa_path"
-          % (len(nz_all), len(nz_pa)))
+    check("non-zero expectations come only from the PA sequences",
+          len(nz_all) == len(nz_pa) + len(nz_r) and len(nz_pa) > 0
+          and nz_r == ["WCD9320_HPH_PA_HPHL"],
+          "%d in the driver, %d in hphl_pa_path, %d in hphr_pa_path"
+          % (len(nz_all), len(nz_pa), len(nz_r)))
 
     # ---- D1's contract survives --------------------------------------
     #
@@ -938,8 +1005,8 @@ def main():
         pat = re.compile(r"wcd9320_c2b_write\(\s*wcd,\s*%s,\s*%s,\s*%s,"
                          % (re.escape(reg), mask, val))
         check("POST_PA %s mask %s <- %s" % (reg[10:], mask, val),
-              len(pat.findall(pa_path)) == 1,
-              "%d site(s) in the PA sequence" % len(pat.findall(pa_path)))
+              len(pat.findall(post_pa)) == 1 and not pat.findall(pa_path),
+              "%d site(s) in wcd9320_clsh_post_pa" % len(pat.findall(post_pa)))
     # And their inverses must not exist anywhere in the PA sequence.
     for reg, mask, bad in (("WCD9320_A_BUCK_MODE_5", "0x02", "0x02"),
                            ("WCD9320_A_NCP_STATIC", "0x20", "0x20"),
@@ -948,8 +1015,12 @@ def main():
         pat = re.compile(r"wcd9320_c2b_write\(\s*wcd,\s*%s,\s*%s,\s*%s,"
                          % (re.escape(reg), mask, bad))
         check("no invented inverse for %s mask %s" % (reg[10:], mask),
-              not pat.findall(pa_path),
+              not pat.findall(pa_path + r_pa_path + post_pa),
               "turnoff_postpa() does not touch it, so neither do we")
+    for nm, bd in (("hphl", pa_path), ("hphr", r_pa_path)):
+        check("the %s PA path runs POST_PA through the helper, once" % nm,
+              bd.count("wcd9320_clsh_post_pa(wcd)") == 1,
+              "downstream's enable_post_pa, for every PA")
     check("the PA teardown uses the C2a class-H path",
           "wcd9320_clsh_hphl(wcd, false)" in pa_path,
           "the proven turnoff_postpa() equivalent, not a re-implementation")
@@ -1063,8 +1134,9 @@ def main():
             # 5d is even reached.
             # r179: FOUR -- the two C3a sites plus the zdet static PA's two
             # (both channels, operator decision), fenced in 5d and 5g.
-            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 4, 0,
-             "the PA -- C3a HPHL on/off plus the zdet static PA on/off"),
+            # r185: SIX -- plus the HPHR PA's on/off in wcd9320_hphr_pa_path.
+            ("WCD9320_A_RX_HPH_CNP_EN", "0x1ab", 6, 0,
+             "the PA -- HPHL on/off, HPHR on/off, zdet static PA on/off"),
 
             # CHIP_CTL, at its real address from r170. ONE write site, inside
             # wcd9320_chip_ctl_probe(), reached both to attempt the 9.6 MHz
@@ -1354,8 +1426,16 @@ def main():
           "%s" % pre_regs)
     check("the PA guard is sampled before and after, against its live state",
           vm_main.count("wcd9320_pa_guard_expect(") == 2
-          and "hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0" in vm_main,
-          "phase-dependent guard")
+          and "hphl_pa_on ? WCD9320_HPH_PA_HPHL : 0" in vm_main
+          and "hphr_pa_on ? WCD9320_HPH_PA_HPHR : 0" in vm_main,
+          "phase-dependent guard, both channels (r185)")
+    # r185: HPHR is downstream's R0 -- MUX_1 = a0 over the same passive MUX_2.
+    mux1 = re.findall(r"wcd9320_vm_wr\(\s*wcd,\s*WCD9320_A_MBHC_SCALING_MUX_1,\s*0xff,"
+                      r"\s*([^;]*?)\)\s*;", vm_main)
+    check("the HPHR reading is MUX_1 = a0, chosen by vm_right, nothing else",
+          any("wcd->vm_right ? WCD9320_ZDET_MUX1_HPHR" in m and
+              "WCD9320_VM_MUX1_HPH_ADC7" in m for m in mux1),
+          "%d full-byte MUX_1 write(s)" % len(mux1))
 
     # ---- the restore ------------------------------------------------
     check("every table register is restored and read back from the chip",
@@ -1370,9 +1450,10 @@ def main():
           "for (i = 0; i < fir_read; i++)" in vm_main, "fir_read bound")
 
     # ---- the sysfs surface ------------------------------------------
-    check('hphl_vm accepts exactly measure / window / measure-1200',
-          sorted(re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', vm_store))
-          == ["measure", "measure-1200", "window"], "three verbs")
+    check('hphl_vm accepts measure / window / measure-1200, and -r',
+          sorted(set(re.findall(r'sysfs_streq\(buf, "([a-z0-9-]+)"\)', vm_store)))
+          == ["measure", "measure-1200", "measure-r", "window", "window-r"],
+          "three verbs, two of them also on HPHR (r185)")
     check("hphl_vm serialises on c3_lock",
           "mutex_lock(&wcd->c3_lock)" in vm_store, "with every C3 sequence")
     check("hphl_vm is registered",
@@ -1689,12 +1770,15 @@ def main():
     widgets = re.findall(r"SND_SOC_DAPM_(\w+)\(\s*\"([^\"]+)\"\s*((?:,[^;]*?)?)\)\s*,",
                          w_body, re.S)
     w_names = [(t, n) for t, n, _ in widgets]
+    # r185: nine ordered supplies feeding one event-less PGA.
     check("the widget set is exactly the mapped one",
           w_names == [("AIF_IN", "AIF1 PB"),
                       ("SUPPLY_S", "MCLK"), ("SUPPLY_S", "CLASS_H PREP"),
                       ("SUPPLY_S", "CDC PREREQ"), ("SUPPLY_S", "RX1 CHAIN"),
-                      ("SUPPLY_S", "HPHL DAC"),
-                      ("PGA_E", "HPHL"), ("OUTPUT", "HEADPHONE")],
+                      ("SUPPLY_S", "RX2 CHAIN"),
+                      ("SUPPLY_S", "HPHL DAC"), ("SUPPLY_S", "HPHR DAC"),
+                      ("SUPPLY_S", "HPHL PA"), ("SUPPLY_S", "HPHR PA"),
+                      ("PGA", "HPH"), ("OUTPUT", "HEADPHONE")],
           "%s" % w_names)
     check("every widget is SND_SOC_NOPM",
           widgets and all("SND_SOC_NOPM" in a for t, n, a in widgets
@@ -1711,37 +1795,34 @@ def main():
                   ("CLASS_H PREP", "1", "WCD9320_DS_PREP"),
                   ("CDC PREREQ", "2", "WCD9320_DS_PREREQ"),
                   ("RX1 CHAIN", "3", "WCD9320_DS_RX1"),
-                  ("HPHL DAC", "4", "WCD9320_DS_DAC")]
+                  ("RX2 CHAIN", "4", "WCD9320_DS_RX2"),
+                  ("HPHL DAC", "5", "WCD9320_DS_DACL"),
+                  ("HPHR DAC", "6", "WCD9320_DS_DACR"),
+                  ("HPHL PA", "7", "WCD9320_DS_PAL"),
+                  ("HPHR PA", "8", "WCD9320_DS_PAR")]
     got_stage = re.findall(r'SND_SOC_DAPM_SUPPLY_S\(\s*"([^"]+)"\s*,\s*(\d+)\s*,'
                            r'\s*SND_SOC_NOPM\s*,\s*(\w+)\s*,\s*0\s*,'
                            r'\s*wcd9320_dapm_event\s*,', w_body)
-    check("the supplies are ordered by subsequence 0..4, stage in .shift",
+    check("the supplies are ordered by subsequence 0..8, stage in .shift",
           got_stage == want_stage, "%s" % got_stage)
-    check("HPHL is the PA stage and uses the same event",
-          re.search(r'SND_SOC_DAPM_PGA_E\(\s*"HPHL"\s*,\s*SND_SOC_NOPM\s*,'
-                    r'\s*WCD9320_DS_PA\s*,\s*0\s*,\s*NULL\s*,\s*0\s*,'
-                    r'\s*wcd9320_dapm_event\s*,', w_body) is not None,
-          "PGA_E, NOPM, shift = WCD9320_DS_PA")
+    check("HPH is a NOPM PGA with no event",
+          re.search(r'SND_SOC_DAPM_PGA\(\s*"HPH"\s*,\s*SND_SOC_NOPM\s*,'
+                    r'\s*0\s*,\s*0\s*,\s*NULL\s*,\s*0\s*\)', w_body) is not None,
+          "the PAs are supplies 7 and 8; this only joins the path")
     n_evt = w_body.count("wcd9320_dapm_event")
     check("every event widget has PRE_PMU and POST_PMD only",
-          n_evt == 6 and w_body.count("SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD") == 6
+          n_evt == 9 and w_body.count("SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD") == 9
           and "POST_PMU" not in w_body and "PRE_PMD" not in w_body,
           "%d event widget(s)" % n_evt)
     routes = re.findall(r'\{\s*"([^"]+)"\s*,\s*(NULL|"[^"]*")\s*,\s*"([^"]+)"\s*\}',
                         r_body)
     routes = sorted((s, c.strip('"') if c != "NULL" else None, src)
                     for s, c, src in routes)
-    want_routes = sorted([("HPHL", None, "AIF1 PB"),
-                          ("HEADPHONE", None, "HPHL"),
-                          ("HPHL", None, "MCLK"),
-                          ("HPHL", None, "CLASS_H PREP"),
-                          ("HPHL", None, "CDC PREREQ"),
-                          ("HPHL", None, "RX1 CHAIN"),
-                          ("HPHL", None, "HPHL DAC")])
+    want_routes = sorted([("HPH", None, "AIF1 PB"),
+                          ("HEADPHONE", None, "HPH")] +
+                         [("HPH", None, s) for s, _, _ in want_stage])
     check("the routes are exactly the mapped ones", routes == want_routes,
           "%d route(s)" % len(routes))
-    check("no HPHR anywhere in the DAPM tables",
-          "HPHR" not in w_body and "HPHR" not in r_body, "HPHL only")
     comp = array_body("static const struct snd_soc_component_driver wcd9320_soc_component")
     check("the component declares the widgets and routes",
           all(s in comp for s in (".dapm_widgets = wcd9320_dapm_widgets",
@@ -1749,15 +1830,28 @@ def main():
                                   ".dapm_routes = wcd9320_dapm_routes",
                                   ".num_dapm_routes = ARRAY_SIZE(wcd9320_dapm_routes)")),
           "wcd9320_soc_component")
-    check("the component declares no controls",
-          ".controls" not in comp, "no volume, no mode controls in r184")
+    # r185: four volume controls and the jack, nothing else.
+    check("the component declares the controls and the jack",
+          all(s in comp for s in (".controls = wcd9320_controls",
+                                  ".num_controls = ARRAY_SIZE(wcd9320_controls)",
+                                  ".set_jack = wcd9320_set_jack",
+                                  ".remove = wcd9320_component_remove")),
+          "wcd9320_soc_component")
+    ctl = array_body("static const struct snd_kcontrol_new wcd9320_controls[]")
+    check("the controls are exactly the four mapped ones",
+          re.findall(r'SOC_SINGLE_EXT(?:_TLV)?\(\s*"([^"]+)"', ctl)
+          == ["HPHL Volume", "HPHR Volume", "RX1 Digital Volume",
+              "RX2 Digital Volume"], "analog x2, digital x2")
 
     # ---- the dispatcher: the six proven functions, nothing else --------
     want_calls = ["wcd9320_mclk_get(wcd)", "wcd9320_mclk_put(wcd)",
                   "wcd9320_pa_prep(wcd, on)", "wcd9320_cdc_clk_prereq(wcd, on)",
-                  "wcd9320_rx1_digital_path(wcd, on)",
+                  "wcd9320_rx_digital_path(wcd, 0, on)",
+                  "wcd9320_rx_digital_path(wcd, 1, on)",
                   "wcd9320_hphl_dac_path(wcd, on, true,",
-                  "wcd9320_hphl_pa_path(wcd, on)"]
+                  "wcd9320_hphr_dac_path(wcd, on)",
+                  "wcd9320_hphl_pa_path(wcd, on)",
+                  "wcd9320_hphr_pa_path(wcd, on)"]
     check("the dispatcher calls each proven function exactly once",
           all(d_call.count(c) == 1 for c in want_calls),
           ", ".join("%s%d" % (c.split("(")[0][8:], d_call.count(c)) for c in want_calls))
@@ -1788,7 +1882,9 @@ def main():
           d_ev.count("wcd9320_dapm_stage_call(") == 2
           and not any(f in d_ev for f in ("wcd9320_mclk_get", "wcd9320_pa_prep",
                                           "wcd9320_hphl_pa_path", "wcd9320_hphl_dac_path",
+                                          "wcd9320_hphr_pa_path", "wcd9320_hphr_dac_path",
                                           "wcd9320_rx1_digital_path",
+                                          "wcd9320_rx_digital_path",
                                           "wcd9320_cdc_clk_prereq")),
           "power up once, power down once")
     i_on = d_ev.find("wcd9320_dapm_stage_call(wcd, stage, true)")
@@ -1807,7 +1903,9 @@ def main():
           "a stage DAPM never powered is never torn down by it")
     for flag in ("wcd->mclk_users", "wcd->pa_prep_on", "wcd->clk_prereq_on",
                  "wcd->rx1_digital_on", "wcd->hphl_dac_on", "wcd->hphl_pa_on",
-                 "wcd->comp1_on", "wcd->clsh_on", "wcd->rx_bias_refs"):
+                 "wcd->rx2_digital_on", "wcd->hphr_dac_on", "wcd->hphr_pa_on",
+                 "wcd->comp1_on", "wcd->clsh_on", "wcd->clsh_r_on",
+                 "wcd->rx_bias_refs"):
         check("idle means %s is clear" % flag.split("->")[1], "!" + flag in d_idle,
               "wcd9320_dapm_idle")
     check("the event is called from nothing but the widget table",
@@ -1834,7 +1932,246 @@ def main():
           "late_probe, before the first sync")
     check("the card never enables the pin itself",
           "enable_pin" not in card and "force_enable" not in card,
-          "only the operator, through the control")
+          "only the jack and the operator's control do")
+    # r185: the jack drives the pin, through ASoC's jack core.
+    check("the card's Headphone Jack drives the Headphones pin",
+          re.search(r'\{\s*\.pin\s*=\s*"Headphones"\s*,\s*\.mask\s*=\s*SND_JACK_HEADPHONE\s*\}',
+                    card) is not None
+          and 'snd_soc_card_jack_new_pins(card, "Headphone Jack"' in card
+          and "snd_soc_component_set_jack(codec, &lumia_q6_jack, NULL)" in card,
+          "headphone only")
+    li = card.find("lumia_q6_late_probe(struct snd_soc_card *card)\n{")
+    check("the pin is disabled before the jack is handed over",
+          0 <= card.find('snd_soc_dapm_disable_pin(&card->dapm, "Headphones")', li)
+          < card.find("snd_soc_component_set_jack(", li), "off until a report")
+    check("the back end is pinned to two channels",
+          "channels->min = channels->max = 2;" in card, "SLIM RX1 + RX2")
+
+    # ==================================================================
+    # 5j. r185: STEREO, VOLUME, JACK.
+    #
+    # docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md. The PA count and
+    # the guard states are fenced in 5d, the stages in 5i. This pins the rest:
+    #
+    #   1. the RX2 chain is RX1's table row, the same function, the same steps
+    #   2. the HPHR DAC: refused prerequisites, downstream's order both ways,
+    #      the mandatory forced inverse, and nothing but 0x1b7 / 0x30d bit 2
+    #   3. class-H: HPHR joins and leaves by CLSH_B1 bits 3/2 <- 0, nothing else
+    #   4. the prep: HPHR's gain rows, boot default minimum
+    #   5. stereo transport: ports 16 + 17, payload of the whole set, 2 slots
+    #   6. volume: analog capped at the 20-step field, digital at 0 dB
+    #   7. jack: JACK_SWITCH only, headphone only, polarity re-armed, and the
+    #      research hooks refuse while it owns 0x14a
+    # ==================================================================
+    print()
+    print("=== 5j. the r185 stereo / volume / jack fence ===")
+    for sym, want in (("WCD9320_CDC_CONN_RX2_B1_CTL", "0x383"),
+                      ("WCD9320_CDC_RX2_VOL_CTL_B2_CTL", "0x2bf"),
+                      ("WCD9320_CDC_RX2_B6_CTL", "0x2bd"),
+                      ("WCD9320_CDC_RX2_B5_CTL", "0x2bc"),
+                      ("WCD9320_RX_MIX1_INP_RX2", "0x06"),
+                      ("WCD9320_RDAC_HPHR_CLK", "0x04"),
+                      ("WCD9320_INTR2_OCPR_FAULT", "0x02"),
+                      ("WCD9320_HPHR_DAC_PWR", "0x80"),
+                      ("WCD9320_HPHR_DAC_SWITCH", "0x40"),
+                      ("WCD9320_A_RX_HPH_R_GAIN", "0x1b4"),
+                      ("WCD9320_A_RX_HPH_R_DAC_CTL", "0x1b7"),
+                      ("WCD9320_ZDET_MUX1_HPHR", "0xa0")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym), re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want],
+              "found %s" % (found or "no definition"))
+    check("WCD9320_RX2_INTERP_BIT is BIT(1)",
+          re.search(r"^#define\s+WCD9320_RX2_INTERP_BIT\s+BIT\(1\)", ptext_all, re.M)
+          is not None, "0x301 / 0x30f bit 1")
+    check("the forced-write ring holds 64",
+          re.search(r"^#define\s+WCD9320_FORCED_LOG\s+64\b", ptext_all, re.M)
+          is not None, "6 per stereo stream")
+
+    rxd = func_body("wcd9320_rx_digital_path")
+    rx1w = func_body("wcd9320_rx1_digital_path")
+    chains = array_body("static const struct wcd9320_rx_chain wcd9320_rx_chains[2]")
+    check("RX1 is channel 0 of the one RX function",
+          "return wcd9320_rx_digital_path(wcd, 0, enable);" in rx1w
+          and len(rx1w.strip("{} \n\t").splitlines()) == 1, "a one-line wrapper")
+    check("the RX table rows are RX1's and RX2's",
+          chains.count("WCD9320_CDC_CONN_RX1_B1_CTL") == 1
+          and chains.count("WCD9320_CDC_CONN_RX2_B1_CTL") == 1
+          and chains.index("RX1_B1") < chains.index("RX2_B1")
+          and "WCD9320_RX_MIX1_INP_RX2, WCD9320_RX2_INTERP_BIT" in chains,
+          "row 0 RX1, row 1 RX2")
+    seq = ("c->conn, WCD9320_RX_MIX1_INP_MASK", "c->bit, c->bit, \"interpolator reset asserted\"",
+           "c->bit, 0, \"interpolator reset released\"", "WCD9320_CDC_CLK_RX_B1_CTL,\n\t\t\t       c->bit, c->bit",
+           "c->vol, 0xff, gain & 0xff", "c->b6, WCD9320_RX1_CHAIN_BIT,\n\t\t\t       WCD9320_RX1_CHAIN_BIT")
+    pos, ok = -1, bool(rxd)
+    for tok in seq:
+        nxt = rxd.find(tok, pos + 1)
+        if nxt < 0:
+            ok = False
+            break
+        pos = nxt
+    check("the RX sequence is the proven one, in order", ok,
+          "mux, reset pulse, clock, gain latch, chain")
+    check("the RX rate is asserted from the table, never written",
+          "regmap_read(wcd->regmap, c->b5, &fs);" in rxd
+          and "c->b5, 0x" not in rxd.replace("c->b5, fs", ""), "0x2b4 / 0x2bc")
+
+    rdac = r_dac_path
+    i_en = rdac.find("if (!enable)\n\t\tgoto teardown;")
+    i_td = rdac.find("teardown:")
+    up = rdac[i_en:i_td] if 0 <= i_en < i_td else ""
+    down = rdac[i_td:] if i_td >= 0 else ""
+    for cond, why in (("!wcd->hphl_dac_on || !wcd->clsh_on || !wcd->clk_prereq_on", "HPHL DAC path first"),
+                      ("!wcd->rx2_digital_on", "RX2 first"),
+                      ("wcd->hphl_pa_on || wcd->hphr_pa_on", "before any PA"),
+                      ("wcd->comp1_on", "register gain mode only")):
+        check("the HPHR DAC refuses: %s" % why, cond in up, "checked before any write")
+    check("the HPHR DAC verifies 0x1b4 on the chip first",
+          0 <= up.find("regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_GAIN")
+          < up.find("wcd9320_rx_bias(wcd, true)")
+          and "WCD9320_HPHL_GAIN_SRC | wcd->pa_gain_field_r" in up,
+          "source bit and the HPHR field")
+    pos, ok = -1, bool(up)
+    for tok in ("wcd9320_rx_bias(wcd, true)",
+                "WCD9320_RDAC_HPHR_CLK, WCD9320_RDAC_HPHR_CLK",
+                "WCD9320_HPHR_DAC_SWITCH, WCD9320_HPHR_DAC_SWITCH",
+                "wcd9320_clsh_hphr(wcd, true)",
+                "WCD9320_HPHR_DAC_PWR, WCD9320_HPHR_DAC_PWR"):
+        nxt = up.find(tok, pos + 1)
+        if nxt < 0:
+            ok = False
+            break
+        pos = nxt
+    check("the HPHR DAC enable is downstream's order", ok,
+          "bias, RDAC clock, bit 6, class-H join, bit 7")
+    pos, ok = -1, bool(down)
+    for tok in ("WCD9320_HPHR_DAC_PWR, 0,",
+                "WCD9320_RDAC_HPHR_CLK, 0,",
+                "WCD9320_HPHR_DAC_SWITCH, 0,",
+                "wcd9320_clsh_hphr(wcd, false)",
+                "wcd9320_rx_bias(wcd, false)"):
+        nxt = down.find(tok, pos + 1)
+        if nxt < 0:
+            ok = False
+            break
+        pos = nxt
+    check("the HPHR DAC teardown is the reverse, inverse mandatory", ok,
+          "bit 7, forced RDAC clear, bit 6, class-H leave, bias")
+    check("the HPHR teardown has no early return",
+          down.count("return") == 1 and r_pa_path[r_pa_path.find("teardown:"):].count("return") == 1,
+          "best-effort, every step attempted")
+    fr = [ln for ln in added if "WCD9320_RDAC_HPHR_CLK" in ln
+          and not ln.lstrip().startswith(("*", "/*", "#define"))]
+    check("the HPHR RDAC bit is named only in the HPHR DAC path",
+          len(fr) == 2 and all(ln in set(rdac.splitlines()) for ln in fr),
+          "%d line(s): one set, one forced clear" % len(fr))
+    r_dac_named = [ln for ln in added if "WCD9320_A_RX_HPH_R_DAC_CTL" in ln
+                   and any(c in ln for c in CALLS)]
+    check("0x1b7 is written only by the HPHR DAC path",
+          all(ln in set(rdac.splitlines()) for ln in r_dac_named) and len(r_dac_named) == 4,
+          "%d write line(s); the zdet's table rows are counted in 5g" % len(r_dac_named))
+
+    clr = func_body("wcd9320_clsh_hphr")
+    cw = re.findall(r"wcd9320_clsh_one\(wcd,\s*WCD9320_A_CDC_CLSH_B1_CTL,\s*(0x[0-9a-f]+),\s*(0x[0-9a-f]+),", clr)
+    check("the class-H join and leave write only CLSH_B1 bits 3/2 <- 0",
+          sorted(cw) == [("0x04", "0x00"), ("0x04", "0x00"), ("0x08", "0x00")]
+          and "regmap_update_bits" not in clr and "c2b_write" not in clr,
+          "COND_HPH clear: comp_req L/R write 0 both ways")
+    check("HPHR joins only an HPHL class-H state",
+          0 <= clr.find("if (!wcd->clsh_on)") < clr.find("clsh_one("), "never from IDLE")
+
+    prep_tab = array_body("static const struct wcd9320_pa_prep_reg\nwcd9320_pa_prep_set[WCD9320_PA_PREP_N]")
+    check("the prep has 8 rows, HPHR's two appended",
+          re.search(r"^#define\s+WCD9320_PA_PREP_N\s+8\b", ptext_all, re.M) is not None
+          and prep_tab.count("WCD9320_A_RX_HPH_R_GAIN") == 2
+          and prep_tab.rfind("WCD9320_A_RX_HPH_CHOP_CTL") < prep_tab.find("WCD9320_A_RX_HPH_R_GAIN"),
+          "rows 0..5 keep their indices")
+    check("the HPHR gain field defaults to the MINIMUM at probe",
+          re.search(r"wcd->pa_gain_field_r\s*=\s*WCD9320_HPHL_GAIN_MIN\s*;", probe_body) is not None,
+          "0x00 would be the maximum")
+    check("the prep refuses an out-of-range HPHR field",
+          "pa_gain_field_r > WCD9320_HPHL_GAIN_MIN" in prep_body, "defence in depth")
+    check("the prep writes the per-channel field",
+          "wcd->pa_gain_field_r : wcd->pa_gain_field" in prep_body, "0x1b4 takes the R setting")
+
+    rpp = func_body("wcd9320_rx_ports_program")
+    check("a set of ports carries the payload of the whole set",
+          "mask = GENMASK(n - 1, 0);" in rpp
+          and "WCD9320_RX_PORT_FIRST + i,\n\t\t\t\t\t      mask, true)" in rpp,
+          "01 mono, 03 on 16 and 17 for stereo")
+    check("the set is torn down in reverse, best-effort",
+          "for (i = n; i-- > 0; )" in rpp, "17 then 16")
+    hwp = func_body("wcd9320_rx_hw_params")
+    check("hw_params programs one port per channel",
+          "wcd9320_rx_ports_program(wcd, params_channels(params), true)" in hwp
+          and "params_channels(params));" in hwp, "and configures that many channels")
+    gcm = func_body("wcd9320_get_channel_map")
+    check("the codec reports SLIM RX1 and RX2",
+          "rx_slot[1] = WCD9320_SLIM_RX1_CH + 1;" in gcm and "*rx_num = 2;" in gcm,
+          "144, 145")
+    check("the RX DAI takes up to two channels",
+          ".channels_max = 2," in ptext_all, "stereo")
+    scf = func_body("__wcd9320_slim_config")
+    check("the SLIMbus config spans consecutive ports",
+          "GENMASK(port + nch - 1, port)" in scf and "wcd->sconfig.ch_count = nch;" in scf,
+          "port_mask and ch_count from the channel count")
+
+    hvp = func_body("wcd9320_hph_vol_put")
+    dvp = func_body("wcd9320_dig_vol_put")
+    check("analog volume is bounded to the 20-step field",
+          "v > WCD9320_HPH_VOL_STEPS" in hvp and "want = WCD9320_HPHL_GAIN_MIN - v;" in hvp
+          and re.search(r"^#define\s+WCD9320_HPH_VOL_STEPS\s+WCD9320_HPHL_GAIN_MIN\b",
+                        ptext_all, re.M) is not None, "inverted, 0 = minimum")
+    check("analog volume moves the chip only while the prep is live",
+          0 <= hvp.find("if (wcd->pa_prep_on)") < hvp.find("wcd9320_c2b_write(")
+          and "regmap_" not in hvp, "through the chip-verified helper")
+    check("digital volume is capped at 0 dB",
+          re.search(r"^#define\s+WCD9320_DIG_VOL_STEPS\s+84\b", ptext_all, re.M) is not None
+          and "v > WCD9320_DIG_VOL_STEPS" in dvp
+          and "want = (u8)(s8)(v - WCD9320_DIG_VOL_STEPS);" in dvp
+          and "DECLARE_TLV_DB_SCALE(wcd9320_digital_tlv, -8400, 100, 0)" in ptext_all,
+          "-84..0 dB, cut only")
+    for nm in ("wcd9320_hph_vol_get", "wcd9320_hph_vol_put",
+               "wcd9320_dig_vol_get", "wcd9320_dig_vol_put"):
+        check("%s serialises on c3_lock" % nm,
+              "mutex_lock(&wcd->c3_lock)" in func_body(nm), "with every path stage")
+
+    jen = func_body("wcd9320_jack_enable")
+    jth = func_body("wcd9320_jack_thread")
+    jdis = func_body("wcd9320_jack_disable")
+    jrep = func_body("wcd9320_jack_report")
+    ids = func_body("wcd9320_insert_detect_set")
+    check("insert detect takes the polarity as an argument",
+          "base | (ins ? WCD9320_MBHC_DET_INS : 0)" in ids, "wcd9xxx_insert_detect_setup(ins)")
+    check("jack detection requests JACK_SWITCH and nothing else",
+          "regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_MBHC_JACK_SWITCH)" in jen
+          and jen.count("regmap_irq_get_virq(") == 1, "the source rc6 proved")
+    check("the jack reports headphone only",
+          "SND_JACK_HEADPHONE : 0,\n\t\t\t    SND_JACK_HEADPHONE);" in jrep
+          and "MICROPHONE" not in ptext_all.split("r185: jack detection")[-1].split("static int wcd9320_set_jack")[0],
+          "no mic, no buttons")
+    check("the handler debounces, then re-arms for the other state",
+          0 <= jth.find("usleep_range(WCD9320_JACK_DEBOUNCE_US") < jth.find("wcd9320_jack_level(")
+          < jth.find("false, !ins);")
+          and re.search(r"^#define\s+WCD9320_JACK_DEBOUNCE_US\s+5000\b", ptext_all, re.M) is not None,
+          "5 ms, as SWCH_IRQ_DEBOUNCE_TIME_US")
+    check("the report is made after wake_lock is dropped",
+          jth.rfind("mutex_unlock(&wcd->wake_lock);") < jth.find("wcd9320_jack_report(")
+          and "c3_lock" not in jth + jen + jdis + jrep,
+          "the report takes the DAPM mutex, which takes c3_lock")
+    check("the jack source is freed outside wake_lock",
+          0 <= jdis.find("mutex_unlock(&wcd->wake_lock);") < jdis.find("free_irq(virq, wcd);")
+          < jdis.rfind("mutex_lock(&wcd->wake_lock);"), "the thread takes wake_lock")
+    check("the research hooks refuse while the jack owns 0x14a",
+          "if (wcd->jack_on) {" in func_body("mbhc_detect_store")
+          and "if (wcd->jack_on && !sysfs_streq(buf, \"disarm\")) {" in func_body("mbhc_test_store")
+          and "wcd->mbhc_armed || wcd->mbhc_detect_on" in jen, "and the jack refuses while they do")
+    check("the jack is freed on remove, before the irq chip goes",
+          "wcd9320_jack_disable(wcd, false);" in func_body("wcd9320_remove"),
+          "and on component remove")
+    for sym in ("hphr_test", "hphr_state", "jack_detect"):
+        check("%s is registered" % sym, "&dev_attr_%s.attr" % sym in ptext_all, "in wcd9320_attrs[]")
+        check("dev_attr_%s present" % sym, "dev_attr_%s" % sym in e.syms, "in the artefact")
 
     if args.expect_asoc:
         print()

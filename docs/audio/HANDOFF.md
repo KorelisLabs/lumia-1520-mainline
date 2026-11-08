@@ -1031,9 +1031,38 @@ re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
   The tag does not claim a scope measurement, HPHR as an output, or MCLK
   bring-up inside the driver.
 
+**r185 `stereo-vol-jack-rc1` + `q6-card-rc5`: STAGED, NOT YET RUN
+(2026-11-08, [wcd9320-r185-stereo-volume-jack-mapping.md](wcd9320-r185-stereo-volume-jack-mapping.md)).**
+
+- **What it adds:** the right channel, volume controls, and jack detection
+  driving the Headphones pin. Operator decisions: the jack drives the pin;
+  analog plus digital volume, with digital capped at 0 dB; HPHR DC measured
+  before any stereo listening.
+- **DAPM** is nine ordered supplies (MCLK, prep, prereq, RX1, RX2, HPHL DAC,
+  HPHR DAC, HPHL PA, HPHR PA) into an event-less `HPH` PGA. The full mask is
+  `1ff`, and one stream issues 6 forced writes. The back end is always two
+  channels (ports 16 + 17, channels 144 + 145).
+- **Controls:**
+  - `HPHL/HPHR Volume` (0..20, boot 0 = minimum);
+  - `RX1/RX2 Digital Volume` (0..84 = -84..0 dB, boot 84);
+  - `Headphone Jack`, plus the `Headphones Switch` override.
+- **Research hooks:** `hphr_test`, `hphr_state` and `jack_detect`; the
+  voltmeter takes `measure-r` / `window-r`. The forced-write ring holds 64.
+- **Install** the codec `.ko` with the card `.ko` (`q6-card-rc5`) and the
+  new `pcm-tone` (`--side`). The DAPM gates refuse an older card.
+- **Hardware order, one fresh boot** (map section 7):
+  1. `wcd9320-jack-evidence.sh` (unplug, replug);
+  2. the digital gate;
+  3. mclk-own, vm, zdet;
+  4. HPHR DC: `C3A_INSTRUMENT=onchip C3A_STEREO=1 C3A_VM_CH=r`, 2 cycles;
+  5. the listen run, four streams `L:20:84,R:20:84,R:16:84,R:20:78`.
+- **The class-H baseline moves once stereo has run.** HPHR's join clears
+  CLSH_B1 bit 2 for the rest of the boot. So HPHL-only C3a regressions belong
+  before the first stereo stream, or need `C3A_STEREO=1`.
+
 **r184 `dapm-hphl-rc1`: PLAIN PLAYBACK MAKES SOUND THROUGH DAPM (2026-11-08,
 [wcd9320-dapm-hphl-mapping.md](wcd9320-dapm-hphl-mapping.md) sections 4a
-and 4b).** This is the current build. Install the codec `.ko` together with
+and 4b).** The proven build before r185. Install the codec `.ko` together with
 the card `snd-soc-lumia1520-q6.ko` (`q6-card-rc4`).
 
 - **How it works.** The codec has eight SND_SOC_NOPM widgets. Five ordered

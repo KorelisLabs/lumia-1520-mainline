@@ -60,6 +60,7 @@ MODE="wcd9320-hphl-pa"
 DIR=$(dirname "$0")
 . "$DIR/wcd9320-evidence-lib.sh"
 . "$DIR/wcd9320-hphl-pa-expect.sh"
+. "$DIR/wcd9320-dapm-expect.sh"	# r185: the stereo forced pattern
 
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 
@@ -160,6 +161,31 @@ if [ "$CONTROL" = "pa-off" ]; then
 	PA_LIVE_EXPECT="$WCD9320_PA_STATE_OFF"
 else
 	PA_LIVE_EXPECT="$WCD9320_PA_STATE_ON"
+fi
+#
+# r185: STEREO, AND THE RIGHT CHANNEL'S DC.
+#
+# C3A_STEREO=1 brings HPHR up beside HPHL through the hphr_test research hook,
+# in DAPM's order: RX2 after RX1, the HPHR DAC after the HPHL DAC, the HPHR PA
+# after the HPHL PA, and down in reverse. The PA's live state is then 30, the
+# HPHR join clears CLSH_B1 bit 2 (a7 -> a3), and a cycle issues 6 forced
+# writes. C3A_VM_CH=r points the on-chip voltmeter at HPHR (window-r, the
+# zdet's R0 mux). Together they are the HPHR DC contract run:
+#
+#   C3A_INSTRUMENT=onchip C3A_STEREO=1 C3A_VM_CH=r
+#
+# docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md, section 7 step 4.
+#
+STEREO="${C3A_STEREO:-0}"
+VM_CH="${C3A_VM_CH:-l}"
+VM_VERB=window
+[ "$VM_CH" = "r" ] && VM_VERB=window-r
+CLSH_LIVE_EXPECT="$WCD9320_PA_CLSH_LIVE"
+FORCED_PER_CYCLE="$WCD9320_PA_FORCED_PER_CYCLE"
+if [ "$STEREO" = "1" ]; then
+	[ "$CONTROL" = "pa-off" ] || PA_LIVE_EXPECT=30
+	CLSH_LIVE_EXPECT=a3
+	FORCED_PER_CYCLE=$DAPM_FORCED_PER_STREAM
 fi
 
 #
@@ -285,7 +311,7 @@ c3_clock_up() {
 # VW_MEAN (counts, one decimal), VW_DRIFT (counts), VW_MV10 and VW_MVD (the
 # micbias-scale mV x10, labelled as such), VW_SPAN, and journals it all.
 c3_vm_window() {
-	echo window > "$PGD/hphl_vm" 2>/dev/null; VW_RC=$?
+	echo "$VM_VERB" > "$PGD/hphl_vm" 2>/dev/null; VW_RC=$?
 	_vw_s=$(cat "$PGD/hphl_vm" 2>/dev/null)
 	_vw_raw=$(printf '%s\n' "$_vw_s" | sed -n 's/^raw=//p' | tr ',' '\n')
 	VW_MEAN=$(printf '%s\n' "$_vw_raw" | awk 'NF{s+=$1;n++} END{if(n) printf "%.1f", s/n; else print "?"}')
@@ -517,7 +543,13 @@ c3_preflight() {	# c3_preflight <arming?>
 		say "INVALID SETUP: unknown approval mode '$APPROVE'"
 		return 1 ;;
 	esac
-	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT  approvals $APPROVE  clock $CLOCK"
+	case "$STEREO:$VM_CH" in
+	0:l|1:l|1:r) ;;
+	*)
+		say "INVALID SETUP: C3A_STEREO=$STEREO C3A_VM_CH=$VM_CH -- the HPHR voltmeter needs C3A_STEREO=1 (its PA only exists in stereo)"
+		return 1 ;;
+	esac
+	jrn "instrument $INSTRUMENT  control ${CONTROL:-none}  pa-live-expect $PA_LIVE_EXPECT  approvals $APPROVE  clock $CLOCK  stereo $STEREO  vm $VM_CH"
 	if [ "$INSTRUMENT" = "acoustic" ]; then
 		jrn "DC CONTRACT NOT MEASURED: waived by the operator ($DC_WAIVER)."
 		jrn "  The waveform verdict is the PC-side recording, not this run."
@@ -610,10 +642,33 @@ c3_preflight() {	# c3_preflight <arming?>
 	# to. With the Headphones pin on, the runner's tone would start DAPM's
 	# sequence beside it (DAPM refuses -- the codec is not idle -- but a
 	# refusal is not a state to run research in). Absent on older cards.
+	#
+	# r185: jack detection owns 0x14a, unmasks JACK_SWITCH and drives the
+	# pin; the voltmeter refuses beside it and this runner owns the path by
+	# hand. An armed run turns it off first (the pin follows it off); a check
+	# only reports it.
+	_pf_jack=$(rv "$(cat "$PGD/jack_detect" 2>/dev/null)" on)
+	if [ "$_pf_jack" = "1" ]; then
+		if [ "$_pf_arm" = "arm" ]; then
+			echo off > "$PGD/jack_detect" 2>/dev/null
+			jrn "jack detection turned OFF for this run -- echo on > jack_detect afterwards"
+			_pf_jack=0
+		else
+			say "  note: jack detection is on; an armed run turns it off first"
+		fi
+	fi
 	_pf_pin=$("$SETCTL" -D "$CTLDEV" --get "Headphones Switch" 2>/dev/null |
 		sed -n 's/^readback=//p' | head -n1)
-	[ -z "$_pf_pin" ] || [ "$_pf_pin" = "0" ] ||
+	[ -z "$_pf_pin" ] || [ "$_pf_pin" = "0" ] || [ "$_pf_jack" = "1" ] ||
 		_pf_bad="$_pf_bad headphones-pin-on"
+	if [ "$STEREO" = "1" ]; then
+		_pf_r=$(cat "$PGD/hphr_state" 2>/dev/null)
+		[ -n "$_pf_r" ] || _pf_bad="$_pf_bad no-hphr_state-needs-r185"
+		[ "$(rv "$_pf_r" dac_on)" = "0" ] || _pf_bad="$_pf_bad hphr_dac_already_on"
+		[ "$(rv "$_pf_r" rdac_0x1b7)" = "00" ] || _pf_bad="$_pf_bad hphr_0x1b7_dirty"
+		"$TONE" --dbfs "$DBFS" --side B --dry-run >/dev/null 2>&1 ||
+			_pf_bad="$_pf_bad pcm-tone-has-no-side-needs-r185"
+	fi
 	if [ "$INSTRUMENT" = "onchip" ]; then
 		# the voltmeter refuses on RCO, and must exist (r178)
 		[ "$CLOCK" = "mclk" ] || _pf_bad="$_pf_bad onchip-needs-mclk"
@@ -674,10 +729,21 @@ c3_cycle() {	# c3_cycle <n>
 	echo rx1-on > "$PGD/rx1_digital_test" 2>/dev/null || {
 		jrn "rx1-on REFUSED"; c3_abort "rx1-refused"; return 1; }
 	jrn "RX1 digital chain on"
+	if [ "$STEREO" = "1" ]; then
+		echo rx2-on > "$PGD/hphr_test" 2>/dev/null || {
+			jrn "rx2-on REFUSED"; c3_abort "rx2-refused"; return 1; }
+		jrn "RX2 digital chain on"
+	fi
 
 	echo dac-on-reggain > "$PGD/hphl_dac_test" 2>/dev/null || {
 		jrn "dac-on-reggain REFUSED"; c3_abort "dac-refused"; return 1; }
 	jrn "HPHL DAC path up in register-gain mode"
+	if [ "$STEREO" = "1" ]; then
+		echo dac-on > "$PGD/hphr_test" 2>/dev/null || {
+			jrn "HPHR dac-on REFUSED"; c3_abort "hphr-dac-refused"; return 1; }
+		eval "C${_cy}_RDAC=\$(cat \"\$PGD/hphr_state\" 2>/dev/null)"
+		eval "jrn \"HPHR DAC up: 0x1b7=\$(rv \"\$C${_cy}_RDAC\" rdac_0x1b7) 0x1b4=\$(rv \"\$C${_cy}_RDAC\" rgain_0x1b4) 0x320=\$(rv \"\$C${_cy}_RDAC\" clsh_0x320)\""
+	fi
 
 	eval "C${_cy}_DAC=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "C${_cy}_DDAC=\$(cat \"\$PGD/hphl_dac_state\" 2>/dev/null)"
@@ -702,8 +768,16 @@ c3_cycle() {	# c3_cycle <n>
 		_cy_bad="$_cy_bad dsm=$(rv "$_cy_dst" dsm_0x3b0)"
 	[ "$(printf '%02x' $(( 0x$(rv "$_cy_dst" bias_0x1a2) & 0x80 )))" = "80" ] ||
 		_cy_bad="$_cy_bad bias=$(rv "$_cy_dst" bias_0x1a2)"
-	[ "$(rv "$_cy_st" clsh_0x320)" = "$WCD9320_PA_CLSH_LIVE" ] ||
+	[ "$(rv "$_cy_st" clsh_0x320)" = "$CLSH_LIVE_EXPECT" ] ||
 		_cy_bad="$_cy_bad clsh=$(rv "$_cy_st" clsh_0x320)"
+	if [ "$STEREO" = "1" ]; then
+		eval "_cy_rst=\$C${_cy}_RDAC"
+		[ "$(rv "$_cy_rst" rdac_0x1b7)" = "c0" ] ||
+			_cy_bad="$_cy_bad hphr_dac=$(rv "$_cy_rst" rdac_0x1b7)"
+		[ "$(printf '%02x' $(( 0x$(rv "$_cy_rst" rgain_0x1b4) & 0x3f )))" = \
+		  "$(printf '%02x' $(( 0x20 | 0x$WCD9320_PA_GAIN_FIELD )))" ] ||
+			_cy_bad="$_cy_bad hphr_gain=$(rv "$_cy_rst" rgain_0x1b4)"
+	fi
 	[ "$(rv "$_cy_st" wgctl_0x1ac)" = "db" ] ||
 		_cy_bad="$_cy_bad wgctl=$(rv "$_cy_st" wgctl_0x1ac)"
 	[ "$(rv "$_cy_st" wgtime_0x1ad)" = "58" ] ||
@@ -784,6 +858,11 @@ c3_cycle() {	# c3_cycle <n>
 		echo pa-on > "$PGD/hphl_pa_test" 2>/dev/null || {
 			jrn "pa-on REFUSED by the driver"; c3_abort "pa-on-refused"; return 1; }
 		jrn "PA ENABLED"
+		if [ "$STEREO" = "1" ]; then
+			echo pa-on > "$PGD/hphr_test" 2>/dev/null || {
+				jrn "HPHR pa-on REFUSED by the driver"; c3_abort "hphr-pa-on-refused"; return 1; }
+			jrn "HPHR PA ENABLED"
+		fi
 	fi
 
 	eval "C${_cy}_PA=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
@@ -923,6 +1002,10 @@ c3_cycle() {	# c3_cycle <n>
 	fi
 
 	# --------------------------------------------------------- teardown --
+	if [ "$STEREO" = "1" ]; then
+		echo pa-off > "$PGD/hphr_test" 2>/dev/null
+		jrn "HPHR PA disabled"
+	fi
 	echo pa-off > "$PGD/hphl_pa_test" 2>/dev/null
 	jrn "PA disabled"
 	eval "C${_cy}_PAOFF=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
@@ -954,11 +1037,14 @@ c3_cycle() {	# c3_cycle <n>
 		eval "C${_cy}_VOFF2=\$VW_MEAN; C${_cy}_VOFF2_D=\$VW_DRIFT"
 	fi
 
+	[ "$STEREO" = "1" ] && echo dac-off > "$PGD/hphr_test" 2>/dev/null
 	echo dac-off-reggain > "$PGD/hphl_dac_test" 2>/dev/null
 	echo off > "$PGD/cdc_clk_prereq" 2>/dev/null
 	echo rx1-off > "$PGD/rx1_digital_test" 2>/dev/null
+	[ "$STEREO" = "1" ] && echo rx2-off > "$PGD/hphr_test" 2>/dev/null
 	echo unprep > "$PGD/hphl_pa_test" 2>/dev/null
-	jrn "DAC, forced inverses, RX1 and prep all torn down"
+	jrn "DAC(s), forced inverses, RX and prep all torn down"
+	eval "C${_cy}_RAFTER=\$(cat \"\$PGD/hphr_state\" 2>/dev/null)"
 
 	eval "C${_cy}_AFTER=\$(cat \"\$PGD/hphl_pa_state\" 2>/dev/null)"
 	eval "C${_cy}_DAFTER=\$(cat \"\$PGD/hphl_dac_state\" 2>/dev/null)"
@@ -1004,6 +1090,7 @@ launch)
 	CMD="$CMD --setenv=C3A_INSTRUMENT=$INSTRUMENT"
 	CMD="$CMD --setenv=C3A_DC_WAIVER=$DC_WAIVER --setenv=C3A_CONTROL=$CONTROL"
 	CMD="$CMD --setenv=C3A_APPROVE=$APPROVE --setenv=C3A_CLOCK=$CLOCK"
+	CMD="$CMD --setenv=C3A_STEREO=$STEREO --setenv=C3A_VM_CH=$VM_CH"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "The run detaches into a transient unit so it survives losing ssh."
 	say ""
@@ -1069,6 +1156,17 @@ if [ "$_g_back" != "$WCD9320_PA_GAIN_FIELD" ]; then
 	exit 2
 fi
 jrn "gain field $WCD9320_PA_GAIN_FIELD set and read back"
+# r185: the right channel's field, through its ALSA control (20 - field)
+if [ "$STEREO" = "1" ]; then
+	_g_r=$(( 20 - 0x$WCD9320_PA_GAIN_FIELD ))
+	"$SETCTL" -D "$CTLDEV" --set "HPHR Volume" "$_g_r" >/dev/null 2>&1
+	_g_rb=$(rv "$(cat "$PGD/hphr_state" 2>/dev/null)" gain_field_r)
+	if [ "$_g_rb" != "$WCD9320_PA_GAIN_FIELD" ]; then
+		jrn "HPHR gain field reads back ${_g_rb:-nothing}, not $WCD9320_PA_GAIN_FIELD -- nothing was armed"
+		exit 2
+	fi
+	jrn "HPHR gain field $WCD9320_PA_GAIN_FIELD set (HPHR Volume $_g_r) and read back"
+fi
 
 #
 # THE FORCED-WRITE JOURNAL, MEASURED AT THE START OF THIS RUN.
@@ -1086,7 +1184,7 @@ FORCED_START=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
 FORCED_START=${FORCED_START:-0}
 FORCED_RING=$(sed -n 's/.*ring=\([0-9]*\).*/\1/p' "$PGD/forced_log" 2>/dev/null | head -n1)
 FORCED_RING=${FORCED_RING:-16}
-if [ $(( FORCED_START + WCD9320_PA_FORCED_PER_CYCLE * CYCLES )) -gt "$FORCED_RING" ]; then
+if [ $(( FORCED_START + FORCED_PER_CYCLE * CYCLES )) -gt "$FORCED_RING" ]; then
 	jrn "the forced-write journal holds $FORCED_START of $FORCED_RING -- this run's entries would not fit; power cycle first. Nothing was armed."
 	exit 2
 fi
@@ -1202,8 +1300,16 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 		check "c$c PA live masked" \
 		      "$(printf '%02x' $(( 0x${_o:-00} & 0x$WCD9320_PA_MASK )))" \
 		      "$PA_LIVE_EXPECT"
-		check "c$c HPHR stayed clear" \
-		      "$(printf '%02x' $(( 0x${_o:-00} & 0x10 )))" "00"
+		if [ "$STEREO" != "1" ]; then
+			check "c$c HPHR stayed clear" \
+			      "$(printf '%02x' $(( 0x${_o:-00} & 0x10 )))" "00"
+		else
+			eval "_ra=\${C${c}_RAFTER:-}"
+			check "c$c HPHR DAC off after (0x1b7)" "$(rv "$_ra" rdac_0x1b7)" "00"
+			check "c$c HPHR PA off after" "$(rv "$_ra" pa_on)" "0"
+			check "c$c RX2 chain off after" \
+			      "$(printf '%02x' $(( 0x$(rv "$_ra" chain_0x2bd) & 0x20 )))" "00"
+		fi
 		check "c$c PA off after" \
 		      "$(printf '%02x' $(( 0x${_f:-ff} & 0x$WCD9320_PA_MASK )))" \
 		      "$WCD9320_PA_STATE_OFF"
@@ -1239,18 +1345,25 @@ open_output "$OUTDIR/wcd9320-hphl-pa-$STAMP.txt"
 	note "journal start" "this run's entries begin at f$FORCED_START"
 	check "forced operations this run" \
 	      "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" \
-	      "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))"
+	      "$(( FORCED_PER_CYCLE * (n - 1) ))"
 	_i=0
-	while [ "$_i" -lt "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))" ]; do
-		case $((_i % 4)) in
-		0) _wr=314; _wd=set   ;;
-		1) _wr=30d; _wd=set   ;;
-		2) _wr=30d; _wd=clear ;;
-		3) _wr=314; _wd=clear ;;
-		esac
+	while [ "$_i" -lt "$(( FORCED_PER_CYCLE * (n - 1) ))" ]; do
+		if [ "$STEREO" = "1" ]; then
+			# r185: the DAPM order -- 314, 30d L, 30d R, R, L, 314
+			set -- $(dapm_forced_want "$_i")
+			_wr=$1; _wd=$3
+		else
+			case $((_i % 4)) in
+			0) _wr=314; _wd=set   ;;
+			1) _wr=30d; _wd=set   ;;
+			2) _wr=30d; _wd=clear ;;
+			3) _wr=314; _wd=clear ;;
+			esac
+		fi
 		_j=$(( FORCED_START + _i ))
 		check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$_wr"
 		check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$_wd"
+		[ "$STEREO" = "1" ] && check "f$_j mask" "$(rv "$FLOG" "f${_j}_mask")" "$2"
 		_i=$((_i + 1))
 	done
 

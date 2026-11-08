@@ -20,16 +20,19 @@ bad() { F=$((F + 1)); printf '  FAIL  %s  (%s)\n' "$1" "$2"; }
 eq()  { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2' want '$3'"; fi; }
 
 echo "=== expectation functions ==="
-S_ALL="held=3f ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=1"
-S_NONE="held=00 ups=6 downs=6 refusals=0 failures=0 mclk_users=0 pa_on=0"
-S_PART="held=07 ups=3 downs=0 refusals=3 failures=0 mclk_users=1 pa_on=0"
-eq "whole path is 3f"           "$(dapm_held_is "$S_ALL" 3f)" "OK"
-eq "nothing is 00"              "$(dapm_held_is "$S_NONE" 00)" "OK"
-eq "a partial mask is refused"  "$(dapm_held_is "$S_PART" 3f)" "REFUSE:held=07 want 3f"
-eq "partial is not idle either" "$(dapm_held_is "$S_PART" 00)" "REFUSE:held=07 want 00"
-eq "no held= is refused"        "$(dapm_held_is "garbage" 00)" "REFUSE:no held= in dapm_state"
+# r185: nine stages, three hex digits
+S_ALL="held=1ff ups=9 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=1 pa_r_on=1"
+S_NONE="held=000 ups=9 downs=9 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0"
+S_PART="held=07f ups=7 downs=0 refusals=2 failures=0 mclk_users=1 pa_on=0 pa_r_on=0"
+eq "the constants are r185's"   "$DAPM_HELD_ALL $DAPM_HELD_NONE $DAPM_STAGES" "1ff 000 9"
+eq "whole path is 1ff"          "$(dapm_held_is "$S_ALL" "$DAPM_HELD_ALL")" "OK"
+eq "nothing is 000"             "$(dapm_held_is "$S_NONE" "$DAPM_HELD_NONE")" "OK"
+eq "r184's 3f is not the path"  "$(dapm_held_is "held=3f" "$DAPM_HELD_ALL")" "REFUSE:held=3f want 1ff"
+eq "a partial mask is refused"  "$(dapm_held_is "$S_PART" 1ff)" "REFUSE:held=07f want 1ff"
+eq "partial is not idle either" "$(dapm_held_is "$S_PART" 000)" "REFUSE:held=07f want 000"
+eq "no held= is refused"        "$(dapm_held_is "garbage" 000)" "REFUSE:no held= in dapm_state"
 eq "delta ups"                  "$(dapm_delta "$S_ALL" "$S_NONE" ups)" "0"
-eq "delta downs"                "$(dapm_delta "$S_ALL" "$S_NONE" downs)" "6"
+eq "delta downs"                "$(dapm_delta "$S_ALL" "$S_NONE" downs)" "9"
 eq "delta on a missing key"     "$(dapm_delta "$S_ALL" "x=1" downs)" "?"
 eq "widget off, in 1 out 0"     "$(dapm_widget "HPHL: Off  in 1 out 0")" "Off 1 0"
 eq "widget on with a register"  "$(dapm_widget "MCLK: On  in 1 out 1 - R-1(0x-1) mask 0x1")" "On 1 1"
@@ -39,11 +42,34 @@ eq "unparseable widget"         "$(dapm_widget "nonsense")" "? ? ?"
 eq "pin readback 0"             "$(dapm_pin_value "$(printf 'name=x\nfound=1\nreadback=0\n')")" "0"
 eq "pin readback 1"             "$(dapm_pin_value "$(printf 'write_rc=0\nreadback=1\n')")" "1"
 eq "pin not found"              "$(dapm_pin_value "$(printf 'name=x\nfound=0\n')")" "?"
-eq "card r184, pin off"         "$(dapm_card_ok q6-card-rc4 0)" "OK"
-eq "old card refused"           "$(dapm_card_ok q6-card-rc3 0)" "REFUSE:card module is 'q6-card-rc3', not q6-card-rc4 -- no pin behind HEADPHONE"
-eq "no card refused"            "$(dapm_card_ok "" "?")" "REFUSE:card module is 'absent', not q6-card-rc4 -- no pin behind HEADPHONE"
-eq "pin on refused"             "$(dapm_card_ok q6-card-rc4 1)" "REFUSE:Headphones pin reads '1', not 0"
-eq "pin unreadable refused"     "$(dapm_card_ok q6-card-rc4 "?")" "REFUSE:Headphones pin reads '?', not 0"
+eq "card r185, pin off"         "$(dapm_card_ok q6-card-rc5 0)" "OK"
+eq "r184 card refused"          "$(dapm_card_ok q6-card-rc4 0)" "REFUSE:card module is 'q6-card-rc4', not q6-card-rc5 -- no pin behind HEADPHONE"
+eq "no card refused"            "$(dapm_card_ok "" "?")" "REFUSE:card module is 'absent', not q6-card-rc5 -- no pin behind HEADPHONE"
+eq "pin on refused"             "$(dapm_card_ok q6-card-rc5 1)" "REFUSE:Headphones pin reads '1', not 0"
+eq "pin unreadable refused"     "$(dapm_card_ok q6-card-rc5 "?")" "REFUSE:Headphones pin reads '?', not 0"
+
+echo ""
+echo "=== r185: the stereo forced pattern and the listen specs ==="
+eq "both PAs live is 30"        "$DAPM_PA_LIVE" "30"
+eq "six forced per stream"      "$DAPM_FORCED_PER_STREAM" "6"
+_fp=""; _i=0
+while [ "$_i" -lt 12 ]; do _fp="$_fp$(dapm_forced_want "$_i" | tr ' ' '/');"; _i=$((_i + 1)); done
+eq "two streams, DAPM's order" "$_fp" \
+   "314/ff/set;30d/02/set;30d/04/set;30d/04/clear;30d/02/clear;314/ff/clear;314/ff/set;30d/02/set;30d/04/set;30d/04/clear;30d/02/clear;314/ff/clear;"
+eq "spec L:20:84"               "$(dapm_spec_ok L:20:84)" "OK"
+eq "spec B:0:0"                 "$(dapm_spec_ok B:0:0)" "OK"
+eq "spec side X"                "$(dapm_spec_ok X:20:84)" "REFUSE:side 'X' is not L, R or B"
+eq "spec analog above 20"       "$(dapm_spec_ok R:21:84)" "REFUSE:hph 21 above 20"
+eq "spec digital above 0 dB"    "$(dapm_spec_ok R:20:85)" "REFUSE:dig 85 above 84 (0 dB)"
+eq "spec missing a field"       "$(dapm_spec_ok R:20)" "REFUSE:dig '' is not a number"
+eq "spec extra field"           "$(dapm_spec_ok R:20:84:1)" "REFUSE:'R:20:84:1' is not side:hph:dig"
+eq "spec negative"              "$(dapm_spec_ok R:-1:84)" "REFUSE:hph '-1' is not a number"
+eq "field at the loudest"       "$(dapm_spec_field 20)" "00"
+eq "field at the minimum"       "$(dapm_spec_field 0)" "14"
+eq "field 4 steps down"         "$(dapm_spec_field 16)" "04"
+eq "digital 0 dB"               "$(dapm_spec_dig 84)" "00"
+eq "digital -6 dB"              "$(dapm_spec_dig 78)" "fa"
+eq "digital -84 dB"             "$(dapm_spec_dig 0)" "ac"
 
 echo ""
 echo "=== the DAPM teardown, against fakes ==="
@@ -133,11 +159,14 @@ grep -q "no $PL running" "$T/journal" && ok "no player: journal says so" ||
 echo ""
 echo "=== syntax ==="
 for s in wcd9320-dapm-expect.sh wcd9320-dapm-teardown.sh wcd9320-dapm-evidence.sh \
-	 wcd9320-dapm-listen.sh wcd9320-hphl-pa-evidence.sh; do
+	 wcd9320-dapm-listen.sh wcd9320-hphl-pa-evidence.sh wcd9320-dapm-postcheck.sh \
+	 wcd9320-jack-evidence.sh wcd9320-evidence-lib.sh wcd9320-hphl-vm-evidence.sh \
+	 wcd9320-hphl-zdet-evidence.sh wcd9320-mclk-own-evidence.sh; do
 	if sh -n "$DIR/$s" 2>"$T/err"; then ok "sh -n $s"; else bad "sh -n $s" "$(head -n1 "$T/err")"; fi
 done
 if [ -f "$DIR/sh-continuation-check.py" ]; then
-	for s in wcd9320-dapm-teardown.sh wcd9320-dapm-evidence.sh wcd9320-dapm-listen.sh; do
+	for s in wcd9320-dapm-teardown.sh wcd9320-dapm-evidence.sh wcd9320-dapm-listen.sh \
+		 wcd9320-jack-evidence.sh wcd9320-hphl-pa-evidence.sh; do
 		if python3 "$DIR/sh-continuation-check.py" "$DIR/$s" >"$T/err" 2>&1; then ok "continuations $s"
 		else bad "continuations $s" "$(head -n1 "$T/err")"; fi
 	done

@@ -23,8 +23,24 @@
 #   - one approval per stream, delivered by tools/c3a-approve.sh. This runs as
 #     the same unit, journal and drop-box as C3a so that tool works unchanged.
 #
+# r185: STEREO. DAPM powers nine stages (both channels, both PAs) for every
+# stream, and each stream is a spec "side:hph:dig" -- the tone on the left,
+# the right or both, the HPHL/HPHR Volume (0..20) and the RX1/RX2 Digital
+# Volume (0..84 = -84..0 dB), set through the ALSA controls while the path is
+# down. The default plan is the mapping's section 7, step 5:
+#
+#   L:20:84   the left alone, mic on the left earcup
+#   R:20:84   the right alone, mic on the right earcup
+#   R:16:84   the right, 4 analog steps down: the analyser measures the step
+#   R:20:78   the right, -6 dB digital: the analyser confirms it
+#
+# The journal names the side before every approval. Jack detection stays on;
+# the runner takes the pin with the manual override, as before. At the end
+# every volume goes back to its boot value (analog minimum, digital 0 dB).
+#
 # Usage (one line):
-#   sudo env EXPECT_VERSION=dapm-hphl-rc1 C3A_GAIN_FIELD=00 sh wcd9320-dapm-listen.sh launch
+#   sudo env EXPECT_VERSION=stereo-vol-jack-rc1 sh wcd9320-dapm-listen.sh launch
+#   (SPECS=L:20:84,R:20:84 to override the plan)
 # Exit:   0 pass, 1 checks failed, 2 invalid setup, 3 aborted.
 
 set -u
@@ -49,7 +65,9 @@ TEARDOWN="$DIR/wcd9320-dapm-teardown.sh"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 DBFS="${DBFS:--40}"
-CYCLES="${CYCLES:-2}"
+SPECS="${SPECS:-L:20:84,R:20:84,R:16:84,R:20:78}"	# commas: it survives --setenv
+SPEC_LIST=$(printf '%s' "$SPECS" | tr ',' ' ')
+CYCLES=$(printf '%s\n' $SPEC_LIST | grep -c .)
 HOLD_ARM="${HOLD_ARM:-300}"
 HOLD_GO="${HOLD_GO:-600}"		# waiting for "go", everything OFF
 FAILSAFE_S="${FAILSAFE_S:-30}"		# covers pin on, ~1.1 s stream, pin off
@@ -82,6 +100,16 @@ pin_set() {	# pin_set 0|1 -> 0 when it reads back as asked
 	[ "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --set "$DAPM_PIN" "$1" 2>/dev/null)")" = "$1" ]
 }
 pin_get() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"; }
+# r185: ctl_set <control> <value> -> 0 when it reads back as asked
+ctl_set() {
+	[ "$("$SETCTL" -D "$CTLDEV" --set "$1" "$2" 2>/dev/null |
+	     sed -n 's/^readback=//p' | head -n1)" = "$2" ]
+}
+# vol_set <hph> <dig> -> all four controls, both channels the same
+vol_set() {
+	ctl_set "HPHL Volume" "$1" && ctl_set "HPHR Volume" "$1" &&
+	ctl_set "RX1 Digital Volume" "$2" && ctl_set "RX2 Digital Volume" "$2"
+}
 
 # ------------------------------------------------------------------- abort --
 ABORTED=0
@@ -143,14 +171,24 @@ preflight() {
 
 	"$GATE" --resolve >>"$JOURNAL" 2>&1 ||
 		{ say "INVALID SETUP: the approve and abort devices did not resolve"; return 1; }
-	"$TONE" --dbfs "$DBFS" --dry-run >>"$JOURNAL" 2>&1 ||
-		{ say "INVALID SETUP: the tone helper refused $DBFS dBFS"; return 1; }
-	[ "$(pa_gain_ok "$WCD9320_PA_GAIN_FIELD")" = "OK" ] ||
-		{ say "INVALID SETUP: gain field $WCD9320_PA_GAIN_FIELD"; return 1; }
+	"$TONE" --dbfs "$DBFS" --side B --dry-run >>"$JOURNAL" 2>&1 ||
+		{ say "INVALID SETUP: the tone helper refused $DBFS dBFS stereo (r185 pcm-tone?)"; return 1; }
+	for _sp in $SPEC_LIST; do
+		_ok=$(dapm_spec_ok "$_sp")
+		[ "$_ok" = "OK" ] || { say "INVALID SETUP: stream spec $_sp: ${_ok#REFUSE:}"; return 1; }
+	done
+	[ -e "$PGD/hphr_state" ] || { say "INVALID SETUP: no hphr_state -- not r185"; return 1; }
+
+	# r185: jack detection may hold the pin on for a plugged headset. The
+	# manual override takes it off; the run owns the pin from here.
+	JACK_PRE=$(cat "$PGD/jack_detect" 2>/dev/null)
+	jrn "jack: $JACK_PRE"
+	pin_set 0 || { say "INVALID SETUP: the Headphones pin would not go off"; return 1; }
 
 	D_PRE=$(cat "$PGD/dapm_state" 2>/dev/null)
 	PRE=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 	DPRE=$(cat "$PGD/hphl_dac_state" 2>/dev/null)
+	RPRE=$(cat "$PGD/hphr_state" 2>/dev/null)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	[ "$(dapm_held_is "$D_PRE" "$DAPM_HELD_NONE")" = "OK" ] || _bad="$_bad dapm-held=$(dapm_kv "$D_PRE" held)"
 	CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
@@ -163,8 +201,11 @@ preflight() {
 	[ "$(rv "$PRE" prep_on)" = "0" ] || _bad="$_bad prep-on"
 	[ "$(rv "$DPRE" on)" = "0" ] || _bad="$_bad dac-on"
 	[ "$(rv "$DPRE" dac_0x1b1)" = "00" ] || _bad="$_bad dac-dirty"
+	[ "$(rv "$RPRE" dac_on)" = "0" ] || _bad="$_bad hphr-dac-on"
+	[ "$(rv "$RPRE" pa_on)" = "0" ] || _bad="$_bad hphr-pa-on"
+	[ "$(rv "$RPRE" rdac_0x1b7)" = "00" ] || _bad="$_bad hphr-dac-dirty"
 	[ -n "$_bad" ] && { say "INVALID SETUP: not idle:$_bad"; return 1; }
-	jrn "baseline idle: dapm held 00, pin off, RCO, PA off"
+	jrn "baseline idle: dapm held $DAPM_HELD_NONE, pin off, RCO, both PAs off"
 
 	[ "${1:-}" = "arm" ] || return 0
 	say ""
@@ -176,10 +217,28 @@ preflight() {
 }
 
 # ------------------------------------------------------------------ stream --
-stream() {	# stream <n>
+stream() {	# stream <n> <spec>
 	_n=$1
-	jrn "=== stream $_n: begin ==="
+	_spec=$2
+	_side=$(printf '%s' "$_spec" | cut -d: -f1)
+	_hv=$(printf '%s' "$_spec" | cut -d: -f2)
+	_dv=$(printf '%s' "$_spec" | cut -d: -f3)
+	eval "S${_n}_SPEC=\$_spec"
+	jrn "=== stream $_n: begin -- spec $_spec ==="
 	flag_ok "stream-$_n-start" || return 1
+
+	# r185: the volumes, while the path is down (the controls hold them)
+	if ! vol_set "$_hv" "$_dv"; then
+		jrn "the volume controls did not read back $_hv / $_dv -- abort"
+		dl_abort "volume-c$_n"
+		return 1
+	fi
+	jrn "volumes: HPHL/HPHR $_hv (field $(dapm_spec_field "$_hv")), RX1/RX2 digital $_dv (0x$(dapm_spec_dig "$_dv"))"
+	case "$_side" in
+	L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
+	R) jrn "stream $_n: tone on the RIGHT only -- the mic on the RIGHT earcup" ;;
+	B) jrn "stream $_n: tone on BOTH channels" ;;
+	esac
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
 	pa_chat_wait "$APPROVE_DIR" "dapm-c$_n" "$HOLD_GO" "$FLAG" >/dev/null
@@ -205,8 +264,8 @@ stream() {	# stream <n>
 	fi
 	flag_ok "pin-on-c$_n" || return 1
 
-	jrn "tone: 1 kHz, $DBFS dBFS, 250 ms tone/silence/tone/silence, one stream, DAPM-powered"
-	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" >>"$JOURNAL" 2>&1 &
+	jrn "tone: 1 kHz, $DBFS dBFS, side $_side, 250 ms tone/silence/tone/silence, one stream, DAPM-powered"
+	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side "$_side" >>"$JOURNAL" 2>&1 &
 	TPID=$!
 	#
 	# WAIT FOR THE PATH, DON'T ASSUME IT. DAPM powers the whole chain inside
@@ -237,13 +296,15 @@ stream() {	# stream <n>
 	sleep 0.1
 	_l=$(cat "$PGD/dapm_state" 2>/dev/null)
 	_p=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
+	_r=$(cat "$PGD/hphr_state" 2>/dev/null)
+	_r1=$(cat "$PGD/rx1_digital_state" 2>/dev/null)
 	_hs=$(hph_status)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
-	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs"
-	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
+	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs; S${_n}_R=\$_r; S${_n}_R1=\$_r1"
+	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | 0x1b1=$(rv "$_p" dac_0x1b1) 0x1b7=$(rv "$_r" rdac_0x1b7) | 0x1ae=$(rv "$_p" lgain_0x1ae) 0x1b4=$(rv "$_r" rgain_0x1b4) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
 	_bad=""
 	[ "$(dapm_held_is "$_l" "$DAPM_HELD_ALL")" = "OK" ] || _bad="$_bad held=$(dapm_kv "$_l" held)"
-	[ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "$WCD9320_PA_STATE_ON" ] || _bad="$_bad pa=$(rv "$_p" pa_0x1ab)"
+	[ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "$DAPM_PA_LIVE" ] || _bad="$_bad pa=$(rv "$_p" pa_0x1ab)"
 	[ "$(rv "$_p" ocp_seen)" = "0" ] || _bad="$_bad ocp"
 	if [ -n "$_bad" ]; then
 		jrn "THE PATH IS NOT IN ITS ONE LEGAL LIVE STATE:$_bad"
@@ -295,8 +356,7 @@ check)
 	exit 2 ;;
 launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
-	CMD="$CMD --setenv=DBFS=$DBFS --setenv=CYCLES=$CYCLES --setenv=HOLD_ARM=$HOLD_ARM"
-	CMD="$CMD --setenv=C3A_GAIN_FIELD=$WCD9320_PA_GAIN_FIELD"
+	CMD="$CMD --setenv=DBFS=$DBFS --setenv=SPECS=$SPECS --setenv=HOLD_ARM=$HOLD_ARM"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -312,26 +372,17 @@ if command -v flock >/dev/null 2>&1; then
 	flock -n 9 || { say "INVALID SETUP: another run holds $RUNLOCK"; exit 2; }
 fi
 jrn "================ DAPM listen run $STAMP ================"
-jrn "stimulus $DBFS dBFS, $CYCLES stream(s), gain field $WCD9320_PA_GAIN_FIELD"
+jrn "stimulus $DBFS dBFS, $CYCLES stream(s): $SPEC_LIST"
 
 trap 'jrn "SIGNAL -- running the teardown"; dl_abort signal; exit 3' INT TERM HUP
 
 preflight arm || { jrn "preflight refused -- nothing armed, nothing written"; exit 2; }
 
-# The gain, through the existing attribute, while nothing is up.
-if ! echo "$WCD9320_PA_GAIN_FIELD" > "$PGD/hphl_pa_gain" 2>/dev/null ||
-   [ "$(sed -n 's/^gain_field=\([0-9a-f]*\).*/\1/p' "$PGD/hphl_pa_gain" 2>/dev/null)" \
-     != "$WCD9320_PA_GAIN_FIELD" ]; then
-	jrn "gain field $WCD9320_PA_GAIN_FIELD not accepted -- nothing armed"
-	exit 2
-fi
-jrn "gain field $WCD9320_PA_GAIN_FIELD set and read back"
-
 FORCED_START=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
 FORCED_START=${FORCED_START:-0}
 FORCED_RING=$(sed -n 's/.*ring=\([0-9]*\).*/\1/p' "$PGD/forced_log" 2>/dev/null | head -n1)
 FORCED_RING=${FORCED_RING:-16}
-if [ $(( FORCED_START + WCD9320_PA_FORCED_PER_CYCLE * CYCLES )) -gt "$FORCED_RING" ]; then
+if [ $(( FORCED_START + DAPM_FORCED_PER_STREAM * CYCLES )) -gt "$FORCED_RING" ]; then
 	jrn "the forced-write journal holds $FORCED_START of $FORCED_RING -- this run would not fit; power cycle. Nothing armed."
 	exit 2
 fi
@@ -350,14 +401,21 @@ jrn "front-end mixer enabled"
 
 RC=0
 n=1
-while [ "$n" -le "$CYCLES" ]; do
-	stream "$n" || { RC=3; break; }
+for _sp in $SPEC_LIST; do
+	stream "$n" "$_sp" || { RC=3; break; }
 	n=$((n + 1))
 done
 
 failsafe_disarm
 watch_stop
 [ "$(pin_get)" = "0" ] || { pin_set 0; jrn "pin forced OFF at the end"; }
+# r185: the volumes back to their boot values -- analog minimum, digital 0 dB
+if vol_set 0 84; then
+	jrn "volumes restored: HPHL/HPHR 0 (minimum), RX1/RX2 digital 84 (0 dB)"
+else
+	jrn "THE VOLUMES DID NOT RESTORE -- check HPHL/HPHR Volume by hand"
+fi
+RPOST=$(cat "$PGD/hphr_state" 2>/dev/null)
 
 D_POST=$(cat "$PGD/dapm_state" 2>/dev/null)
 POST=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
@@ -370,21 +428,22 @@ snap_dmesg
 open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 {
 	hdr "what this run can and cannot establish"
-	say "That plain playback, with the Headphones pin on, powers the proven"
-	say "HPHL path through DAPM in the mapped order and takes it down when the"
-	say "stream stops. WHETHER IT WAS HEARD is decided by tools/c3a-capture.py on"
-	say "the PC recording and by the operator, not by this file."
+	say "That plain stereo playback, with the Headphones pin on, powers the"
+	say "proven path on both channels through DAPM in the mapped order, at the"
+	say "volumes the controls set, and takes it down when the stream stops."
+	say "WHETHER EACH SIDE WAS HEARD, and how loud, is decided by"
+	say "tools/c3a-capture.py on the PC recording and by the operator."
 
 	hdr "the run"
 	say "aborted     : $ABORTED $ABORT_WHY"
 	say "streams run : $((n - 1)) of $CYCLES"
 	say "stimulus    : $DBFS dBFS, 1 kHz, tone/silence/tone/silence"
-	say "gain field  : $WCD9320_PA_GAIN_FIELD"
+	say "plan        : $SPEC_LIST"
 	c=1
 	while [ "$c" -lt "$n" ]; do
 		eval "_pi=\${S${c}_PINON:-}; _l=\${S${c}_LIVE:-}; _a=\${S${c}_AFTER:-}; _ms=\${S${c}_DOWN_MS:-?}; _hs=\${S${c}_HS:-?}"
-		eval "_ums=\${S${c}_UP_MS:-?}"
-		say "stream $c: held pin-on $(dapm_kv "$_pi" held) live $(dapm_kv "$_l" held) (~$_ums ms up) after $(dapm_kv "$_a" held) (~$_ms ms down) | hph $_hs"
+		eval "_ums=\${S${c}_UP_MS:-?}; _sp=\${S${c}_SPEC:-?}"
+		say "stream $c [$_sp]: held pin-on $(dapm_kv "$_pi" held) live $(dapm_kv "$_l" held) (~$_ums ms up) after $(dapm_kv "$_a" held) (~$_ms ms down) | hph $_hs"
 		c=$((c + 1))
 	done
 
@@ -396,13 +455,23 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	c=1
 	while [ "$c" -lt "$n" ]; do
 		eval "_pi=\${S${c}_PINON:-}; _l=\${S${c}_LIVE:-}; _a=\${S${c}_AFTER:-}; _p=\${S${c}_PA:-}; _f=\${S${c}_PAOFF:-}; _cs=\${S${c}_CS:-}; _hs=\${S${c}_HS:-}; _t=\${S${c}_TRC:-}; _pin=\${S${c}_PIN:-}"
+		eval "_r=\${S${c}_R:-}; _r1=\${S${c}_R1:-}; _sp=\${S${c}_SPEC:-::}"
+		_hv=$(printf '%s' "$_sp" | cut -d: -f2)
+		_dv=$(printf '%s' "$_sp" | cut -d: -f3)
 		say ""
-		say "-- stream $c --"
+		say "-- stream $c [$_sp] --"
 		check "s$c pin alone powers nothing" "$(dapm_kv "$_pi" held)" "$DAPM_HELD_NONE"
 		check "s$c DAPM holds the whole path live" "$(dapm_kv "$_l" held)" "$DAPM_HELD_ALL"
-		check "s$c PA live masked" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "$WCD9320_PA_STATE_ON"
-		_x=$(rv "$_p" pa_0x1ab)
-		check "s$c HPHR stayed clear" "$(printf '%02x' $(( 0x${_x:-ff} & 0x10 )))" "00"
+		check "s$c both PAs live (0x1ab masked)" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "$DAPM_PA_LIVE"
+		check "s$c HPHL DAC live (0x1b1)" "$(rv "$_p" dac_0x1b1)" "c0"
+		check "s$c HPHR DAC live (0x1b7)" "$(rv "$_r" rdac_0x1b7)" "c0"
+		_x=$(rv "$_p" lgain_0x1ae)
+		check "s$c HPHL field live = 20 - $_hv" "$(printf '%02x' $(( 0x${_x:-ff} & 0x1f )))" "$(dapm_spec_field "${_hv:-0}")"
+		_x=$(rv "$_r" rgain_0x1b4)
+		check "s$c HPHR field live = 20 - $_hv" "$(printf '%02x' $(( 0x${_x:-ff} & 0x1f )))" "$(dapm_spec_field "${_hv:-0}")"
+		check "s$c RX1 digital live" "$(rv "$_r1" gain_0x2b7)" "$(dapm_spec_dig "${_dv:-84}")"
+		check "s$c RX2 digital live" "$(rv "$_r" vol_0x2bf)" "$(dapm_spec_dig "${_dv:-84}")"
+		check "s$c RX2 chain live (0x2bd bit 5)" "$(printf '%02x' $(( 0x$(rv "$_r" chain_0x2bd) & 0x20 )))" "20"
 		check "s$c one MCLK user live" "$(rv "$_cs" mclk_users)" "1"
 		check "s$c codec on MCLK live" "$(rv "$_cs" on_mclk)" "1"
 		check "s$c 0x1b3 clocked live" "$(printf '%s' "$_hs" | sed -n 's/.*1b3=\([0-9a-f]*\).*/\1/p')" "08"
@@ -429,20 +498,16 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
 
 	say ""
-	say "-- the forced writes: 314 set, 30d set, 30d clear, 314 clear, per stream --"
+	say "-- the forced writes, per stream: 314 set, 30d L set, 30d R set, R clear, L clear, 314 clear --"
 	check "forced operations this run" "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" \
-	      "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))"
+	      "$(( DAPM_FORCED_PER_STREAM * (n - 1) ))"
 	_i=0
-	while [ "$_i" -lt "$(( WCD9320_PA_FORCED_PER_CYCLE * (n - 1) ))" ]; do
-		case $((_i % 4)) in
-		0) _wr=314; _wd=set ;;
-		1) _wr=30d; _wd=set ;;
-		2) _wr=30d; _wd=clear ;;
-		3) _wr=314; _wd=clear ;;
-		esac
+	while [ "$_i" -lt "$(( DAPM_FORCED_PER_STREAM * (n - 1) ))" ]; do
+		set -- $(dapm_forced_want "$_i")
 		_j=$(( FORCED_START + _i ))
-		check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$_wr"
-		check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$_wd"
+		check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$1"
+		check "f$_j mask" "$(rv "$FLOG" "f${_j}_mask")" "$2"
+		check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$3"
 		_i=$((_i + 1))
 	done
 
@@ -456,6 +521,15 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "DAC off" "$(rv "$DPOST" dac_0x1b1)" "00"
 	check "DSM mux cleared" "$(rv "$DPOST" dsm_0x3b0)" "00"
 	check "RX bias released" "$(rv "$DPOST" bias_refs)" "0"
+	check "HPHR gain restored" "$(rv "$RPOST" rgain_0x1b4)" "$(rv "$RPRE" rgain_0x1b4)"
+	check "HPHR DAC off" "$(rv "$RPOST" rdac_0x1b7)" "00"
+	check "HPHR PA off, enables == disables" \
+	      "$(rv "$RPOST" pa_on) $(rv "$RPOST" pa_enables)" "0 $(rv "$RPOST" pa_disables)"
+	check "RX2 chain off" "$(printf '%02x' $(( 0x$(rv "$RPOST" chain_0x2bd) & 0x20 )))" "00"
+	check "RDAC clocks clear (0x30d bits 1-2)" \
+	      "$(printf '%02x' $(( 0x$(rv "$RPOST" rdacclk_0x30d) & 0x06 )))" "00"
+	check "volumes back to boot values" \
+	      "$(rv "$RPOST" gain_field_r) $(rv "$POST" gain_field) $(rv "$RPOST" vol_0x2bf)" "14 14 00"
 
 	hdr "dapm events (dmesg)"
 	dmesg | grep -E 'dapm: |mclk: (get|put)' | tail -n 40

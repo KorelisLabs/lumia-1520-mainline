@@ -125,7 +125,8 @@ TONE_DEFINES = [
     ("DBFS_DEFAULT", "(-40.0)", "the frozen starting amplitude"),
     ("DBFS_ESCALATION", "(-40.0)", "louder than this needs an explicit act"),
     ("TONE_RATE", "48000", "the frozen sample rate"),
-    ("TONE_CHANNELS", "1", "HPHL only, mono"),
+    ("TONE_CHANNELS", "1", "mono by default, as C3a ran"),
+    ("TONE_CHANNELS_STEREO", "2", "r185: --side L|R|B, never more than two"),
     ("TONE_HZ", "1000", "the frozen stimulus frequency"),
     ("SEG_MS", "250", "the frozen segment length"),
     ("N_SEGMENTS", "4", "tone, silence, tone, silence"),
@@ -326,6 +327,7 @@ TONE_OK = """
 #define DBFS_ESCALATION\t(-40.0)
 #define TONE_RATE\t48000
 #define TONE_CHANNELS\t1
+#define TONE_CHANNELS_STEREO\t2
 #define TONE_HZ\t1000
 #define SEG_MS\t250
 #define N_SEGMENTS\t4

@@ -46,18 +46,15 @@ check "no OCP fault" "$(rv "$POST" ocp_seen)" "0"
 check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
 check "PA enables" "$(rv "$POST" enables)" "$STREAMS"
 check "C3 aborts" "$(rv "$POST" aborts)" "0"
-check "forced operations" "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" "$((WCD9320_PA_FORCED_PER_CYCLE * STREAMS))"
+# r185: six per stereo stream, in DAPM's order (wcd9320-dapm-expect.sh)
+check "forced operations" "$(( $(rv "$FLOG" forced_n) - FORCED_START ))" "$((DAPM_FORCED_PER_STREAM * STREAMS))"
 _i=0
-while [ "$_i" -lt "$((WCD9320_PA_FORCED_PER_CYCLE * STREAMS))" ]; do
-	case $((_i % 4)) in
-	0) _wr=314; _wd=set ;;
-	1) _wr=30d; _wd=set ;;
-	2) _wr=30d; _wd=clear ;;
-	3) _wr=314; _wd=clear ;;
-	esac
+while [ "$_i" -lt "$((DAPM_FORCED_PER_STREAM * STREAMS))" ]; do
+	set -- $(dapm_forced_want "$_i")
 	_j=$((FORCED_START + _i))
-	check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$_wr"
-	check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$_wd"
+	check "f$_j register" "$(rv "$FLOG" "f${_j}_reg")" "$1"
+	check "f$_j mask" "$(rv "$FLOG" "f${_j}_mask")" "$2"
+	check "f$_j direction" "$(rv "$FLOG" "f${_j}_dir")" "$3"
 	_i=$((_i + 1))
 done
 check "gain restored" "$(rv "$POST" lgain_0x1ae)" "00"

@@ -83,7 +83,16 @@
  * allows to vary.
  */
 #define TONE_RATE	48000
-#define TONE_CHANNELS	1
+#define TONE_CHANNELS	1		/* the default: mono, as C3a ran */
+/*
+ * r185: STEREO, ONLY WHEN ASKED. --side L|R|B opens two channels and puts the
+ * same tone on the left, the right or both; the other channel carries digital
+ * zero. The amplitude, the plan and the ceiling are the same per sample, so a
+ * stereo run can never be louder per channel than a mono one.
+ */
+#define TONE_CHANNELS_STEREO	2
+#define SIDE_L		1
+#define SIDE_R		2
 #define TONE_HZ		1000
 #define SEG_MS		250
 #define N_SEGMENTS	4		/* tone, silence, tone, silence */
@@ -171,7 +180,8 @@ int main(int argc, char **argv)
 {
 	const char *dev = "/dev/snd/pcmC0D0p";
 	double dbfs = DBFS_DEFAULT;
-	int armed = 0, dry_run = 0;
+	int armed = 0, dry_run = 0, side = 0;
+	unsigned int channels = TONE_CHANNELS;
 	struct snd_pcm_hw_params hw;
 	struct snd_pcm_sw_params sw;
 	struct snd_pcm_status st;
@@ -193,10 +203,18 @@ int main(int argc, char **argv)
 			armed = 1;
 		else if (!strcmp(argv[i], "--dry-run"))
 			dry_run = 1;
-		else {
+		else if (!strcmp(argv[i], "--side") && i + 1 < (unsigned int)argc &&
+			 (!strcmp(argv[i + 1], "L") || !strcmp(argv[i + 1], "R") ||
+			  !strcmp(argv[i + 1], "B"))) {
+			i++;
+			side = argv[i][0] == 'L' ? SIDE_L :
+			       argv[i][0] == 'R' ? SIDE_R : SIDE_L | SIDE_R;
+			channels = TONE_CHANNELS_STEREO;
+		} else {
 			fprintf(stderr,
-				"usage: %s [-D dev] [--dbfs -40] [--armed-escalation] [--dry-run]\n"
+				"usage: %s [-D dev] [--dbfs -40] [--armed-escalation] [--side L|R|B] [--dry-run]\n"
 				"  1 kHz, 48 kHz S16_LE mono, 250 ms tone / silence / tone / silence.\n"
+				"  --side: two channels, the tone on the left, right or both, the other zero.\n"
 				"  Amplitudes above %.0f dBFS need --armed-escalation.\n"
 				"  The compiled ceiling is %.0f dBFS and cannot be raised at runtime.\n",
 				argv[0], DBFS_ESCALATION, DBFS_CEILING);
@@ -249,7 +267,9 @@ int main(int argc, char **argv)
 	printf("signal=sine\n");
 	printf("tone_hz=%d\n", TONE_HZ);
 	printf("requested_rate=%d\n", TONE_RATE);
-	printf("requested_channels=%d\n", TONE_CHANNELS);
+	printf("requested_channels=%u\n", channels);
+	printf("side=%s\n", !side ? "mono" : side == SIDE_L ? "L" :
+			    side == SIDE_R ? "R" : "B");
 	printf("requested_format=S16_LE\n");
 	printf("declared_dbfs=%.1f\n", dbfs);
 	printf("ceiling_dbfs=%.1f\n", DBFS_CEILING);
@@ -292,7 +312,7 @@ int main(int argc, char **argv)
 	mask_set(&hw, SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_FORMAT_S16_LE);
 	mask_set(&hw, SNDRV_PCM_HW_PARAM_SUBFORMAT, SNDRV_PCM_SUBFORMAT_STD);
 	iv_set(&hw, SNDRV_PCM_HW_PARAM_RATE, TONE_RATE);
-	iv_set(&hw, SNDRV_PCM_HW_PARAM_CHANNELS, TONE_CHANNELS);
+	iv_set(&hw, SNDRV_PCM_HW_PARAM_CHANNELS, channels);
 	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, PERIOD_FRAMES);
 	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIODS, N_PERIODS);
 
@@ -323,8 +343,8 @@ int main(int argc, char **argv)
 	 * wrong reason. So a mismatch refuses here, before anything plays.
 	 */
 	if (iv_get(&hw, SNDRV_PCM_HW_PARAM_RATE) != TONE_RATE ||
-	    iv_get(&hw, SNDRV_PCM_HW_PARAM_CHANNELS) != TONE_CHANNELS ||
-	    frame_bytes != 2 * TONE_CHANNELS) {
+	    iv_get(&hw, SNDRV_PCM_HW_PARAM_CHANNELS) != channels ||
+	    frame_bytes != 2 * channels) {
 		printf("error=geometry_not_as_requested\n");
 		close(fd);
 		return 1;
@@ -382,9 +402,16 @@ int main(int argc, char **argv)
 			unsigned long into = idx - (unsigned long)seg * seg_frames;
 
 			/* even segments are tone, odd segments are silence */
-			buf[j] = (seg % 2) ? 0
-					   : table[into % (sizeof(table) /
-							   sizeof(table[0]))];
+			short s = (seg % 2) ? 0
+					    : table[into % (sizeof(table) /
+							    sizeof(table[0]))];
+
+			if (channels == TONE_CHANNELS) {
+				buf[j] = s;
+			} else {
+				buf[2 * j] = (side & SIDE_L) ? s : 0;
+				buf[2 * j + 1] = (side & SIDE_R) ? s : 0;
+			}
 		}
 
 		memset(&xf, 0, sizeof(xf));

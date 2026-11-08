@@ -5,19 +5,20 @@
 #
 # docs/audio/wcd9320-dapm-hphl-mapping.md. The driver exports one line,
 #
-#   dapm_state: held=3f ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=1
+#   dapm_state: held=1ff ups=9 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=1 pa_r_on=1
 #
-# where held is a bitmask of the six stages DAPM powered itself:
+# where held is a bitmask of the nine stages DAPM powered itself (r185):
 #
-#   bit 0 MCLK, 1 class-H prep, 2 cdc prereq (forced 0x314), 3 RX1,
-#   bit 4 HPHL DAC, 5 HPHL PA
+#   bit 0 MCLK, 1 class-H prep, 2 cdc prereq (forced 0x314), 3 RX1, 4 RX2,
+#   bit 5 HPHL DAC, 6 HPHR DAC, 7 HPHL PA, 8 HPHR PA
 #
-# so the whole path is 3f and nothing is 00. No other value is legal at a
-# boundary -- a partial mask means a stage refused or failed.
+# so the whole path is 1ff and nothing is 000. No other value is legal at a
+# boundary -- a partial mask means a stage refused or failed. (r184 had six
+# stages, 3f; docs/audio/wcd9320-r185-stereo-volume-jack-mapping.md.)
 
-DAPM_HELD_ALL=3f
-DAPM_HELD_NONE=00
-DAPM_STAGES=6			# ups and downs per stream
+DAPM_HELD_ALL=1ff
+DAPM_HELD_NONE=000
+DAPM_STAGES=9			# ups and downs per stream (r185: nine)
 DAPM_PIN="${DAPM_PIN:-Headphones Switch}"
 
 # dapm_kv <dapm_state text> <key>
@@ -60,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc4}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc5}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
@@ -82,3 +83,49 @@ dapm_pin_value() {
 	*) echo "?" ;;
 	esac
 }
+
+# ------------------------------------------------------------------ r185 --
+#
+# Both PAs are live while a stereo stream plays: 0x1ab masked 30.
+DAPM_PA_LIVE=30
+
+# One stereo stream issues SIX forced writes, in DAPM's order:
+#   PREREQ up (314 set), HPHL DAC up (30d bit 1), HPHR DAC up (30d bit 2),
+#   then down in reverse: HPHR DAC, HPHL DAC, PREREQ.
+DAPM_FORCED_PER_STREAM=6
+
+# dapm_forced_want <index within the run> -> "reg mask dir"
+dapm_forced_want() {
+	case $(( $1 % DAPM_FORCED_PER_STREAM )) in
+	0) echo "314 ff set" ;;
+	1) echo "30d 02 set" ;;
+	2) echo "30d 04 set" ;;
+	3) echo "30d 04 clear" ;;
+	4) echo "30d 02 clear" ;;
+	5) echo "314 ff clear" ;;
+	esac
+}
+
+# A listen stream is "side:hph:dig":
+#   side  L, R or B -- which channel carries the tone (the other is zero)
+#   hph   HPHL/HPHR Volume, 0..20, 20 loudest (the field is 20 - hph)
+#   dig   RX1/RX2 Digital Volume, 0..84 = -84..0 dB, 84 is 0 dB
+#
+# dapm_spec_ok <spec> -> OK, or REFUSE:<why>
+dapm_spec_ok() {
+	_ss=$(printf '%s' "$1" | cut -d: -f1)
+	_sh=$(printf '%s' "$1" | cut -d: -f2)
+	_sd=$(printf '%s' "$1" | cut -d: -f3)
+	case "$_ss" in L|R|B) ;; *) echo "REFUSE:side '$_ss' is not L, R or B"; return ;; esac
+	case "$_sh" in ''|*[!0-9]*) echo "REFUSE:hph '$_sh' is not a number"; return ;; esac
+	case "$_sd" in ''|*[!0-9]*) echo "REFUSE:dig '$_sd' is not a number"; return ;; esac
+	[ "$(printf '%s' "$1" | tr -cd ':' | wc -c)" -eq 2 ] ||
+		{ echo "REFUSE:'$1' is not side:hph:dig"; return; }
+	[ "$_sh" -le 20 ] || { echo "REFUSE:hph $_sh above 20"; return; }
+	[ "$_sd" -le 84 ] || { echo "REFUSE:dig $_sd above 84 (0 dB)"; return; }
+	echo OK
+}
+# dapm_spec_field <hph> -> the 0x1ae / 0x1b4 field the driver must hold, hex
+dapm_spec_field() { printf '%02x' $(( 20 - $1 )); }
+# dapm_spec_dig <dig> -> the 0x2b7 / 0x2bf byte, hex (s8 dB, two's complement)
+dapm_spec_dig() { printf '%02x' $(( ($1 - 84) & 0xff )); }

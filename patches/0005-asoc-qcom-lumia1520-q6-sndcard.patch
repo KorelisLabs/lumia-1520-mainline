@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 08:26:39.875559209 -0500
-@@ -0,0 +1,326 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 10:56:36.401840278 -0500
+@@ -0,0 +1,379 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -145,6 +145,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +#include <sound/pcm.h>
 +#include <sound/pcm_params.h>
++#include <sound/jack.h>
 +#include <sound/soc.h>
 +
 +#include "common.h"
@@ -164,6 +165,10 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * The codec's frozen delta (0x040: 00->05, 0x180: 00->01) was proven at
 + * 48 kHz / 1 channel / S16_LE, and this milestone compares against that
 + * delta; letting the BE drift would compare against something else.
++ *
++ * r185: TWO CHANNELS. The codec now owns SLIM RX1 and RX2 (ports 16 and 17,
++ * channels 144 and 145) and reports both; the back end is always stereo, and
++ * the front end stays free -- the ADSP's matrix maps a mono stream onto it.
 + */
 +static int lumia_q6_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 +				       struct snd_pcm_hw_params *params)
@@ -174,7 +179,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
 +
 +	rate->min = rate->max = 48000;
-+	channels->min = channels->max = 1;
++	channels->min = channels->max = 2;
 +	snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
 +			    SNDRV_PCM_FORMAT_S16_LE);
 +
@@ -234,10 +239,10 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		}
 +
 +		dev_info(rtd->card->dev,
-+			 "BE hw_params: cpu=%s codec=%s rate=%u ch=%u ch_map={%u} (reported by the codec)\n",
++			 "BE hw_params: cpu=%s codec=%s rate=%u ch=%u ch_map=%u ch from %u (reported by the codec)\n",
 +			 cpu_dai->name, codec_dai->name,
 +			 params_rate(params), params_channels(params),
-+			 rx_ch[0]);
++			 rx_ch_cnt, rx_ch[0]);
 +	}
 +
 +	return 0;
@@ -304,9 +309,13 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * much is played.
 + *
 + * That is the safety gate for ordinary playback. The pin is disabled before
-+ * the card's first DAPM sync and this driver never enables it: only the
-+ * operator does, through the standard "Headphones Switch" control. Jack
-+ * detection driving the pin comes later.
++ * the card's first DAPM sync and this driver never enables it.
++ *
++ * r185: THE JACK DRIVES IT. late_probe hands the codec a "Headphone Jack"
++ * whose pin is Headphones; the codec's MBHC jack switch reports insertion and
++ * removal, and ASoC's jack core turns the pin on and off with it. The pin
++ * still starts OFF, the "Headphones Switch" override stays, and a codec that
++ * refuses the jack leaves exactly r184's manual behaviour.
 + */
 +static const struct snd_soc_dapm_widget lumia_q6_widgets[] = {
 +	SND_SOC_DAPM_HP("Headphones", NULL),
@@ -320,8 +329,29 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	SOC_DAPM_PIN_SWITCH("Headphones"),
 +};
 +
++static struct snd_soc_jack lumia_q6_jack;
++
++static struct snd_soc_jack_pin lumia_q6_jack_pins[] = {
++	{ .pin = "Headphones", .mask = SND_JACK_HEADPHONE },
++};
++
++/* The first component on the card that takes a jack: the WCD9320. */
++static struct snd_soc_component *lumia_q6_jack_codec(struct snd_soc_card *card)
++{
++	struct snd_soc_pcm_runtime *rtd;
++	struct snd_soc_dai *dai;
++	int i;
++
++	for_each_card_rtds(card, rtd)
++		for_each_rtd_codec_dais(rtd, i, dai)
++			if (dai->component->driver->set_jack)
++				return dai->component;
++	return NULL;
++}
++
 +static int lumia_q6_late_probe(struct snd_soc_card *card)
 +{
++	struct snd_soc_component *codec;
 +	int ret;
 +
 +	/* A card whose pin cannot be put OFF does not register. */
@@ -331,8 +361,31 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		return ret;
 +	}
 +	dev_info(card->dev,
-+		 "Headphones pin OFF at init -- nothing on the codec powers until \"Headphones Switch\" is turned on\n");
-+	return snd_soc_dapm_sync(&card->dapm);
++		 "Headphones pin OFF at init -- nothing on the codec powers until the jack or \"Headphones Switch\" turns it on\n");
++	ret = snd_soc_dapm_sync(&card->dapm);
++	if (ret)
++		return ret;
++
++	/* r185: the jack. Optional -- without it the pin is manual, as r184. */
++	ret = snd_soc_card_jack_new_pins(card, "Headphone Jack",
++					 SND_JACK_HEADPHONE, &lumia_q6_jack,
++					 lumia_q6_jack_pins,
++					 ARRAY_SIZE(lumia_q6_jack_pins));
++	if (ret) {
++		dev_warn(card->dev, "no Headphone Jack (%d) -- the pin stays manual\n", ret);
++		return 0;
++	}
++	codec = lumia_q6_jack_codec(card);
++	ret = codec ? snd_soc_component_set_jack(codec, &lumia_q6_jack, NULL)
++		    : -ENODEV;
++	if (ret)
++		dev_warn(card->dev,
++			 "the codec did not take the jack (%d) -- the pin stays manual\n",
++			 ret);
++	else
++		dev_info(card->dev, "Headphone Jack -> %s: the jack drives the pin\n",
++			 codec->name);
++	return 0;
 +}
 +
 +static int lumia_q6_probe(struct platform_device *pdev)
@@ -399,4 +452,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc4");
++MODULE_VERSION("q6-card-rc5");

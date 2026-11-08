@@ -39,6 +39,7 @@ CYCLES="${CYCLES:-3}"
 
 require_module_version
 find_devices
+jack_quiesce	# r185: detection owns 0x14a and a source
 
 CSRC="$PGD/clk_source_test"
 CSRS="$PGD/clk_source_state"

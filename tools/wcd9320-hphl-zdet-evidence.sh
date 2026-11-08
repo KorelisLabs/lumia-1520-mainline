@@ -41,6 +41,7 @@ Z_SET="1aa 1af 1b5 1a9 1ac 1ad 2b5 30f 1a5 1ae 2bd 1b4 193 18b 1a2 183 184 185 1
 
 require_module_version
 find_devices
+jack_quiesce	# r185: detection owns 0x14a and a source
 
 ZD="$PGD/hphl_zdet"
 PAS="$PGD/hphl_pa_state"

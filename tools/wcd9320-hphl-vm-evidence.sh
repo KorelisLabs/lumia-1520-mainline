@@ -36,6 +36,7 @@ VM_SET="110 128 129 131 133 14e 14f 150 171 174 1fe 3c0 3c1 3c3 3c6 3c7 3c8 3ce 
 
 require_module_version
 find_devices
+jack_quiesce	# r185: detection owns 0x14a and a source
 
 VM="$PGD/hphl_vm"
 PAS="$PGD/hphl_pa_state"

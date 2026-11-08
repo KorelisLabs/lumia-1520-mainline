@@ -439,3 +439,21 @@ open_output() {	# open_output <path>
 		exit 2
 	fi
 }
+
+# r185: jack_quiesce -- jack detection owns 0x14a and unmasks JACK_SWITCH,
+# and the voltmeter, the zdet and the certified-mask checks all refuse beside
+# it. Research runners call this right after find_devices: detection off,
+# source masked again, 0x14a back to 00, and the Headphones pin follows the
+# reported removal off. Turned back on by hand: echo on > jack_detect.
+# Sets JACK_WAS ("on", "off" or "absent") for the report.
+jack_quiesce() {
+	JACK_WAS=absent
+	[ -e "$PGD/jack_detect" ] || return 0
+	if [ "$(sed -n 's/^on=\([01]\).*/\1/p' "$PGD/jack_detect" 2>/dev/null)" = "1" ]; then
+		JACK_WAS=on
+		echo off > "$PGD/jack_detect" 2>/dev/null
+		say "jack detection was on -- turned OFF for this run (echo on > jack_detect afterwards)"
+	else
+		JACK_WAS=off
+	fi
+}
