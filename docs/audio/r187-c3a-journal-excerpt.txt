@@ -1,0 +1,114 @@
+20260901T214806Z tone finished rc=0
+20260901T214806Z after the stream (~0 ms): held=000 ups=51 downs=51 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 | 0x1ab=80
+20260901T214806Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T214807Z === stream 1: complete ===
+20260901T214807Z volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB
+20260901T214809Z evidence written to /var/log/wcd9320-dapm-listen-20260901T214656Z.txt
+20260901T214925Z ================ DAPM listen run 20260901T214925Z ================
+20260901T214925Z stimulus -40 dBFS, 1 stream(s): B:0:84
+20260901T214925Z module outputs-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+20260901T214925Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=1 reports=4 virq=88 detect_0x14a=6f status_0x14b=04
+20260901T214925Z output ear: pin Earpiece Switch, ear_held full 3f
+20260901T214926Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260901T214926Z awaiting the arm-time Volume Down press, up to 300 s
+20260901T215011Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T215011Z forced-write journal starts this run at 24 of 64
+20260901T215013Z abort watcher armed, pid 17758
+20260901T215013Z front-end mixer enabled
+20260901T215013Z === stream 1: begin -- spec B:0:84 ===
+20260901T215013Z volumes: Earpiece Volume 0, RX1 digital 84 (0x00)
+20260901T215013Z stream 1: EARPIECE, Earpiece Volume 0 -- the mic at its fixed spot over the earpiece slot
+20260901T215013Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T215040Z GATE dapm-c1: APPROVED (chat)
+20260901T215040Z fail-safe armed: 30 s, phase stream-c1
+20260901T215040Z pin ON; with no stream: held=000 ups=51 downs=51 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0
+20260901T215040Z tone: 1 kHz, -40 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+20260901T215043Z path wait: ~500 ms, ear_held=3f slim_up=1
+20260901T215044Z live: held=000 ups=57 downs=51 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=3f spk_pa=0 ear_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+20260901T215045Z tone finished rc=0
+20260901T215045Z after the stream (~0 ms): held=000 ups=57 downs=57 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 | 0x1ab=80
+20260901T215046Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T215046Z === stream 1: complete ===
+20260901T215046Z volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB
+20260901T215048Z evidence written to /var/log/wcd9320-dapm-listen-20260901T214925Z.txt
+20260901T215159Z ================ DAPM listen run 20260901T215159Z ================
+20260901T215159Z stimulus -40 dBFS, 1 stream(s): B:6:84
+20260901T215159Z module outputs-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+20260901T215159Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=1 reports=4 virq=88 detect_0x14a=6f status_0x14b=04
+20260901T215159Z output ear: pin Earpiece Switch, ear_held full 3f
+20260901T215200Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260901T215200Z awaiting the arm-time Volume Down press, up to 300 s
+20260901T215256Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T215256Z forced-write journal starts this run at 26 of 64
+20260901T215257Z abort watcher armed, pid 18870
+20260901T215257Z front-end mixer enabled
+20260901T215257Z === stream 1: begin -- spec B:6:84 ===
+20260901T215257Z volumes: Earpiece Volume 6, RX1 digital 84 (0x00)
+20260901T215257Z stream 1: EARPIECE, Earpiece Volume 6 -- the mic at its fixed spot over the earpiece slot
+20260901T215257Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T215336Z GATE dapm-c1: APPROVED (chat)
+20260901T215336Z fail-safe armed: 30 s, phase stream-c1
+20260901T215336Z pin ON; with no stream: held=000 ups=57 downs=57 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0
+20260901T215336Z tone: 1 kHz, -40 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+20260901T215339Z path wait: ~600 ms, ear_held=3f slim_up=1
+20260901T215339Z live: held=000 ups=63 downs=57 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=3f spk_pa=0 ear_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+20260901T215341Z tone finished rc=0
+20260901T215341Z after the stream (~0 ms): held=000 ups=63 downs=63 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 | 0x1ab=80
+20260901T215341Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T215341Z === stream 1: complete ===
+20260901T215341Z volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB
+20260901T215343Z evidence written to /var/log/wcd9320-dapm-listen-20260901T215159Z.txt
+20260901T215542Z ================ DAPM listen run 20260901T215542Z ================
+20260901T215542Z stimulus -30 dBFS, 1 stream(s): B:6:84
+20260901T215542Z module outputs-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+20260901T215543Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=1 reports=4 virq=88 detect_0x14a=6f status_0x14b=04
+20260901T215543Z output ear: pin Earpiece Switch, ear_held full 3f
+20260901T215543Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260901T215543Z awaiting the arm-time Volume Down press, up to 300 s
+20260901T215610Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T215610Z forced-write journal starts this run at 28 of 64
+20260901T215611Z abort watcher armed, pid 20030
+20260901T215611Z front-end mixer enabled
+20260901T215611Z === stream 1: begin -- spec B:6:84 ===
+20260901T215611Z volumes: Earpiece Volume 6, RX1 digital 84 (0x00)
+20260901T215611Z stream 1: EARPIECE, Earpiece Volume 6 -- the mic at its fixed spot over the earpiece slot
+20260901T215611Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T215652Z GATE dapm-c1: APPROVED (chat)
+20260901T215653Z fail-safe armed: 30 s, phase stream-c1
+20260901T215653Z pin ON; with no stream: held=000 ups=63 downs=63 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0
+20260901T215653Z tone: 1 kHz, -30 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+20260901T215655Z path wait: ~500 ms, ear_held=3f slim_up=1
+20260901T215656Z live: held=000 ups=69 downs=63 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=3f spk_pa=0 ear_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+20260901T215657Z tone finished rc=0
+20260901T215657Z after the stream (~0 ms): held=000 ups=69 downs=69 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 | 0x1ab=80
+20260901T215658Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T215658Z === stream 1: complete ===
+20260901T215658Z volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB
+20260901T215700Z evidence written to /var/log/wcd9320-dapm-listen-20260901T215542Z.txt
+20260901T215722Z ================ DAPM listen run 20260901T215722Z ================
+20260901T215722Z stimulus -20 dBFS, 1 stream(s): B:6:84
+20260901T215722Z module outputs-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+20260901T215722Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=1 reports=4 virq=88 detect_0x14a=6f status_0x14b=04
+20260901T215722Z output ear: pin Earpiece Switch, ear_held full 3f
+20260901T215723Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260901T215723Z awaiting the arm-time Volume Down press, up to 300 s
+20260901T215847Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260901T215847Z forced-write journal starts this run at 30 of 64
+20260901T215848Z abort watcher armed, pid 21167
+20260901T215848Z front-end mixer enabled
+20260901T215848Z === stream 1: begin -- spec B:6:84 ===
+20260901T215849Z volumes: Earpiece Volume 6, RX1 digital 84 (0x00)
+20260901T215849Z stream 1: EARPIECE, Earpiece Volume 6 -- the mic at its fixed spot over the earpiece slot
+20260901T215849Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260901T215928Z GATE dapm-c1: APPROVED (chat)
+20260901T215928Z fail-safe armed: 30 s, phase stream-c1
+20260901T215928Z pin ON; with no stream: held=000 ups=69 downs=69 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0
+20260901T215928Z tone: 1 kHz, -20 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+20260901T215931Z path wait: ~500 ms, ear_held=3f slim_up=1
+20260901T215931Z live: held=000 ups=75 downs=69 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=3f spk_pa=0 ear_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+20260901T215933Z tone finished rc=0
+20260901T215933Z after the stream (~0 ms): held=000 ups=75 downs=75 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 | 0x1ab=80
+20260901T215933Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260901T215933Z === stream 1: complete ===
+20260901T215933Z volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB
+20260901T215935Z evidence written to /var/log/wcd9320-dapm-listen-20260901T215722Z.txt

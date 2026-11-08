@@ -110,7 +110,7 @@ G0=$(sed -n 's/^gain_field=\([0-9a-f]*\).*/\1/p' "$PGD/hphl_pa_gain" 2>/dev/null
 GR0=$(rv "$(cat "$PGD/hphr_state" 2>/dev/null)" gain_field_r)
 
 "$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 >/dev/null 2>&1
-DM0=$(dmesg | wc -l)
+DM0=$(dmesg_mark)	# r187: a timestamp; the ring may have wrapped
 
 # ---------------------------------------------------------------- during --
 "$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side B >/tmp/.dapm-tone.$$ 2>&1 &
@@ -133,7 +133,7 @@ CS2=$(cat "$PGD/clk_source_state" 2>/dev/null)
 F2=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
 PIN2=$(pin)
 CC=$(cat "$PGD/cache_check" 2>/dev/null | tr '\n' ' ')
-DMSG=$(dmesg | tail -n +"$((DM0 + 1))")
+DMSG=$(dmesg_since "$DM0")
 DMESG_FILE="/tmp/.wcd9320-dmesg-dapm-$$"
 snap_dmesg
 
@@ -186,14 +186,19 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	for _g in SPK EAR; do
 		_gw=$(wfield "$W1" "$_g")
 		_gi=$(printf '%s' "$_gw" | cut -d/ -f2)
-		check_cond "$_g sees the active DAI (in >= 1)" \n			"$([ "${_gi:-0}" -ge 1 ] 2>/dev/null && echo 1 || echo 0)" \n			"in=$_gi -- the $_g graph is not connected to the stream" "in=$_gi"
+		check_cond "$_g sees the active DAI (in >= 1)" \
+			"$([ "${_gi:-0}" -ge 1 ] 2>/dev/null && echo 1 || echo 0)" \
+			"in=$_gi -- the $_g graph is not connected to the stream" "in=$_gi"
 		check "$_g sees no sink (out 0)" "$(printf '%s' "$_gw" | cut -d/ -f3)" "0"
 	done
-	for _w in MCLK CLASS_H_PREP CDC_PREREQ RX1_CHAIN RX2_CHAIN HPHL_DAC HPHR_DAC HPHL_PA HPHR_PA \n		  SPK_MCLK SPK_PREP SPK_PREREQ RX7_CHAIN SPK_DAC SPK_PA SPK \n		  EAR_MCLK EAR_PREP EAR_PREREQ EAR_RX1 EAR_DAC EAR_PA EAR; do
+	for _w in MCLK CLASS_H_PREP CDC_PREREQ RX1_CHAIN RX2_CHAIN HPHL_DAC HPHR_DAC HPHL_PA HPHR_PA \
+		  SPK_MCLK SPK_PREP SPK_PREREQ RX7_CHAIN SPK_DAC SPK_PA SPK \
+		  EAR_MCLK EAR_PREP EAR_PREREQ EAR_RX1 EAR_DAC EAR_PA EAR; do
 		check "$_w off during" "$(wfield "$W1" "$_w" | cut -d/ -f1)" "Off"
 	done
 	check "DAPM holds nothing during" "$(dapm_held_is "$D1" "$DAPM_HELD_NONE")" "OK"
-	check "speaker and earpiece paths hold nothing during" \n	      "$(dapm_kv "$D1" spk_held) $(dapm_kv "$D1" ear_held)" "00 00"
+	check "speaker and earpiece paths hold nothing during" \
+	      "$(dapm_kv "$D1" spk_held) $(dapm_kv "$D1" ear_held)" "00 00"
 	check "PA off during (0x1ab)" "$(rv "$PA1" pa_0x1ab)" "80"
 
 	say ""

@@ -73,6 +73,21 @@ TEARDOWN="$DIR/wcd9320-dapm-teardown.sh"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 DBFS="${DBFS:--40}"
+# r187: Section 23's declared escalation. -40 is the default and needs
+# nothing. -30 and -20 (pcm-tone's compiled ceiling) are allowed only with
+# ESCALATE=declared on the command line, which the operator gives in chat for
+# that run; then, and only then, pcm-tone gets --armed-escalation. Any other
+# level is refused here, before anything is armed.
+ESCALATE="${ESCALATE:-}"
+TONE_ARM=""
+case "$DBFS" in
+-40) ;;
+-30|-20)
+	[ "$ESCALATE" = "declared" ] ||
+		{ echo "INVALID SETUP: DBFS=$DBFS is an escalation -- it needs ESCALATE=declared"; exit 2; }
+	TONE_ARM="--armed-escalation" ;;
+*)	echo "INVALID SETUP: DBFS=$DBFS (allowed: -40, or -30/-20 with ESCALATE=declared)"; exit 2 ;;
+esac
 OUTPUT="${OUTPUT:-hph}"
 dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk or ear)"; exit 2; }
 if [ "$OUTPUT" = "hph" ]; then
@@ -210,7 +225,7 @@ preflight() {
 
 	"$GATE" --resolve >>"$JOURNAL" 2>&1 ||
 		{ say "INVALID SETUP: the approve and abort devices did not resolve"; return 1; }
-	"$TONE" --dbfs "$DBFS" --side B --dry-run >>"$JOURNAL" 2>&1 ||
+	"$TONE" --dbfs "$DBFS" $TONE_ARM --side B --dry-run >>"$JOURNAL" 2>&1 ||
 		{ say "INVALID SETUP: the tone helper refused $DBFS dBFS stereo (r185 pcm-tone?)"; return 1; }
 	for _sp in $SPEC_LIST; do
 		_ok=$(dapm_spec_ok_out "$OUTPUT" "$_sp")
@@ -284,7 +299,11 @@ stream() {	# stream <n> <spec>
 		dl_abort "volume-c$_n"
 		return 1
 	fi
-	jrn "volumes: HPHL/HPHR $_hv (field $(dapm_spec_field "$_hv")), RX1/RX2 digital $_dv (0x$(dapm_spec_dig "$_dv"))"
+	case "$OUTPUT" in
+	hph) jrn "volumes: HPHL/HPHR $_hv (field $(dapm_spec_field "$_hv")), RX1/RX2 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
+	spk) jrn "volumes: Speaker Volume $_hv (field $((8 - _hv))), RX7 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
+	ear) jrn "volumes: Earpiece Volume $_hv, RX1 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
+	esac
 	case "$OUTPUT:$_side" in
 	hph:L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
 	hph:R) jrn "stream $_n: tone on the RIGHT only -- the mic on the RIGHT earcup" ;;
@@ -319,7 +338,7 @@ stream() {	# stream <n> <spec>
 	flag_ok "pin-on-c$_n" || return 1
 
 	jrn "tone: 1 kHz, $DBFS dBFS, side $_side, 250 ms tone/silence/tone/silence, one stream, DAPM-powered"
-	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side "$_side" >>"$JOURNAL" 2>&1 &
+	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" $TONE_ARM --side "$_side" >>"$JOURNAL" 2>&1 &
 	TPID=$!
 	#
 	# WAIT FOR THE PATH, DON'T ASSUME IT. DAPM powers the whole chain inside
@@ -420,7 +439,7 @@ check)
 launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=SPECS=$SPECS --setenv=HOLD_ARM=$HOLD_ARM"
-	CMD="$CMD --setenv=OUTPUT=$OUTPUT"
+	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -474,13 +493,16 @@ failsafe_disarm
 watch_stop
 [ "$(pin_get)" = "0" ] || { pin_set 0; jrn "pin forced OFF at the end"; }
 pins_all_off
-OPOST=$(cat "$PGD/out_state" 2>/dev/null)
 # r185/r187: every volume back to its boot value
 if vol_restore; then
 	jrn "volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB"
 else
 	jrn "THE VOLUMES DID NOT RESTORE -- check HPHL/HPHR Volume by hand"
 fi
+# r187: read AFTER the restore -- the "at their minimum" check is about the
+# state the run leaves behind, and a run whose last stream was at full gain
+# (Speaker Volume 8, field 0) failed it when this was read before.
+OPOST=$(cat "$PGD/out_state" 2>/dev/null)
 RPOST=$(cat "$PGD/hphr_state" 2>/dev/null)
 
 D_POST=$(cat "$PGD/dapm_state" 2>/dev/null)

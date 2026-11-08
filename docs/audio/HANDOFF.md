@@ -1031,10 +1031,26 @@ re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
   The tag does not claim a scope measurement, HPHR as an output, or MCLK
   bring-up inside the driver.
 
+**r187 `outputs-rc1` + `q6-card-rc6`: THE SPEAKER AND THE EARPIECE ARE NOT ON SPK_OUT OR EAR
+(2026-11-08, [wcd9320-r187-speaker-earpiece-mapping.md](wcd9320-r187-speaker-earpiece-mapping.md) section 6).**
+This is the current build. It installs and runs, and plays as before through
+the headphones.
+- **Regressions:** the HPH regression passes (69/0, analyser at 33.9 dB),
+  the digital gate passes 56/0, and so do mclk-own, vm and zdet.
+- **The speaker and earpiece paths work on the chip:** each PA is live,
+  there is no clip, and teardown is clean.
+- **Acoustically, both are silent** up to -20 dBFS at full gain, the tone
+  helper's compiled ceiling, by a declared escalation.
+- **Next is r188:** map the four `LINEOUT`s, and probe them the same way.
+- **Results:** [r187-acoustic-analysis.txt](r187-acoustic-analysis.txt).
+- **The listen runner now:**
+  - reads `out_state` after the volume restore;
+  - gates -30 and -20 dBFS behind `ESCALATE=declared`.
+
 **r186 `stereo-vol-jack-rc2` + `q6-card-rc5`: STEREO, VOLUME AND JACK DETECTION ON HARDWARE (2026-11-08,
 [wcd9320-r185-stereo-volume-jack-mapping.md](wcd9320-r185-stereo-volume-jack-mapping.md) section 10).**
-This is the current build. Install the codec `.ko`, the card `.ko` and r186's
-`pcm-tone` together.
+The proven build before r187. Install the codec `.ko`, the card `.ko` and
+r186's `pcm-tone` together.
 
 - **One fresh boot, every step passed:**
   - jack gate 52/0 (a headset plugged in at boot is detected; removal

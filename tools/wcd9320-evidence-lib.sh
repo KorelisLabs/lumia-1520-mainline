@@ -457,3 +457,19 @@ jack_quiesce() {
 		JACK_WAS=off
 	fi
 }
+
+# r187: a dmesg delta by TIMESTAMP, not by line count. Once the ring buffer
+# has wrapped (the voltmeter and zdet log a lot), `dmesg | wc -l` stops
+# growing and a line-count delta comes back empty -- which failed a correct
+# digital gate on r187 ("no ASoC hw_params") while the line was right there.
+#   T0=$(dmesg_mark)  ...  dmesg_since "$T0"
+dmesg_mark() {
+	dmesg 2>/dev/null | tail -n1 | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p'
+}
+dmesg_since() {
+	dmesg 2>/dev/null | awk -v t="${1:-0}" '
+		match($0, /^\[ *[0-9.]+\]/) {
+			ts = substr($0, 2, RLENGTH - 2) + 0
+			if (ts > t + 0) print
+		}'
+}

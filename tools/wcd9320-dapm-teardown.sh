@@ -54,15 +54,12 @@ else
 	for PIN in $PINS; do
 		IFS=$_td_ifs
 		if _td_out=$("$SETCTL" -D "$CTLDEV" --set "$PIN" 0 2>&1) &&
-		   printf '%s
-' "$_td_out" | grep -q '^readback=0$'; then
+		   printf '%s\n' "$_td_out" | grep -q '^readback=0$'; then
 			note "pin OFF ($PIN), read back 0"
-		elif printf '%s
-' "$_td_out" | grep -q '^found=0$'; then
+		elif printf '%s\n' "$_td_out" | grep -q '^found=0$'; then
 			note "no $PIN control on this card"
 		else
-			note "PIN OFF FAILED ($PIN): $(printf '%s' "$_td_out" | tr '
-' ' ')"
+			note "PIN OFF FAILED ($PIN): $(printf '%s' "$_td_out" | tr '\n' ' ')"
 		fi
 		IFS='|'
 	done

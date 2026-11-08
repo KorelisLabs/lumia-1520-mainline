@@ -228,3 +228,51 @@ tools/build-wcd9320-kernel.sh --pkgrel 187 --version outputs-rc1 \
 ```
 
 `pcm-tone` is unchanged from r186, so there is no helper rebuild.
+
+## 6. Hardware (r187 boot, phone clock 2026-09-01; PC 2026-11-08)
+
+**Gates before the probes:**
+- the digital gate: PASS 56/0;
+- mclk-own 90/0, vm 57/0, zdet 34/0;
+- the HPH regression listen (`B:20:84`): PASS 69/0, analyser PASS at 33.9 dB.
+
+**Probe S (speaker): silent.** There were six valid streams:
+- Speaker Volume 0, 4 and 8 at -40 dBFS;
+- full gain at -30 and -20 dBFS, a declared escalation;
+- the last three with the headset unplugged.
+
+On every stream:
+- the chip showed `SPKR_DRV_EN` bit 7 live, the gain field read back as set,
+  there was no clip, and teardown was clean;
+- the operator heard nothing, and the recording showed no 1 kHz event and
+  no tonal window.
+
+**Probe E (earpiece): silent.** There were four streams:
+- Earpiece Volume 0 and 6 at -40 dBFS;
+- full gain at -30 and -20 dBFS, declared.
+
+`0x1bc = 70` (DAC1, switch, PA) was live on each stream. The operator heard
+nothing, and the recording showed nothing.
+
+**Verdict:**
+- The earlier hypothesis is **refuted**. Neither transducer is driven from
+  `SPK_OUT` or `EAR`, or those outputs' supplies are unpowered.
+- The digital side was cross-checked against downstream: RX7's input
+  encoding, and RX7 B6 at its reg default.
+- At -20 dBFS and full gain, these streams were 20 dB above a level that put
+  the headphones 34 dB over the floor.
+- **Next:** the four `LINEOUT`s, as the same minimum-gain probes (r188).
+
+Details are in `r187-acoustic-analysis.txt`, the listen evidence is in
+`r187-wcd9320-dapm-listen-*.txt`, and the journal is in
+`r187-c3a-journal-excerpt.txt`.
+
+**Tooling changes made during the run:**
+- **`wcd9320-dapm-listen.sh`:**
+  - `out_state` is now read *after* `vol_restore`. Two runs showed a false
+    FAIL because of this.
+  - The volume journal line is now per output.
+  - `ESCALATE=declared` gates -30 and -20 dBFS: pcm-tone gets
+    `--armed-escalation` only with it, and any other level is refused.
+- **Lesson:** check the PC mic's own mute before a probe. The first speaker
+  recording was 1 LSB peak, and was discarded.

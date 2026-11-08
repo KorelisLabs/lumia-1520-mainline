@@ -100,7 +100,7 @@ if [ "$(rv "$(js)" on)" != "1" ]; then
 fi
 
 F0=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
-DM0=$(dmesg | wc -l)
+DM0=$(dmesg_mark)	# r187: a timestamp; the ring may have wrapped
 snap S0
 I0=$(rv "$J_S0" inserted)
 case "$I0" in 0|1) ;; *) say "INVALID SETUP: jack_detect reports no state: $J_S0"; exit 2 ;; esac
@@ -134,7 +134,7 @@ echo on > "$PGD/jack_detect" 2>/dev/null
 sleep 0.3
 snap S4
 F4=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
-DMSG=$(dmesg | tail -n +"$((DM0 + 1))")
+DMSG=$(dmesg_since "$DM0")
 DMESG_FILE="/tmp/.wcd9320-dmesg-jack-$$"
 snap_dmesg
 

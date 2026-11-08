@@ -1,0 +1,44 @@
+r187 (outputs-rc1 / q6-card-rc6) acoustic probes, phone clock 2026-09-01, PC 2026-11-08
+Instrument: DGM20 USB mic on the PC, c3a-capture.py record/analyse (winmm, 48 kHz mono).
+Stimulus: 1 kHz, 250 ms tone / silence / tone / silence, both channels (side B).
+"floor" = median 1 kHz narrowband level over the recording; "tonal" = a 100 ms window
+whose 1 kHz bin is >= 12 dB above both 850 and 1150 Hz, used as a second check.
+
+HPH regression (B:20:84, -40 dBFS, mic on the earcup)
+  listen 20260901T210443Z  PASS 69/0     analyser PASS, 33.9 dB over the floor, 999.95 Hz
+
+SPEAKER (OUTPUT=spk; mic at the grille; phone flat)
+  run               spec    dBFS  phone verdict        PA (0x1df b7)  clip  recording            result
+  211140Z           B:0:84  -40   PASS                 80 live        00    c3a-spk-r187.wav     INVALID: PC mic hardware-muted (peak 1 LSB)
+  213324Z           B:0:84  -40   PASS                 80 live        00    c3a-spk-r187b.wav    floor -84.6, 0 events, no 1 kHz rise
+  213552Z s1        B:4:84  -40   FAIL*                80 live        00    c3a-spk-r187c.wav    0 events
+  213552Z s2        B:8:84  -40   (same run)           80 live        00    c3a-spk-r187c.wav    0 events
+  214051Z           B:8:84  -40   FAIL*                80 live        00    c3a-spk-r187d.wav    0 events (headset UNPLUGGED from here on)
+  214512Z           B:8:84  -30   PASS (declared)      80 live        00    c3a-spk-r187-esc.wav no tonal window
+  214656Z           B:8:84  -20   PASS (declared)      80 live        00    c3a-spk-r187-esc.wav 0 events, no tonal window
+  Operator heard nothing on any speaker stream.
+  * FAIL = runner bug, not the driver: out_state was read BEFORE vol_restore, so a run whose
+    last stream was at Speaker Volume 8 (field 0) failed "at their minimum". The chip read
+    spk_field=8 afterwards. Fixed in wcd9320-dapm-listen.sh (read after the restore),
+    installed from 214512Z on (sha 7ba0c8be...), and both later runs PASS.
+  Gain readback per stream: "speaker gain = 8 - N, register source" PASS (fields 8, 4, 0).
+  The headset was in the jack for 211140Z..213552Z; all pins were forced off and HPH held
+  nothing, and 214051Z..214656Z with it unplugged gave the same result.
+
+EARPIECE (OUTPUT=ear; mic against the earpiece slot)
+  run               spec    dBFS  phone verdict        0x1bc          recording            result
+  214925Z           B:0:84  -40   PASS                 70 live        c3a-ear-r187.wav     floor -83.4, 0 events (loud spots broadband = handling)
+  215159Z           B:6:84  -40   PASS                 70 live        c3a-ear-r187b.wav    floor -81.3, 0 events
+  215542Z           B:6:84  -30   PASS (declared)      70 live        c3a-ear-r187-esc.wav no tonal window
+  215722Z           B:6:84  -20   PASS (declared)      70 live        c3a-ear-r187-esc.wav 0 events, no tonal window
+  Operator heard nothing on any earpiece stream.
+
+Digital routing cross-check against downstream hh-wcd9320.c:
+  RX7 MIX1 INP1/INP2 = CONN_RX7_B1 [3:0]/[7:4], rx_mix1_text RX1 = 5, RX2 = 6 -> 0x65 (as written).
+  RX7_B6 reg default 0x80 (downstream TAIKO_REG_VAL), no separate digital mute on Taiko.
+
+Conclusion: at -20 dBFS and full gain -- 20 dB above the level at which the headphones were
+34 dB over the floor -- neither SPK_OUT nor EAR produced anything at the transducers while
+the chip reported each PA live, with no clip and no failures. Neither the loudspeaker nor
+the earpiece is driven from those codec outputs on this board (or their supply is not
+powered). Next: the four LINEOUTs, as safe minimum-gain probes (r188).
