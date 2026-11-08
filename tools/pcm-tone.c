@@ -125,10 +125,21 @@
 
 #define NEVER_START_THRESHOLD	0x7fffffffUL
 
+/*
+ * r185: THE MASK IS NARROWED TO ONE BIT, NOT OR-ED INTO.
+ *
+ * hw_any() starts every mask all-ones, so OR-ing a bit into it changed
+ * nothing: the kernel refined ACCESS to its first choice, MMAP_INTERLEAVED.
+ * WRITEI_FRAMES on an MMAP stream is allowed only for ONE channel
+ * (__snd_pcm_lib_xfer), which is why every mono run since C3a worked and the
+ * first stereo stream died with EINVAL on its first write.
+ */
 static void mask_set(struct snd_pcm_hw_params *p, int n, unsigned int bit)
 {
-	p->masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK].bits[bit >> 5] |=
-		(1U << (bit & 31));
+	struct snd_mask *m = &p->masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK];
+
+	memset(m, 0, sizeof(*m));
+	m->bits[bit >> 5] = 1U << (bit & 31);
 }
 
 static void iv_set(struct snd_pcm_hw_params *p, int n, unsigned int v)

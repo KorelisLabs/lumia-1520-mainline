@@ -2143,6 +2143,13 @@ def main():
     ids = func_body("wcd9320_insert_detect_set")
     check("insert detect takes the polarity as an argument",
           "base | (ins ? WCD9320_MBHC_DET_INS : 0)" in ids, "wcd9xxx_insert_detect_setup(ins)")
+    # r186: 0x14b carries no level until detection is enabled -- r185 read it
+    # first, always got the unconfigured 0e, and missed a headset in at boot.
+    check("the boot level is read only after detection is armed",
+          0 <= jen.find("false, true);") < jen.find("msleep(WCD9320_JACK_ARM_SETTLE_MS)")
+          < jen.find("wcd9320_jack_level(") < jen.find("if (!ret && ins)")
+          and re.search(r"^#define\s+WCD9320_JACK_ARM_SETTLE_MS\s+50\b", ptext_all, re.M)
+          is not None, "arm for insertion, settle, read, re-arm for removal if in")
     check("jack detection requests JACK_SWITCH and nothing else",
           "regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_MBHC_JACK_SWITCH)" in jen
           and jen.count("regmap_irq_get_virq(") == 1, "the source rc6 proved")

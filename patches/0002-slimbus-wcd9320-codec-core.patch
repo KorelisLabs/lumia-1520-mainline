@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 11:01:33.442270967 -0500
-@@ -0,0 +1,12108 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 13:21:25.226907010 -0500
+@@ -0,0 +1,12125 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -11119,6 +11119,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * c3_lock under it. Nothing here takes c3_lock.
 + */
 +#define WCD9320_JACK_DEBOUNCE_US	5000	/* SWCH_IRQ_DEBOUNCE_TIME_US */
++/*
++ * r186: 0x14b carries no level until detection is ENABLED. r185 read it
++ * first and always got the unconfigured 0e (bit 2 set, "removed"), so a
++ * headset plugged in at boot was reported out -- measured on r185's first
++ * boot, where the chip later read 0b with the driver still saying removed.
++ * Now: arm for insertion, let the comparator settle, read, and re-arm for
++ * removal if a headset is already in.
++ */
++#define WCD9320_JACK_ARM_SETTLE_MS	50
 +
 +static int wcd9320_jack_level(struct wcd9320 *wcd, bool *inserted)
 +{
@@ -11208,11 +11217,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "jack: refused -- an MBHC research hook owns 0x14a or the source\n");
 +		return -EBUSY;
 +	}
-+	ret = wcd9320_jack_level(wcd, &ins);
-+	if (!ret)
++	/* arm first: the level only means something once detection is on */
++	ret = wcd9320_insert_detect_set(wcd, true, WCD9320_MBHC_DET_BASE,
++					false, true);
++	if (!ret) {
++		msleep(WCD9320_JACK_ARM_SETTLE_MS);
++		ret = wcd9320_jack_level(wcd, &ins);
++	}
++	if (!ret && ins)
 +		ret = wcd9320_insert_detect_set(wcd, true, WCD9320_MBHC_DET_BASE,
-+						false, !ins);
++						false, false);
 +	if (ret) {
++		if (wcd->mbhc_detect_on)
++			wcd9320_insert_detect_set(wcd, false, 0, false, false);
 +		mutex_unlock(&wcd->wake_lock);
 +		dev_err(dev, "jack: arming failed: %d\n", ret);
 +		return ret;
@@ -12453,7 +12470,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("stereo-vol-jack-rc1");
++MODULE_VERSION("stereo-vol-jack-rc2");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

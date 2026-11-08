@@ -75,10 +75,18 @@ static const char *state_name(int s)
 	}
 }
 
+/*
+ * r185: narrowed to one bit, not OR-ed into an all-ones mask -- the same
+ * defect found in pcm-tone on its first stereo stream (ACCESS refined to
+ * MMAP_INTERLEAVED; WRITEI is then legal only for one channel). This tool is
+ * mono, so it never failed, but the mask never meant what it said.
+ */
 static void mask_set(struct snd_pcm_hw_params *p, int n, unsigned int bit)
 {
-	p->masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK].bits[bit >> 5] |=
-		(1U << (bit & 31));
+	struct snd_mask *m = &p->masks[n - SNDRV_PCM_HW_PARAM_FIRST_MASK];
+
+	memset(m, 0, sizeof(*m));
+	m->bits[bit >> 5] = 1U << (bit & 31);
 }
 
 static void iv_set(struct snd_pcm_hw_params *p, int n, unsigned int v)

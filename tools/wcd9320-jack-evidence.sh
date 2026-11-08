@@ -12,7 +12,7 @@
 # Per settled state:
 #   - the reported state matches the chip's level (0x14b bit 2: 1 = removed)
 #   - 0x14a is armed for the OTHER state: 6d while inserted, 6f while removed
-#   - the "Headphone Jack" control and the "Headphones Switch" pin follow it
+#   - the "Headphones Jack" control and the "Headphones Switch" pin follow it
 #   - JACK_SWITCH is the only unmasked source (ff ff 3f 6f)
 #   - DAPM holds nothing, nobody holds MCLK, the PA is off: a pin with no
 #     stream powers nothing
@@ -38,7 +38,7 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 HOLD_S="${HOLD_S:-120}"
-JACK_CTL="${JACK_CTL:-Headphone Jack}"
+JACK_CTL="${JACK_CTL:-Headphones Jack}"	# ASoC names one control per jack pin
 MASK_ARMED="ff ff 3f 6f"	# JACK_SWITCH (INTR_REG3 bit 4) unmasked, nothing else
 MASK_CERT="ff ff 3f 7f"		# wcd9320-irq-parent-idle-validated
 
