@@ -50,6 +50,12 @@ are proprietary and are not committed.
 - **Public teardowns** (iFixit, the IHS summary, the Nokia service manual) do
   not name an audio amplifier.
 
+> **Superseded (2026-11-09).** r187 and r188 found every WCD9320 analog
+> output silent. The power-framework (PEP) entry for this audio device, which
+> this section never read, switches a 5 V / 1.5 A rail and the SoC's
+> Secondary MI2S pins. The loudspeaker is behind a control-less I2S
+> amplifier. See [r189-sec-mi2s-speaker-mapping.md](r189-sec-mi2s-speaker-mapping.md).
+
 **Working hypothesis:** the loudspeaker is driven directly by the WCD9320's
 own class-D speaker driver (`SPKR`, fed from RX7). It is not proven.
 - **The case for it:** nothing else exists for Windows to control.
