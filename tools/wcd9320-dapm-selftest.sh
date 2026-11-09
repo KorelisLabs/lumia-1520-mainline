@@ -42,11 +42,11 @@ eq "unparseable widget"         "$(dapm_widget "nonsense")" "? ? ?"
 eq "pin readback 0"             "$(dapm_pin_value "$(printf 'name=x\nfound=1\nreadback=0\n')")" "0"
 eq "pin readback 1"             "$(dapm_pin_value "$(printf 'write_rc=0\nreadback=1\n')")" "1"
 eq "pin not found"              "$(dapm_pin_value "$(printf 'name=x\nfound=0\n')")" "?"
-eq "card r188, pin off"         "$(dapm_card_ok q6-card-rc7 0)" "OK"
-eq "r187 card refused"          "$(dapm_card_ok q6-card-rc6 0)" "REFUSE:card module is 'q6-card-rc6', not q6-card-rc7 -- no pin behind HEADPHONE"
-eq "no card refused"            "$(dapm_card_ok "" "?")" "REFUSE:card module is 'absent', not q6-card-rc7 -- no pin behind HEADPHONE"
-eq "pin on refused"             "$(dapm_card_ok q6-card-rc7 1)" "REFUSE:Headphones pin reads '1', not 0"
-eq "pin unreadable refused"     "$(dapm_card_ok q6-card-rc7 "?")" "REFUSE:Headphones pin reads '?', not 0"
+eq "card r189, pin off"         "$(dapm_card_ok q6-card-rc8 0)" "OK"
+eq "r188 card refused"          "$(dapm_card_ok q6-card-rc7 0)" "REFUSE:card module is 'q6-card-rc7', not q6-card-rc8 -- no pin behind HEADPHONE"
+eq "no card refused"            "$(dapm_card_ok "" "?")" "REFUSE:card module is 'absent', not q6-card-rc8 -- no pin behind HEADPHONE"
+eq "pin on refused"             "$(dapm_card_ok q6-card-rc8 1)" "REFUSE:Headphones pin reads '1', not 0"
+eq "pin unreadable refused"     "$(dapm_card_ok q6-card-rc8 "?")" "REFUSE:Headphones pin reads '?', not 0"
 
 echo ""
 echo "=== r187: the three outputs ==="
@@ -58,6 +58,21 @@ dapm_out lo && eq "lo output" "$OUT_PIN|$OUT_KEY|$OUT_ALL|$OUT_NONE|$OUT_STAGES|
 eq "lo spec at full gain"       "$(dapm_spec_ok_out lo B:20:84)" "OK"
 eq "lo spec above max refused"  "$(dapm_spec_ok_out lo B:21:84)" "REFUSE:vol 21 above 20 for lo"
 eq "lo held key"                "$(dapm_held_key_is "held=000 lo_held=3f" lo_held 3f)" "OK"
+# r189
+dapm_out i2s && eq "i2s output" "$OUT_PIN|$OUT_KEY|$OUT_ALL|$OUT_NONE|$OUT_STAGES|$OUT_FORCED|$OUT_VMAX" "Loudspeaker Switch|held|000|000|0|0|0"
+eq "i2s spec, no gain"          "$(dapm_spec_ok_out i2s B:0:84)" "OK"
+eq "i2s spec with a vol refused" "$(dapm_spec_ok_out i2s B:1:84)" "REFUSE:vol 1 above 0 for i2s"
+eq "i2s spec with a dig refused" "$(dapm_spec_ok_out i2s B:0:78)" "REFUSE:dig must be 84 for i2s (no digital volume on this path)"
+eq "i2s mixer"                  "$I2S_MIXER" "SEC_MI2S_RX Audio Mixer MultiMedia1"
+PMX="pin 78 (GPIO_78): (MUX UNCLAIMED) (GPIO UNCLAIMED)
+pin 79 (GPIO_79): audio-amplifier (GPIO UNCLAIMED) function sec_mi2s group gpio79
+pin 80 (GPIO_80): audio-amplifier (GPIO UNCLAIMED) function sec_mi2s group gpio80
+pin 81 (GPIO_81): audio-amplifier (GPIO UNCLAIMED) function gpio group gpio81
+pin 82 (GPIO_82): audio-amplifier (GPIO UNCLAIMED) function sec_mi2s group gpio82
+pin 83 (GPIO_83): (MUX UNCLAIMED) (GPIO UNCLAIMED)"
+eq "mi2s mux parse, per pin"    "$(mi2s_mux_parse "$PMX")" "sec_mi2s sec_mi2s gpio sec_mi2s"
+eq "mi2s mux parse, unclaimed"  "$(mi2s_mux_parse "pin 79 (GPIO_79): (MUX UNCLAIMED) (GPIO UNCLAIMED)")" "? ? ? ?"
+eq "mi2s mux parse, pin 8 is not 80" "$(mi2s_mux_parse "pin 8 (GPIO_8): x (GPIO UNCLAIMED) function blsp group gpio8")" "? ? ? ?"
 dapm_out xyz; eq "unknown output refused" "$?" "1"
 S7="held=000 ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=3f ear_held=00 spk_pa=1 ear_pa=0"
 eq "spk path held whole"        "$(dapm_held_key_is "$S7" spk_held 3f)" "OK"
@@ -157,7 +172,8 @@ eq "normal: pin written off first" "$(sed -n 1p "$LOG")" "setctl -D /dev/snd/con
 eq "normal: speaker pin off next" "$(sed -n 2p "$LOG")" "setctl -D /dev/snd/controlC0 --set Speaker Switch 0"
 eq "normal: earpiece pin off next" "$(sed -n 3p "$LOG")" "setctl -D /dev/snd/controlC0 --set Earpiece Switch 0"
 eq "normal: line-out pin off next" "$(sed -n 4p "$LOG")" "setctl -D /dev/snd/controlC0 --set Lineout Switch 0"
-eq "normal: abort issued after every pin" "$(sed -n 5p "$LOG")" "abort dapm-selftest"
+eq "normal: loudspeaker pin off next" "$(sed -n 5p "$LOG")" "setctl -D /dev/snd/controlC0 --set Loudspeaker Switch 0"
+eq "normal: abort issued after every pin" "$(sed -n 6p "$LOG")" "abort dapm-selftest"
 sleep 0.2
 if kill -0 "$PLPID" 2>/dev/null; then bad "normal: player killed" "still running"; kill "$PLPID"
 else ok "normal: player killed"; fi

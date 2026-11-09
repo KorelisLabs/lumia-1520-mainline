@@ -50,6 +50,13 @@
 # volume. LO_SELECT (1..15, default 15) is the Lineout Select mask, for
 # bisecting which LINEOUTs matter. docs/audio/wcd9320-r188-lineout-mapping.md.
 #
+# r189: OUTPUT=i2s, the loudspeaker on Secondary MI2S (the "Loudspeaker" pin,
+# docs/audio/r189-sec-mi2s-speaker-mapping.md). The route is the SEC_MI2S mixer
+# with the SLIMbus mixer OFF; there is no analog or digital gain (spec
+# B:0:84), so the level is the tone's alone, from -60 dBFS. The live state is
+# the amplifier's i2s_spk_state, cross-checked against the regulator class
+# and the pinmux; the codec must hold nothing throughout.
+#
 # Usage (one line):
 #   sudo env EXPECT_VERSION=outputs-rc1 sh wcd9320-dapm-listen.sh launch
 #   sudo env EXPECT_VERSION=outputs-rc1 OUTPUT=spk sh wcd9320-dapm-listen.sh launch
@@ -76,7 +83,7 @@ UNIT="${C3A_UNIT:-wcd9320-c3a}"
 APPROVE_DIR="${C3A_APPROVE_DIR:-/run/wcd9320-c3a-approve}"
 TEARDOWN="$DIR/wcd9320-dapm-teardown.sh"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
-MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
+MIXER="${MIXER:-}"
 DBFS="${DBFS:--40}"
 # r187: Section 23's declared escalation. -40 is the default and needs
 # nothing. -30 and -20 (pcm-tone's compiled ceiling) are allowed only with
@@ -86,15 +93,21 @@ DBFS="${DBFS:--40}"
 ESCALATE="${ESCALATE:-}"
 TONE_ARM=""
 case "$DBFS" in
--40) ;;
+-60|-50|-40) ;;
 -30|-20)
 	[ "$ESCALATE" = "declared" ] ||
 		{ echo "INVALID SETUP: DBFS=$DBFS is an escalation -- it needs ESCALATE=declared"; exit 2; }
 	TONE_ARM="--armed-escalation" ;;
-*)	echo "INVALID SETUP: DBFS=$DBFS (allowed: -40, or -30/-20 with ESCALATE=declared)"; exit 2 ;;
+*)	echo "INVALID SETUP: DBFS=$DBFS (allowed: -60, -50, -40, or -30/-20 with ESCALATE=declared)"; exit 2 ;;
 esac
 OUTPUT="${OUTPUT:-hph}"
-dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk, ear or lo)"; exit 2; }
+dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk, ear, lo or i2s)"; exit 2; }
+# r189: one front-end route at a time -- this output's mixer on, the other off
+if [ "$OUTPUT" = "i2s" ]; then
+	MIXER="${MIXER:-$I2S_MIXER}"; OTHER_MIXER="$SLIM_MIXER"
+else
+	MIXER="${MIXER:-$SLIM_MIXER}"; OTHER_MIXER="$I2S_MIXER"
+fi
 LO_SELECT="${LO_SELECT:-15}"
 case "$LO_SELECT" in
 1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
@@ -141,15 +154,21 @@ pin_set() {	# pin_set 0|1 -> 0 when THIS output's pin reads back as asked
 pin_get() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$OUT_PIN" 2>/dev/null)"; }
 # r187: every output pin off (the others must stay off for a single-output run)
 pins_all_off() {
-	for _po in "Headphones Switch" "Speaker Switch" "Earpiece Switch" "Lineout Switch"; do
+	for _po in "Headphones Switch" "Speaker Switch" "Earpiece Switch" "Lineout Switch" "Loudspeaker Switch"; do
 		"$SETCTL" -D "$CTLDEV" --set "$_po" 0 >/dev/null 2>&1
 	done
 }
 # r187/r188: 0 when every PA is chip-verified off -- HPH, speaker, earpiece, line outs
+# r189: and the I2S amplifier unpowered -- its component AND the regulator class
 all_pa_off() {
 	_ap=$(rv "$(cat "${PGD:-/nonexistent}/hphl_pa_state" 2>/dev/null)" pa_0x1ab)
 	_ao=$(cat "${PGD:-/nonexistent}/out_state" 2>/dev/null)
 	[ -n "$_ap" ] && [ "$(pa_masked "$_ap")" = "00" ] || return 1
+	_ai=$(i2s_state)
+	if [ -n "$_ai" ]; then
+		[ "$(rv "$_ai" supply_on)" = "0" ] || return 1
+		[ "$(vreg_5v | cut -d' ' -f1)" = "disabled" ] || return 1
+	fi
 	[ -n "$_ao" ] || return 0
 	[ $(( 0x$(rv "$_ao" spken_0x1df) & 0x80 )) -eq 0 ] &&
 	[ $(( 0x$(rv "$_ao" ear_0x1bc) & 0x10 )) -eq 0 ] &&
@@ -169,7 +188,24 @@ vol_set() {
 	ear) ctl_set "Earpiece Volume" "$1" && ctl_set "RX1 Digital Volume" "$2" ;;
 	lo)  ctl_set "Lineout Volume" "$1" && ctl_set "RX3 Digital Volume" "$2" &&
 	     ctl_set "RX5 Digital Volume" "$2" && ctl_set "Lineout Select" "$LO_SELECT" ;;
+	i2s) return 0 ;;	# r189: no gain control on this path
 	esac
+}
+# r189: the output's whole path is up (the wait) / down (after the stream)
+path_ready() {	# path_ready <dapm_state>
+	case "$OUTPUT" in
+	i2s) _pr=$(i2s_state)
+	     [ "$(rv "$_pr" supply_on)" = "1" ] && [ "$(rv "$_pr" pins_active)" = "1" ] &&
+	     [ "$(rv "$_pr" bclk_on)" = "1" ] ;;
+	*)   [ "$(dapm_held_key_is "$1" "$OUT_KEY" "$OUT_ALL")" = "OK" ] &&
+	     [ "$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)" = "1" ] ;;
+	esac
+}
+path_down() {	# path_down <dapm_state>
+	[ "$(dapm_held_key_is "$1" "$OUT_KEY" "$OUT_NONE")" = "OK" ] || return 1
+	[ "$OUTPUT" = "i2s" ] || return 0
+	_pd=$(i2s_state)
+	[ "$(rv "$_pd" supply_on)" = "0" ] && [ "$(rv "$_pd" bclk_on)" = "0" ]
 }
 # r187: every output back to its boot value
 vol_restore() {
@@ -249,6 +285,8 @@ preflight() {
 	[ -e "$PGD/hphr_state" ] || { say "INVALID SETUP: no hphr_state -- not r185"; return 1; }
 	[ "$OUTPUT" = "hph" ] || [ -e "$PGD/out_state" ] ||
 		{ say "INVALID SETUP: no out_state -- not r187"; return 1; }
+	[ "$OUTPUT" != "i2s" ] || [ -n "$(i2s_state_file)" ] ||
+		{ say "INVALID SETUP: no i2s_spk_state -- not r189"; return 1; }
 
 	# r185: jack detection may hold the pin on for a plugged headset. The
 	# manual override takes it off; the run owns the pin from here.
@@ -288,6 +326,16 @@ preflight() {
 		[ "$(rv "$OPRE" clsh_lo)" = "0" ] || _bad="$_bad clsh-lo-on"
 		[ "$(dapm_kv "$D_PRE" "$OUT_KEY")" = "$OUT_NONE" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$D_PRE" "$OUT_KEY")"
 	fi
+	# r189: the I2S amplifier idle -- whatever this run's output is
+	IPRE=$(i2s_state)
+	VPRE=$(vreg_5v)
+	MPRE=$(mi2s_mux)
+	if [ -n "$IPRE" ]; then
+		[ "$(rv "$IPRE" supply_on) $(rv "$IPRE" pins_active) $(rv "$IPRE" bclk_on)" = "0 0 0" ] ||
+			_bad="$_bad i2s-not-idle"
+		[ "$(printf '%s' "$VPRE" | cut -d' ' -f1)" = "disabled" ] || _bad="$_bad 5v-rail-on($VPRE)"
+		[ "$MPRE" = "gpio gpio gpio gpio" ] || _bad="$_bad mi2s-pins=$MPRE"
+	fi
 	[ -n "$_bad" ] && { say "INVALID SETUP: not idle:$_bad"; return 1; }
 	jrn "baseline idle: dapm held $DAPM_HELD_NONE, pin off, RCO, both PAs off"
 
@@ -322,6 +370,7 @@ stream() {	# stream <n> <spec>
 	spk) jrn "volumes: Speaker Volume $_hv (field $((8 - _hv))), RX7 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	ear) jrn "volumes: Earpiece Volume $_hv, RX1 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	lo)  jrn "volumes: Lineout Volume $_hv (field $(dapm_spec_field "$_hv")), RX3/RX5 digital $_dv (0x$(dapm_spec_dig "$_dv")), Lineout Select $LO_SELECT" ;;
+	i2s) jrn "volumes: none -- the I2S amplifier has no gain control; the level is the tone's $DBFS dBFS" ;;
 	esac
 	case "$OUTPUT:$_side" in
 	hph:L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
@@ -330,6 +379,7 @@ stream() {	# stream <n> <spec>
 	spk:*) jrn "stream $_n: SPEAKER, Speaker Volume $_hv -- the mic at its fixed spot over the grille" ;;
 	ear:*) jrn "stream $_n: EARPIECE, Earpiece Volume $_hv -- the mic at its fixed spot over the earpiece slot" ;;
 	lo:*)  jrn "stream $_n: LINE OUTS (select $LO_SELECT), Lineout Volume $_hv -- the mic at its fixed spot" ;;
+	i2s:*) jrn "stream $_n: LOUDSPEAKER on Secondary MI2S, $DBFS dBFS, side $_side -- the mic at the grille" ;;
 	esac
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
@@ -349,8 +399,11 @@ stream() {	# stream <n> <spec>
 	_s=$(cat "$PGD/dapm_state" 2>/dev/null)
 	eval "S${_n}_PINON=\$_s"
 	jrn "pin ON; with no stream: $_s"
+	_is=$(i2s_state)
+	eval "S${_n}_I2SPIN=\$_is"
 	if [ "$(dapm_held_key_is "$_s" "$OUT_KEY" "$OUT_NONE")" != "OK" ] ||
-	   [ "$(dapm_held_is "$_s" "$DAPM_HELD_NONE")" != "OK" ]; then
+	   [ "$(dapm_held_is "$_s" "$DAPM_HELD_NONE")" != "OK" ] ||
+	   { [ -n "$_is" ] && [ "$(rv "$_is" supply_on)" != "0" ]; }; then
 		jrn "the pin alone powered something -- abort"
 		dl_abort "pin-alone-powered"
 		return 1
@@ -377,7 +430,7 @@ stream() {	# stream <n> <spec>
 	while [ "$_w" -lt "${LIVE_WAIT_DS:-50}" ]; do
 		_l=$(cat "$PGD/dapm_state" 2>/dev/null)
 		_up=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
-		[ "$(dapm_held_key_is "$_l" "$OUT_KEY" "$OUT_ALL")" = "OK" ] && [ "$_up" = "1" ] && break
+		path_ready "$_l" && break
 		kill -0 "$TPID" 2>/dev/null || break
 		[ -e "$FLAG" ] && break
 		sleep 0.1
@@ -385,6 +438,7 @@ stream() {	# stream <n> <spec>
 	done
 	eval "S${_n}_UP_MS=$((_w * 100))"
 	jrn "path wait: ~$((_w * 100)) ms, $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY") slim_up=$_up"
+	[ "$OUTPUT" != "i2s" ] || jrn "i2s: $(i2s_state) | 5V $(vreg_5v) | mux $(mi2s_mux)"
 	flag_ok "path-wait-c$_n" || return 1
 	sleep 0.1
 	_l=$(cat "$PGD/dapm_state" 2>/dev/null)
@@ -396,6 +450,10 @@ stream() {	# stream <n> <spec>
 	_hs=$(hph_status)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs; S${_n}_R=\$_r; S${_n}_R1=\$_r1"
+	# r189: the I2S amplifier, and its two oracles, live
+	_i=$(i2s_state); _v=$(vreg_5v); _m=$(mi2s_mux)
+	_su=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
+	eval "S${_n}_I2S=\$_i; S${_n}_V5=\$_v; S${_n}_MUX=\$_m; S${_n}_SLIM=\$_su"
 	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | 0x1b1=$(rv "$_p" dac_0x1b1) 0x1b7=$(rv "$_r" rdac_0x1b7) | 0x1ae=$(rv "$_p" lgain_0x1ae) 0x1b4=$(rv "$_r" rgain_0x1b4) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
 	_bad=""
 	[ "$(dapm_held_key_is "$_l" "$OUT_KEY" "$OUT_ALL")" = "OK" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY")"
@@ -407,6 +465,13 @@ stream() {	# stream <n> <spec>
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	lo)  [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
 	     [ $(( 0x$(rv "$_o" locnp_0x1ca) )) -eq "$LO_SELECT" ] || _bad="$_bad cnp=$(rv "$_o" locnp_0x1ca)"
+	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
+	i2s) [ "$(rv "$_i" supply_on) $(rv "$_i" pins_active) $(rv "$_i" bclk_on)" = "1 1 1" ] ||
+	         _bad="$_bad i2s=$(rv "$_i" supply_on)$(rv "$_i" pins_active)$(rv "$_i" bclk_on)"
+	     [ "$(rv "$_i" errors)" = "$(rv "$IPRE" errors)" ] || _bad="$_bad i2s-errors=$(rv "$_i" errors)"
+	     [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad 5v=$_v"
+	     [ "$_m" = "sec_mi2s sec_mi2s sec_mi2s sec_mi2s" ] || _bad="$_bad mux=$_m"
+	     [ "$_su" = "0" ] || _bad="$_bad slim-up"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	esac
 	[ "$(rv "$_p" ocp_seen)" = "0" ] || _bad="$_bad ocp"
@@ -426,7 +491,7 @@ stream() {	# stream <n> <spec>
 	# this card). Polled, not assumed, for up to 3 s.
 	_w=0
 	while [ "$_w" -lt 30 ]; do
-		[ "$(dapm_held_key_is "$(cat "$PGD/dapm_state" 2>/dev/null)" "$OUT_KEY" "$OUT_NONE")" = "OK" ] && break
+		path_down "$(cat "$PGD/dapm_state" 2>/dev/null)" && break
 		sleep 0.1
 		_w=$((_w + 1))
 	done
@@ -440,6 +505,9 @@ stream() {	# stream <n> <spec>
 	eval "S${_n}_PIN=\$_pin"
 
 	eval "S${_n}_OAFTER=\$(cat \"\$PGD/out_state\" 2>/dev/null)"
+	_ia=$(i2s_state); _va=$(vreg_5v); _ma=$(mi2s_mux)
+	eval "S${_n}_I2SA=\$_ia; S${_n}_V5A=\$_va; S${_n}_MUXA=\$_ma"
+	[ "$OUTPUT" != "i2s" ] || jrn "i2s after: $_ia | 5V $_va | mux $_ma"
 	if all_pa_off &&
 	   [ "$(dapm_held_key_is "$_a" "$OUT_KEY" "$OUT_NONE")" = "OK" ]; then
 		failsafe_disarm
@@ -502,8 +570,10 @@ sleep 1
 kill -0 "$WATCH_PID" 2>/dev/null || { jrn "THE ABORT WATCHER DID NOT STAY UP"; exit 2; }
 jrn "abort watcher armed, pid $WATCH_PID"
 
-"$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 >/dev/null 2>&1
-jrn "front-end mixer enabled"
+# r189: the other route OFF first, so one stream reaches one back end
+ctl_set "$OTHER_MIXER" 0 || { jrn "$OTHER_MIXER would not go off -- nothing armed"; exit 2; }
+ctl_set "$MIXER" 1 || { jrn "$MIXER would not go on -- nothing armed"; exit 2; }
+jrn "front-end mixer enabled: $MIXER (and $OTHER_MIXER off)"
 
 RC=0
 n=1
@@ -516,6 +586,9 @@ failsafe_disarm
 watch_stop
 [ "$(pin_get)" = "0" ] || { pin_set 0; jrn "pin forced OFF at the end"; }
 pins_all_off
+# r189: an I2S run leaves its route off, so later playback cannot start the
+# MI2S back end by inheritance
+[ "$OUTPUT" != "i2s" ] || { ctl_set "$MIXER" 0 && jrn "$MIXER off at the end"; }
 # r185/r187: every volume back to its boot value
 if vol_restore; then
 	jrn "volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15"
@@ -527,6 +600,7 @@ fi
 # (Speaker Volume 8, field 0) failed it when this was read before.
 OPOST=$(cat "$PGD/out_state" 2>/dev/null)
 RPOST=$(cat "$PGD/hphr_state" 2>/dev/null)
+IPOST=$(i2s_state); VPOST=$(vreg_5v); MPOST=$(mi2s_mux)
 
 D_POST=$(cat "$PGD/dapm_state" 2>/dev/null)
 POST=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
@@ -575,6 +649,29 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		check "s$c pin alone powers nothing" "$(dapm_kv "$_pi" "$OUT_KEY")" "$OUT_NONE"
 		check "s$c DAPM holds the whole path live" "$(dapm_kv "$_l" "$OUT_KEY")" "$OUT_ALL"
 		eval "_o=\${S${c}_O:-}; _oa=\${S${c}_OAFTER:-}"
+		if [ "$OUTPUT" = "i2s" ]; then
+			eval "_i=\${S${c}_I2S:-}; _ia=\${S${c}_I2SA:-}; _v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
+			eval "_m=\${S${c}_MUX:-}; _ma=\${S${c}_MUXA:-}; _su=\${S${c}_SLIM:-}; _ip=\${S${c}_I2SPIN:-}"
+			check "s$c the pin alone powers no amplifier" "$(rv "$_ip" supply_on)" "0"
+			check "s$c the codec untouched live" "$(dapm_kv "$_l" held)" "$DAPM_HELD_NONE"
+			check "s$c no HPH PA live" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "00"
+			check "s$c no SLIMbus stream" "$_su" "0"
+			check "s$c no MCLK user (the codec is not on this path)" "$(rv "$_cs" mclk_users)" "0"
+			check "s$c tone played" "$_t" "0"
+			check "s$c amplifier live: 5 V, pins, bit clock" \
+			      "$(rv "$_i" supply_on) $(rv "$_i" pins_active) $(rv "$_i" bclk_on)" "1 1 1"
+			check "s$c the component reads the rail at 5 V" "$(rv "$_i" vdd_enabled) $(rv "$_i" vdd_uV)" "1 5000000"
+			check "s$c regulator class: s4 enabled live" "$(printf '%s' "$_v" | cut -d' ' -f1)" "enabled"
+			check "s$c pins 79-82 muxed sec_mi2s live" "$_m" "sec_mi2s sec_mi2s sec_mi2s sec_mi2s"
+			check "s$c amplifier off after: 5 V, pins, bit clock" \
+			      "$(rv "$_ia" supply_on) $(rv "$_ia" pins_active) $(rv "$_ia" bclk_on)" "0 0 0"
+			check "s$c regulator class: s4 disabled after" "$(printf '%s' "$_va" | cut -d' ' -f1)" "disabled"
+			check "s$c pins 79-82 back to GPIO after" "$_ma" "gpio gpio gpio gpio"
+			check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" held)" "$DAPM_HELD_NONE"
+			check "s$c pin OFF after" "$_pin" "0"
+			c=$((c + 1))
+			continue
+		fi
 		if [ "$OUTPUT" != "hph" ]; then
 			check "s$c no HPH PA live" "$(pa_masked "$(rv "$_p" pa_0x1ab)")" "00"
 			check "s$c headphone path untouched" "$(dapm_kv "$_l" held)" "$DAPM_HELD_NONE"
@@ -652,6 +749,23 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "guard never tripped" "$(rv "$POST" guard_tripped)" "0"
 	check "no OCP fault" "$(rv "$POST" ocp_seen)" "0"
 	check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
+
+	# r189: the amplifier's own accounting, and its idle state at the end
+	if [ -n "${IPRE:-}" ]; then
+		say ""
+		say "-- the I2S amplifier's accounting --"
+		_ns=0; [ "$OUTPUT" = "i2s" ] && _ns=$((n - 1))
+		for _k in enables disables bclk_sets bclk_clears; do
+			_k1=$(rv "$IPOST" "$_k"); _k0=$(rv "$IPRE" "$_k")
+			check "i2s $_k this run" "$(( ${_k1:-0} - ${_k0:-0} ))" "$_ns"
+		done
+		_e1=$(rv "$IPOST" errors); _e0=$(rv "$IPRE" errors)
+		check "i2s errors this run" "$(( ${_e1:-0} - ${_e0:-0} ))" "0"
+		check "i2s idle at the end: 5 V, pins, bit clock" \
+		      "$(rv "$IPOST" supply_on) $(rv "$IPOST" pins_active) $(rv "$IPOST" bclk_on)" "0 0 0"
+		check "the 5 V rail off at the end (regulator class)" "$(printf '%s' "$VPOST" | cut -d' ' -f1)" "disabled"
+		check "pins 79-82 GPIO at the end" "$MPOST" "gpio gpio gpio gpio"
+	fi
 
 	say ""
 	say "-- the forced writes, per stream ($OUT_FORCED for $OUTPUT) --"

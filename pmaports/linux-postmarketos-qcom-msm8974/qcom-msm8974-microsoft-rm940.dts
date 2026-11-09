@@ -96,6 +96,35 @@
 		output-high;
 		line-name = "touch-enable";
 	};
+
+	/*
+	 * r189: SECONDARY MI2S, the loudspeaker amplifier's port
+	 * (docs/audio/r189-sec-mi2s-speaker-mapping.md).
+	 *
+	 * Windows' power framework muxes TLMM 79, 80, 82 (one component) and 81
+	 * (another) to function 1 = sec_mi2s while the speaker is in use, and back
+	 * to function 0 (GPIO) otherwise. Pin 78, the port's MCLK, is never muxed:
+	 * the amplifier takes no master clock, so it is left alone here too.
+	 *
+	 * Active: downstream's sec_auxpcm active setting, 8 mA, no pull.
+	 * Sleep: Windows' off state -- GPIO, not driven -- with a pull-down, so
+	 * the amplifier's inputs sit low and nothing is driven while the rail is
+	 * off. The amplifier node selects these around its 5 V supply.
+	 */
+	sec_mi2s_active: sec-mi2s-active-state {
+		pins = "gpio79", "gpio80", "gpio81", "gpio82";
+		function = "sec_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	sec_mi2s_sleep: sec-mi2s-sleep-state {
+		pins = "gpio79", "gpio80", "gpio81", "gpio82";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-disable;
+	};
 };
 
 /* Buttons -- wiring from the stock ACPI DSDT (Device BTN0, PNP0C40 array),
@@ -465,6 +494,19 @@
 					dai@2 {
 						reg = <SLIMBUS_0_RX>;
 					};
+
+					/*
+					 * r189: AFE port 0x1002, the loudspeaker.
+					 * ONE data line per boot: mainline falls back
+					 * to SD0 for a 1-2 channel stream on two lines.
+					 * <1> = DATA1 (TLMM 82), muxed with the clocks
+					 * in Windows' component 4; <0> is the fallback
+					 * image (DATA0, TLMM 81).
+					 */
+					dai@18 {
+						reg = <SECONDARY_MI2S_RX>;
+						qcom,sd-lines = <1>;
+					};
 				};
 			};
 
@@ -731,6 +773,26 @@
 	 * at runtime and ASoC enforces that: it refuses to bind the codec component
 	 * to a second card and logs which card already owns it.
 	 */
+	/*
+	 * r189: THE LOUDSPEAKER AMPLIFIER, an unknown control-less I2S part on
+	 * Secondary MI2S. Its two needs beyond the AFE are its 5 V supply -- the
+	 * PM8941 SMPS4 boost Windows votes at 5 V / 1.5 A for the speaker
+	 * component -- and the pin mux. The card module's component holds both
+	 * under DAPM: the rail is up, and the pins active, only while a stream
+	 * reaches the Loudspeaker pin. "default" is the sleep state, so binding
+	 * the driver leaves the pins exactly as asleep as the off state.
+	 */
+	i2s_spk: audio-amplifier {
+		compatible = "nokia,lumia1520-i2s-spk";
+		vdd-supply = <&pm8941_5v>;
+
+		pinctrl-names = "default", "active";
+		pinctrl-0 = <&sec_mi2s_sleep>;
+		pinctrl-1 = <&sec_mi2s_active>;
+
+		#sound-dai-cells = <0>;
+	};
+
 	lumia_q6_sound: sound {
 		compatible = "nokia,lumia1520-q6-sndcard";
 		model = "Lumia1520-Q6";
@@ -780,6 +842,28 @@
 
 			codec {
 				sound-dai = <&wcd9320>;
+			};
+		};
+
+		/*
+		 * r189: the loudspeaker back end. Reached from MultiMedia1 through
+		 * "SEC_MI2S_RX Audio Mixer MultiMedia1"; the card gives this link
+		 * its own ops (CPU clock master, I2S, the 1.536 MHz bit clock per
+		 * stream). The codec is the amplifier node above.
+		 */
+		sec-mi2s-dai-link {
+			link-name = "SEC_MI2S Playback";
+
+			cpu {
+				sound-dai = <&q6afedai SECONDARY_MI2S_RX>;
+			};
+
+			platform {
+				sound-dai = <&q6routing>;
+			};
+
+			codec {
+				sound-dai = <&i2s_spk>;
 			};
 		};
 	};

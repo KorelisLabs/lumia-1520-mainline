@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-09 05:59:52.190184091 -0500
-@@ -0,0 +1,406 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-09 18:20:51.022185233 -0500
+@@ -0,0 +1,759 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -140,15 +140,21 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + */
 +
 +#include <linux/module.h>
++#include <linux/mutex.h>
 +#include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
 +#include <linux/platform_device.h>
++#include <linux/regulator/consumer.h>
 +
 +#include <sound/pcm.h>
 +#include <sound/pcm_params.h>
 +#include <sound/jack.h>
 +#include <sound/soc.h>
 +
++#include <dt-bindings/sound/qcom,q6afe.h>
++
 +#include "common.h"
++#include "qdsp6/q6afe.h"
 +
 +#define DRV_NAME	"wcd9320-lumia-q6"
 +
@@ -253,6 +259,321 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +};
 +
 +/*
++ * r189: THE LOUDSPEAKER, ON SECONDARY MI2S.
++ *
++ * docs/audio/r189-sec-mi2s-speaker-mapping.md. r187 and r188 drove every
++ * WCD9320 analog output live to -20 dBFS at full gain and none sounded.
++ * Windows' power-framework entry for the audio device switches what the
++ * codec never did: PM8941 SMPS4 at 5 V / 1.5 A, and TLMM 79..82 to
++ * sec_mi2s. No amplifier sits on any control bus. The loudspeaker is behind
++ * a control-less I2S amplifier, and this component is that amplifier as
++ * Linux sees it -- an unknown part, so it claims no part number.
++ *
++ * It owns the two things the amplifier needs that the AFE does not: the 5 V
++ * rail and the pin mux, both under DAPM. "SPK 5V" is a supply on the output,
++ * so the rail is up only while a stream reaches the Loudspeaker pin. Up: rail,
++ * then pins; down: pins, then rail -- the amplifier never sees the port's
++ * clocks without its supply, and nothing drives its inputs while it is off.
++ *
++ * i2s_spk_state reports the component's own view (supply, pins, bit clock,
++ * counters) and regulator_is_enabled() beside it; the runners cross-check
++ * both against the regulator class and the pinmux debugfs, which this code
++ * does not write.
++ */
++#define LUMIA_MI2S_BCLK_RATE	1536000	/* 48 kHz x 2 x 16 bit */
++
++struct lumia_i2s_spk {
++	struct device *dev;
++	struct regulator *vdd;
++	struct pinctrl *pins;
++	struct pinctrl_state *pins_sleep;
++	struct pinctrl_state *pins_active;
++	struct mutex lock;
++	bool supply_on;
++	bool pins_on;
++	bool bclk_on;
++	unsigned int enables;
++	unsigned int disables;
++	unsigned int bclk_sets;
++	unsigned int bclk_clears;
++	unsigned int errors;
++	int last_err;
++};
++
++static void lumia_i2s_spk_err(struct lumia_i2s_spk *spk, int ret)
++{
++	spk->errors++;
++	spk->last_err = ret;
++}
++
++static int lumia_i2s_spk_supply_event(struct snd_soc_dapm_widget *w,
++				      struct snd_kcontrol *kcontrol, int event)
++{
++	struct snd_soc_component *c = snd_soc_dapm_to_component(w->dapm);
++	struct lumia_i2s_spk *spk = snd_soc_component_get_drvdata(c);
++	int ret = 0, r;
++
++	mutex_lock(&spk->lock);
++	switch (event) {
++	case SND_SOC_DAPM_PRE_PMU:
++		ret = regulator_enable(spk->vdd);
++		if (ret) {
++			dev_err(spk->dev, "i2s-spk: the 5 V rail would not enable: %d\n", ret);
++			lumia_i2s_spk_err(spk, ret);
++			break;
++		}
++		spk->supply_on = true;
++		ret = pinctrl_select_state(spk->pins, spk->pins_active);
++		if (ret) {
++			dev_err(spk->dev, "i2s-spk: sec_mi2s pins would not go active: %d -- rail off again\n", ret);
++			lumia_i2s_spk_err(spk, ret);
++			r = regulator_disable(spk->vdd);
++			if (r)
++				lumia_i2s_spk_err(spk, r);
++			else
++				spk->supply_on = false;
++			break;
++		}
++		spk->pins_on = true;
++		spk->enables++;
++		dev_info(spk->dev, "i2s-spk: 5 V rail on (%d uV), sec_mi2s pins active\n",
++			 regulator_get_voltage(spk->vdd));
++		break;
++	case SND_SOC_DAPM_POST_PMD:
++		if (spk->pins_on) {
++			r = pinctrl_select_state(spk->pins, spk->pins_sleep);
++			if (r) {
++				dev_err(spk->dev, "i2s-spk: sec_mi2s pins would not sleep: %d\n", r);
++				lumia_i2s_spk_err(spk, r);
++				ret = r;
++			} else {
++				spk->pins_on = false;
++			}
++		}
++		if (spk->supply_on) {
++			r = regulator_disable(spk->vdd);
++			if (r) {
++				dev_err(spk->dev, "i2s-spk: the 5 V rail would not disable: %d\n", r);
++				lumia_i2s_spk_err(spk, r);
++				ret = r;
++			} else {
++				spk->supply_on = false;
++			}
++		}
++		spk->disables++;
++		dev_info(spk->dev, "i2s-spk: sec_mi2s pins asleep, 5 V rail off\n");
++		break;
++	}
++	mutex_unlock(&spk->lock);
++	return ret;
++}
++
++static const struct snd_soc_dapm_widget lumia_i2s_spk_widgets[] = {
++	SND_SOC_DAPM_SUPPLY("SPK 5V", SND_SOC_NOPM, 0, 0,
++			    lumia_i2s_spk_supply_event,
++			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
++	SND_SOC_DAPM_OUTPUT("I2S_SPK_OUT"),
++};
++
++static const struct snd_soc_dapm_route lumia_i2s_spk_routes[] = {
++	{ "I2S_SPK_OUT", NULL, "I2S Speaker Playback" },
++	{ "I2S_SPK_OUT", NULL, "SPK 5V" },
++};
++
++static const struct snd_soc_component_driver lumia_i2s_spk_component = {
++	.dapm_widgets		= lumia_i2s_spk_widgets,
++	.num_dapm_widgets	= ARRAY_SIZE(lumia_i2s_spk_widgets),
++	.dapm_routes		= lumia_i2s_spk_routes,
++	.num_dapm_routes	= ARRAY_SIZE(lumia_i2s_spk_routes),
++};
++
++/* What Windows' speaker profile runs (ACDB device 15: 48 kHz, 16 bit). */
++static struct snd_soc_dai_driver lumia_i2s_spk_dai = {
++	.name = "lumia-i2s-spk",
++	.playback = {
++		.stream_name	= "I2S Speaker Playback",
++		.channels_min	= 2,
++		.channels_max	= 2,
++		.rates		= SNDRV_PCM_RATE_48000,
++		.formats	= SNDRV_PCM_FMTBIT_S16_LE,
++	},
++};
++
++static ssize_t i2s_spk_state_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct lumia_i2s_spk *spk = dev_get_drvdata(dev);
++	ssize_t n;
++
++	if (!spk)
++		return -ENODEV;
++	mutex_lock(&spk->lock);
++	n = sysfs_emit(buf,
++		       "supply_on=%d pins_active=%d bclk_on=%d enables=%u disables=%u bclk_sets=%u bclk_clears=%u errors=%u last_err=%d vdd_enabled=%d vdd_uV=%d\n",
++		       spk->supply_on, spk->pins_on, spk->bclk_on,
++		       spk->enables, spk->disables, spk->bclk_sets,
++		       spk->bclk_clears, spk->errors, spk->last_err,
++		       regulator_is_enabled(spk->vdd),
++		       regulator_get_voltage(spk->vdd));
++	mutex_unlock(&spk->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(i2s_spk_state);
++
++static struct attribute *lumia_i2s_spk_attrs[] = {
++	&dev_attr_i2s_spk_state.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(lumia_i2s_spk);
++
++static int lumia_i2s_spk_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct lumia_i2s_spk *spk;
++	int ret;
++
++	spk = devm_kzalloc(dev, sizeof(*spk), GFP_KERNEL);
++	if (!spk)
++		return -ENOMEM;
++	spk->dev = dev;
++	ret = devm_mutex_init(dev, &spk->lock);
++	if (ret)
++		return ret;
++
++	spk->vdd = devm_regulator_get(dev, "vdd");
++	if (IS_ERR(spk->vdd))
++		return dev_err_probe(dev, PTR_ERR(spk->vdd), "no vdd (the 5 V rail)\n");
++
++	spk->pins = devm_pinctrl_get(dev);
++	if (IS_ERR(spk->pins))
++		return dev_err_probe(dev, PTR_ERR(spk->pins), "no pinctrl\n");
++	spk->pins_sleep = pinctrl_lookup_state(spk->pins, PINCTRL_STATE_DEFAULT);
++	if (IS_ERR(spk->pins_sleep))
++		return dev_err_probe(dev, PTR_ERR(spk->pins_sleep), "no default (sleep) pin state\n");
++	spk->pins_active = pinctrl_lookup_state(spk->pins, "active");
++	if (IS_ERR(spk->pins_active))
++		return dev_err_probe(dev, PTR_ERR(spk->pins_active), "no active pin state\n");
++
++	/* Explicitly, not only through the driver core's default binding. */
++	ret = pinctrl_select_state(spk->pins, spk->pins_sleep);
++	if (ret)
++		return dev_err_probe(dev, ret, "sec_mi2s pins would not sleep\n");
++
++	if (regulator_is_enabled(spk->vdd) > 0)
++		dev_warn(dev, "i2s-spk: the 5 V rail is already on at probe -- another consumer holds it\n");
++
++	platform_set_drvdata(pdev, spk);
++	ret = devm_snd_soc_register_component(dev, &lumia_i2s_spk_component,
++					      &lumia_i2s_spk_dai, 1);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register the component\n");
++
++	dev_info(dev, "i2s-spk: unknown control-less I2S amplifier on Secondary MI2S; pins asleep, 5 V rail under DAPM\n");
++	return 0;
++}
++
++static const struct of_device_id lumia_i2s_spk_of_match[] = {
++	{ .compatible = "nokia,lumia1520-i2s-spk" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, lumia_i2s_spk_of_match);
++
++static struct platform_driver lumia_i2s_spk_driver = {
++	.probe = lumia_i2s_spk_probe,
++	.driver = {
++		.name = "lumia1520-i2s-spk",
++		.of_match_table = lumia_i2s_spk_of_match,
++		.dev_groups = lumia_i2s_spk_groups,
++	},
++};
++
++/*
++ * r189: the Secondary MI2S back end -- mainline msm8916_qdsp6's recipe on the
++ * same DSP generation: the CPU is clock provider, I2S, and the bit clock is
++ * set per stream with LPAIF_BIT_CLK, which q6afe sends as the legacy
++ * AFE_PARAM_ID_LPAIF_CLK_CONFIG this DSP takes.
++ */
++static struct lumia_i2s_spk *lumia_q6_i2s_spk(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_dai *dai;
++	int i;
++
++	for_each_rtd_codec_dais(rtd, i, dai)
++		if (dai->component->driver == &lumia_i2s_spk_component)
++			return snd_soc_component_get_drvdata(dai->component);
++	return NULL;
++}
++
++static int lumia_q6_mi2s_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	int ret;
++
++	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_BP_FP |
++				  SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF);
++	if (ret)
++		dev_err(rtd->card->dev, "sec_mi2s: the AFE refused the format: %d\n", ret);
++	return ret;
++}
++
++static int lumia_q6_mi2s_startup(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct lumia_i2s_spk *spk = lumia_q6_i2s_spk(rtd);
++	int ret;
++
++	ret = snd_soc_dai_set_sysclk(cpu_dai, LPAIF_BIT_CLK, LUMIA_MI2S_BCLK_RATE,
++				     SND_SOC_CLOCK_OUT);
++	if (spk) {
++		mutex_lock(&spk->lock);
++		if (ret) {
++			lumia_i2s_spk_err(spk, ret);
++		} else {
++			spk->bclk_on = true;
++			spk->bclk_sets++;
++		}
++		mutex_unlock(&spk->lock);
++	}
++	if (ret)
++		dev_err(rtd->card->dev, "sec_mi2s: bit clock %u Hz refused: %d\n",
++			LUMIA_MI2S_BCLK_RATE, ret);
++	else
++		dev_info(rtd->card->dev, "sec_mi2s: bit clock %u Hz on\n",
++			 LUMIA_MI2S_BCLK_RATE);
++	return ret;
++}
++
++static void lumia_q6_mi2s_shutdown(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct lumia_i2s_spk *spk = lumia_q6_i2s_spk(rtd);
++	int ret;
++
++	ret = snd_soc_dai_set_sysclk(cpu_dai, LPAIF_BIT_CLK, 0, SND_SOC_CLOCK_OUT);
++	if (spk) {
++		mutex_lock(&spk->lock);
++		if (ret) {
++			lumia_i2s_spk_err(spk, ret);
++		} else {
++			spk->bclk_on = false;
++			spk->bclk_clears++;
++		}
++		mutex_unlock(&spk->lock);
++	}
++	if (ret)
++		dev_err(rtd->card->dev, "sec_mi2s: bit clock off refused: %d\n", ret);
++	else
++		dev_info(rtd->card->dev, "sec_mi2s: bit clock off\n");
++}
++
++static const struct snd_soc_ops lumia_q6_mi2s_ops = {
++	.startup = lumia_q6_mi2s_startup,
++	.shutdown = lumia_q6_mi2s_shutdown,
++};
++
++/*
 + * qcom_snd_parse_of() marks a link no_pcm exactly when its DT child has BOTH
 + * a codec and a platform node, so this is the same test apq8096 uses to find
 + * its back ends.
@@ -265,7 +586,13 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	for_each_card_prelinks(card, i, link) {
 +		if (link->no_pcm) {
 +			link->be_hw_params_fixup = lumia_q6_be_hw_params_fixup;
-+			link->ops = &lumia_q6_be_ops;
++			if (link->id == SECONDARY_MI2S_RX) {
++				/* r189: the loudspeaker's own ops */
++				link->init = lumia_q6_mi2s_init;
++				link->ops = &lumia_q6_mi2s_ops;
++			} else {
++				link->ops = &lumia_q6_be_ops;
++			}
 +			dev_info(card->dev, "back end: %s (id %d)\n",
 +				 link->name, link->id);
 +		} else {
@@ -326,12 +653,17 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * r188: the four line outputs, as one "Lineout" pin on the codec's LO_OUT
 + * ("Lineout Switch"), OFF at boot like the others. Which LINEOUTs a stream
 + * drives is the codec's "Lineout Select".
++ *
++ * r189: the real loudspeaker, "Loudspeaker" on the I2S amplifier's output
++ * ("Loudspeaker Switch"), OFF at boot. r187's "Speaker" (the codec's SPK_OUT,
++ * proven silent) stays as a diagnostic path under its old name.
 + */
 +static const struct snd_soc_dapm_widget lumia_q6_widgets[] = {
 +	SND_SOC_DAPM_HP("Headphones", NULL),
 +	SND_SOC_DAPM_SPK("Speaker", NULL),
 +	SND_SOC_DAPM_SPK("Earpiece", NULL),
 +	SND_SOC_DAPM_LINE("Lineout", NULL),
++	SND_SOC_DAPM_SPK("Loudspeaker", NULL),
 +};
 +
 +static const struct snd_soc_dapm_route lumia_q6_routes[] = {
@@ -339,6 +671,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	{ "Speaker", NULL, "SPK_OUT" },
 +	{ "Earpiece", NULL, "EAR_OUT" },
 +	{ "Lineout", NULL, "LO_OUT" },
++	{ "Loudspeaker", NULL, "I2S_SPK_OUT" },
 +};
 +
 +static const struct snd_kcontrol_new lumia_q6_controls[] = {
@@ -346,10 +679,11 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	SOC_DAPM_PIN_SWITCH("Speaker"),
 +	SOC_DAPM_PIN_SWITCH("Earpiece"),
 +	SOC_DAPM_PIN_SWITCH("Lineout"),
++	SOC_DAPM_PIN_SWITCH("Loudspeaker"),
 +};
 +
 +static const char * const lumia_q6_pins_off[] = {
-+	"Headphones", "Speaker", "Earpiece", "Lineout",
++	"Headphones", "Speaker", "Earpiece", "Lineout", "Loudspeaker",
 +};
 +
 +static struct snd_soc_jack lumia_q6_jack;
@@ -388,7 +722,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		}
 +	}
 +	dev_info(card->dev,
-+		 "Headphones, Speaker, Earpiece and Lineout pins OFF at init -- nothing on the codec powers until the jack or a pin switch turns one on\n");
++		 "Headphones, Speaker, Earpiece, Lineout and Loudspeaker pins OFF at init -- nothing on the codec or the I2S amplifier powers until the jack or a pin switch turns one on\n");
 +	ret = snd_soc_dapm_sync(&card->dapm);
 +	if (ret)
 +		return ret;
@@ -475,8 +809,27 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		.of_match_table = lumia_q6_device_id,
 +	},
 +};
-+module_platform_driver(lumia_q6_driver);
 +
-+MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
++/* r189: the amplifier first; the card defers until its component exists. */
++static struct platform_driver * const lumia_q6_drivers[] = {
++	&lumia_i2s_spk_driver,
++	&lumia_q6_driver,
++};
++
++static int __init lumia_q6_init(void)
++{
++	return platform_register_drivers(lumia_q6_drivers,
++					 ARRAY_SIZE(lumia_q6_drivers));
++}
++module_init(lumia_q6_init);
++
++static void __exit lumia_q6_exit(void)
++{
++	platform_unregister_drivers(lumia_q6_drivers,
++				    ARRAY_SIZE(lumia_q6_drivers));
++}
++module_exit(lumia_q6_exit);
++
++MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus, I2S loudspeaker on Secondary MI2S)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc7");
++MODULE_VERSION("q6-card-rc8");

@@ -61,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc7}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc8}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
@@ -150,6 +150,10 @@ dapm_out() {
 	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=6 ;;
 	lo)  OUT_PIN="Lineout Switch"; OUT_KEY=lo_held; OUT_ALL=3f; OUT_NONE=00
 	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=20 ;;
+	# r189: the I2S loudspeaker. The codec must hold NOTHING for it (held 000
+	# live and after); the path's own state is i2s_spk_state, below.
+	i2s) OUT_PIN="Loudspeaker Switch"; OUT_KEY=held; OUT_ALL=000; OUT_NONE=000
+	     OUT_STAGES=0; OUT_FORCED=0; OUT_VMAX=0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -185,5 +189,37 @@ dapm_spec_ok_out() {
 	_sv=$(printf '%s' "$2" | cut -d: -f2)
 	case "$_sv" in ''|*[!0-9]*) echo "REFUSE:vol '$_sv' is not a number"; return ;; esac
 	[ "$_sv" -le "$OUT_VMAX" ] || { echo "REFUSE:vol $_sv above $OUT_VMAX for $1"; return; }
+	# r189: the I2S path has no digital volume either -- the tone is the level
+	if [ "$1" = "i2s" ] && [ "$(printf '%s' "$2" | cut -d: -f3)" != "84" ]; then
+		echo "REFUSE:dig must be 84 for i2s (no digital volume on this path)"; return
+	fi
 	echo OK
+}
+
+# r189: THE I2S LOUDSPEAKER. Its route from MultiMedia1, its own state (the
+# card module's component), and two oracles that component does not write:
+# the regulator class for the 5 V rail (PM8941 s4) and the TLMM pinmux.
+I2S_MIXER="${I2S_MIXER:-SEC_MI2S_RX Audio Mixer MultiMedia1}"
+SLIM_MIXER="${SLIM_MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
+i2s_state_file() { ls /sys/bus/platform/drivers/lumia1520-i2s-spk/*/i2s_spk_state 2>/dev/null | head -n1; }
+i2s_state() { _isf=$(i2s_state_file); [ -n "$_isf" ] && cat "$_isf" 2>/dev/null; }
+# vreg_5v -> "<state> <num_users>" of the regulator named s4 at 5000000 uV
+vreg_5v() {
+	for _vr in /sys/class/regulator/regulator.*; do
+		[ "$(cat "$_vr/name" 2>/dev/null)" = "s4" ] || continue
+		[ "$(cat "$_vr/microvolts" 2>/dev/null)" = "5000000" ] || continue
+		printf '%s %s' "$(cat "$_vr/state" 2>/dev/null)" "$(cat "$_vr/num_users" 2>/dev/null)"
+		return 0
+	done
+	printf '? ?'
+}
+# mi2s_mux -> the pinmux function of TLMM 79 80 81 82 ("?" when unclaimed)
+mi2s_mux_parse() {	# mi2s_mux_parse <pinmux-pins text>
+	for _mp in 79 80 81 82; do
+		_mf=$(printf '%s\n' "$1" | grep -E "^pin $_mp \(" | sed -n 's/.* function \([a-z0-9_]*\) .*/\1/p' | head -n1)
+		printf '%s\n' "${_mf:-?}"
+	done | tr '\n' ' ' | sed 's/ $//'
+}
+mi2s_mux() {
+	mi2s_mux_parse "$(cat "$(ls /sys/kernel/debug/pinctrl/*fd510000*/pinmux-pins 2>/dev/null | head -n1)" 2>/dev/null)"
 }

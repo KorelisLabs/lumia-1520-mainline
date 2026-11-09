@@ -152,6 +152,23 @@ else
 	echo "no $Q6CARD orig/new pair, leaving $P5 alone"
 fi
 
+# ----------------------------------------------------- 2b. the device tree --
+#
+# r189: the board DT changes too (sec_mi2s, the amplifier, a third link).
+# Unlike the dtsi, rm940.dts carries no private string: the two trees' copies
+# must be byte-identical, and the repo mirror is the source. The checksums
+# step below then recomputes each tree's sum against its own copy.
+DTS=qcom-msm8974-microsoft-rm940.dts
+step "sync $DTS (mirror -> live)"
+if cmp -s "$MIRROR/$DTS" "$APORTS/$DTS"; then
+	echo "identical in both trees"
+elif [ "$CHECK" = "1" ]; then
+	mark_stale "$DTS differs between the mirror and the live tree"
+else
+	cp "$MIRROR/$DTS" "$APORTS/$DTS"
+	echo "copied from the mirror"
+fi
+
 # ------------------------------------------------------------- 3. the pkgrel --
 step "pkgrel"
 for a in "$APORTS/APKBUILD" "$MIRROR/APKBUILD"; do
@@ -257,6 +274,9 @@ step "verify"
 cmp -s "$APORTS/$P2" "$REPO/patches/$P2" ||
 	die "staged $P2 differs from the repo copy"
 echo "$P2 identical in both trees"
+cmp -s "$APORTS/$DTS" "$MIRROR/$DTS" ||
+	die "staged $DTS differs from the mirror"
+echo "$DTS identical in both trees"
 grep -q "^pkgrel=$PKGREL\$" "$APORTS/APKBUILD" ||
 	die "live APKBUILD is not at pkgrel=$PKGREL"
 grep -q "^pkgrel=$PKGREL\$" "$MIRROR/APKBUILD" ||
@@ -271,4 +291,5 @@ echo "Next:"
 echo "  tools/build-wcd9320-kernel.sh --pkgrel $PKGREL --version $VERSION \\"
 echo "      --expect-asoc --expect-dais 1 --stage <dir> \\"
 echo "      --extra-module sound/soc/qcom/qdsp6/q6core.ko \\"
-echo "      --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko"
+echo "      --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \\"
+echo "      --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko"

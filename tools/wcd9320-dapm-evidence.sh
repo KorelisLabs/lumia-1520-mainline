@@ -114,10 +114,10 @@ pin() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"
 JACK0=$(cat "$PGD/jack_detect" 2>/dev/null)
 "$SETCTL" -D "$CTLDEV" --set "$DAPM_PIN" 0 >/dev/null 2>&1
 # r187: the speaker and earpiece pins too -- every output OFF
-for _po in "Speaker Switch" "Earpiece Switch" "Lineout Switch"; do
+for _po in "Speaker Switch" "Earpiece Switch" "Lineout Switch" "Loudspeaker Switch"; do
 	"$SETCTL" -D "$CTLDEV" --set "$_po" 0 >/dev/null 2>&1
 done
-PINS_OTHER() { printf '%s %s %s' "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Speaker Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Earpiece Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Lineout Switch" 2>/dev/null)")"; }
+PINS_OTHER() { printf '%s %s %s %s' "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Speaker Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Earpiece Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Lineout Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Loudspeaker Switch" 2>/dev/null)")"; }
 CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
 _cok=$(dapm_card_ok "$CARDV" "$(pin)")
 [ "$_cok" = "OK" ] || { say "INVALID SETUP: ${_cok#REFUSE:}. Nothing was played."; exit 2; }
@@ -172,6 +172,39 @@ PA2=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 CS2=$(cat "$PGD/clk_source_state" 2>/dev/null)
 F2=$(rv "$(cat "$PGD/forced_log" 2>/dev/null)" forced_n)
 PIN2=$(pin)
+
+# ------------------------------------------------------------- r189: I2S --
+# A second tone through the Secondary MI2S back end ALONE (SLIMbus route off),
+# the Loudspeaker pin OFF: the AFE port and its bit clock run, the amplifier is
+# never powered (no 5 V, pins asleep) and the codec is not touched. A separate
+# tone, so a refusal of the new port cannot confound the SLIMbus checks above.
+I2S=0
+if [ -n "$(i2s_state_file)" ]; then
+	I2S=1
+	"$SETCTL" -D "$CTLDEV" --set "Loudspeaker Switch" 0 >/dev/null 2>&1
+	"$SETCTL" -D "$CTLDEV" --set "$MIXER" 0 >/dev/null 2>&1
+	"$SETCTL" -D "$CTLDEV" --set "$I2S_MIXER" 1 >/dev/null 2>&1
+	I0=$(i2s_state); V0=$(vreg_5v); M0=$(mi2s_mux)
+	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side B >/tmp/.dapm-tone-i2s.$$ 2>&1 &
+	TPID=$!
+	_pw=0
+	while [ $_pw -lt 60 ]; do
+		PCMI=$(head -n1 "$PCMSTATUS" 2>/dev/null); PCMI=${PCMI#state: }
+		[ "$PCMI" = "RUNNING" ] && break
+		kill -0 "$TPID" 2>/dev/null || break
+		sleep 0.05; _pw=$((_pw + 1))
+	done
+	I1=$(i2s_state); V1=$(vreg_5v); M1=$(mi2s_mux); DI1=$(cat "$PGD/dapm_state" 2>/dev/null)
+	LSP1=$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Loudspeaker Switch" 2>/dev/null)")
+	wait "$TPID"
+	TRCI=$?
+	sleep 1
+	I2=$(i2s_state); V2=$(vreg_5v); M2=$(mi2s_mux)
+	"$SETCTL" -D "$CTLDEV" --set "$I2S_MIXER" 0 >/dev/null 2>&1
+	"$SETCTL" -D "$CTLDEV" --set "$MIXER" 1 >/dev/null 2>&1
+fi
+idelta() { echo $(( ${1:-0} - ${2:-0} )); }
+
 CC=$(cat "$PGD/cache_check" 2>/dev/null | tr '\n' ' ')
 DMSG=$(dmesg_since "$DM0")
 DMESG_FILE="/tmp/.wcd9320-dmesg-dapm-$$"
@@ -202,7 +235,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	check "pin OFF before" "$PIN0" "0"
 	check "pin OFF during" "$PIN1" "0"
 	check "pin OFF after" "$PIN2" "0"
-	check "speaker, earpiece and line-out pins OFF during" "$PO1" "0 0 0"
+	check "speaker, earpiece, line-out and loudspeaker pins OFF during" "$PO1" "0 0 0 0"
 	check "gain field at the minimum" "$G0" "14"
 	check "HPHR gain field at the minimum" "$GR0" "14"
 	check "DAPM holds nothing before" "$(dapm_held_is "$D0" "$DAPM_HELD_NONE")" "OK"
@@ -261,13 +294,42 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	check_cond "no DAPM event ran" \
 		"$(printf '%s\n' "$DMSG" | grep -q 'dapm: ' && echo 0 || echo 1)" \
 		"$(printf '%s\n' "$DMSG" | grep 'dapm: ' | head -n3 | tr '\n' ' ')" "no dapm: lines in dmesg"
+
+	say ""
+	say "-- r189: the I2S back end alone, the Loudspeaker pin OFF --"
+	if [ "$I2S" = "1" ]; then
+		say "i2s before : $I0 | 5V $V0 | mux $M0"
+		say "i2s during : $I1 | 5V $V1 | mux $M1 | pcm $PCMI"
+		say "i2s after  : $I2 | 5V $V2 | mux $M2"
+		check "i2s: the tone played" "$TRCI" "0"
+		check "i2s: idle before (5 V, pins, bit clock)" \
+		      "$(rv "$I0" supply_on) $(rv "$I0" pins_active) $(rv "$I0" bclk_on)" "0 0 0"
+		check "i2s: the stream was RUNNING when sampled" "${PCMI:-?}" "RUNNING"
+		check "i2s: the back end started (bit clock on)" "$(rv "$I1" bclk_on)" "1"
+		check "i2s: the amplifier unpowered during (supply, pins)" \
+		      "$(rv "$I1" supply_on) $(rv "$I1" pins_active)" "0 0"
+		check "i2s: the 5 V rail off during (regulator class)" "$(printf '%s' "$V1" | cut -d' ' -f1)" "disabled"
+		check "i2s: pins 79-82 asleep during" "$M1" "gpio gpio gpio gpio"
+		check "i2s: the Loudspeaker pin OFF during" "$LSP1" "0"
+		check "i2s: the codec untouched" "$(dapm_held_is "$DI1" "$DAPM_HELD_NONE")" "OK"
+		check "i2s: bit clock off after" "$(rv "$I2" bclk_on)" "0"
+		check "i2s: one bit-clock set and one clear" \
+		      "$(idelta "$(rv "$I2" bclk_sets)" "$(rv "$I0" bclk_sets)") $(idelta "$(rv "$I2" bclk_clears)" "$(rv "$I0" bclk_clears)")" "1 1"
+		check "i2s: the amplifier never powered" "$(idelta "$(rv "$I2" enables)" "$(rv "$I0" enables)")" "0"
+		check "i2s: no errors" "$(idelta "$(rv "$I2" errors)" "$(rv "$I0" errors)")" "0"
+		check "i2s: everything idle after" \
+		      "$(rv "$I2" supply_on) $(rv "$I2" pins_active) $(printf '%s' "$V2" | cut -d' ' -f1) $M2" \
+		      "0 0 disabled gpio gpio gpio gpio"
+	else
+		check "i2s: the amplifier's i2s_spk_state exists" "absent" "present"
+	fi
 	note "cache_check" "$CC"
 
 	collect_evidence
 	emit_verdict
 	say "REPORT_COMPLETE"
 } > "$OUT" 2>&1
-rm -f /tmp/.dapm-tone.$$ "$DMESG_FILE"
+rm -f /tmp/.dapm-tone.$$ /tmp/.dapm-tone-i2s.$$ "$DMESG_FILE"
 sync
 say "evidence: $OUT"
 grep -E "FAIL|VERDICT|checks :" "$OUT"

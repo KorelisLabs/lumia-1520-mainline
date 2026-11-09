@@ -689,7 +689,7 @@ def main():
     print()
     print("=== 5d. the r175 PA fence ===")
 
-    def func_body(name):
+    def func_body(name, text=None):
         """The body of a C function definition, by brace matching.
 
         Braces inside string literals are ignored -- the driver has several
@@ -701,19 +701,20 @@ def main():
         # after it belongs to some other function. r185 added two, and the
         # HPHR fence read the wrong bodies until declarations were skipped:
         # a definition reaches its "{" before any ";".
+        src = ptext_all if text is None else text
         i = -1
         for m in re.finditer(r"^static\s+[A-Za-z_][\w \t*]*\b%s\s*\("
-                             % re.escape(name), ptext_all, re.M):
-            b = ptext_all.find("{", m.start())
-            s = ptext_all.find(";", m.start())
+                             % re.escape(name), src, re.M):
+            b = src.find("{", m.start())
+            s = src.find(";", m.start())
             if b >= 0 and (s < 0 or b < s):
                 i = b
                 break
         if i < 0:
             return ""
         depth, j, instr, esc = 0, i, False, False
-        while j < len(ptext_all):
-            c = ptext_all[j]
+        while j < len(src):
+            c = src[j]
             if instr:
                 if esc:
                     esc = False
@@ -728,7 +729,7 @@ def main():
             elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    return ptext_all[i:j + 1]
+                    return src[i:j + 1]
             j += 1
         return ""
 
@@ -1981,11 +1982,11 @@ def main():
     check("the card exposes the pin switch",
           'SOC_DAPM_PIN_SWITCH("Headphones")' in card, '"Headphones Switch"')
     check("the card disables the pin at init",
-          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*"Lineout",\s*\}',
+          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*"Lineout",\s*"Loudspeaker",\s*\}',
                     card) is not None
           and "snd_soc_dapm_disable_pin(&card->dapm, lumia_q6_pins_off[i])" in card
           and "card->late_probe = lumia_q6_late_probe;" in card,
-          "r187/r188: every pin, late_probe, before the first sync")
+          "r187/r188/r189: every pin, late_probe, before the first sync")
     check("the card never enables the pin itself",
           "enable_pin" not in card and "force_enable" not in card,
           "only the jack and the operator's control do")
@@ -2552,6 +2553,160 @@ def main():
           'SND_SOC_DAPM_LINE("Lineout", NULL)' in card and '{ "Lineout", NULL, "LO_OUT" }' in card
           and 'SOC_DAPM_PIN_SWITCH("Lineout")' in card, "a manual switch, off at init (5i)")
     check("dev_attr_out_state present", "dev_attr_out_state" in e.syms, "in the artefact")
+
+    # ==================================================================
+    # 5m. r189: THE LOUDSPEAKER ON SECONDARY MI2S.
+    #
+    # docs/audio/r189-sec-mi2s-speaker-mapping.md. The amplifier is an unknown
+    # control-less I2S part; the card module's component owns its 5 V rail and
+    # its pin mux under DAPM. This pins:
+    #   1. the rail and the pins: up rail-then-pins, down pins-then-rail, a
+    #      failed pin mux unwinds the rail, nothing else touches either
+    #   2. the back end: its own ops only for SECONDARY_MI2S_RX, BP_FP + I2S,
+    #      the 1.536 MHz LPAIF bit clock on at startup and 0 at shutdown
+    #   3. the Loudspeaker pin: routed from the amplifier, OFF at init (5i)
+    #   4. the DT: dai@18 on one sd-line, pins 79-82 only, the sleep state is
+    #      GPIO with a pull-down and no drive, the supply is pm8941_5v
+    #   5. the built card module, when it sits beside the codec module
+    # ==================================================================
+    print()
+    print("=== 5m. the r189 I2S loudspeaker fence ===")
+    sev = func_body("lumia_i2s_spk_supply_event", card)
+    sprobe = func_body("lumia_i2s_spk_probe", card)
+    m_init = func_body("lumia_q6_mi2s_init", card)
+    m_up = func_body("lumia_q6_mi2s_startup", card)
+    m_down = func_body("lumia_q6_mi2s_shutdown", card)
+    beops = func_body("lumia_q6_add_be_ops", card)
+    for nm, bd in (("lumia_i2s_spk_supply_event", sev), ("lumia_i2s_spk_probe", sprobe),
+                   ("lumia_q6_mi2s_init", m_init), ("lumia_q6_mi2s_startup", m_up),
+                   ("lumia_q6_mi2s_shutdown", m_down), ("lumia_q6_add_be_ops", beops)):
+        check("%s found in the card" % nm, len(bd) > 0, "%d bytes of body" % len(bd))
+    pmu = sev[sev.find("case SND_SOC_DAPM_PRE_PMU:"):sev.find("case SND_SOC_DAPM_POST_PMD:")]
+    pmd = sev[sev.find("case SND_SOC_DAPM_POST_PMD:"):]
+    check("up: the rail before the pins",
+          0 <= pmu.find("regulator_enable(spk->vdd)") < pmu.find("pinctrl_select_state(spk->pins, spk->pins_active)"),
+          "the amplifier never sees clocks without its supply")
+    check("up: a refused pin mux takes the rail down again",
+          0 <= pmu.find("pinctrl_select_state(spk->pins, spk->pins_active)") < pmu.find("regulator_disable(spk->vdd)"),
+          "no rail left on behind a failed enable")
+    check("down: the pins asleep before the rail",
+          0 <= pmd.find("pinctrl_select_state(spk->pins, spk->pins_sleep)") < pmd.find("regulator_disable(spk->vdd)"),
+          "nothing drives the amplifier while it is off")
+    check("down: the rail goes off even if the pins refuse",
+          "if (spk->supply_on) {" in pmd and pmd.find("if (spk->supply_on) {") > pmd.find("pinctrl_select_state(spk->pins, spk->pins_sleep)"),
+          "a separate step, not inside the pins' success branch")
+    check("the rail is enabled in one place only",
+          card.count("regulator_enable(") == 1 and "regulator_enable(spk->vdd)" in pmu,
+          "the DAPM supply event")
+    check("the pins go active in one place only",
+          card.count("pinctrl_select_state(spk->pins, spk->pins_active)") == 1
+          and "pinctrl_select_state(spk->pins, spk->pins_active)" in pmu,
+          "the DAPM supply event")
+    check("the supply is a DAPM SUPPLY on the amplifier output",
+          re.search(r'SND_SOC_DAPM_SUPPLY\("SPK 5V",\s*SND_SOC_NOPM,\s*0,\s*0,\s*lumia_i2s_spk_supply_event,\s*SND_SOC_DAPM_PRE_PMU \| SND_SOC_DAPM_POST_PMD\)', card) is not None
+          and '{ "I2S_SPK_OUT", NULL, "SPK 5V" }' in card
+          and '{ "I2S_SPK_OUT", NULL, "I2S Speaker Playback" }' in card,
+          "up only while a stream reaches an enabled pin")
+    check("the amplifier DAI is 48 kHz, 2 channels, S16_LE",
+          '.stream_name\t= "I2S Speaker Playback"' in card and ".rates\t\t= SNDRV_PCM_RATE_48000" in card
+          and ".formats\t= SNDRV_PCM_FMTBIT_S16_LE" in card and ".channels_max\t= 2" in card,
+          "Windows' speaker profile (ACDB 15)")
+    check("probe takes vdd and both pin states, and puts the pins to sleep before registering",
+          'devm_regulator_get(dev, "vdd")' in sprobe
+          and "pinctrl_lookup_state(spk->pins, PINCTRL_STATE_DEFAULT)" in sprobe
+          and 'pinctrl_lookup_state(spk->pins, "active")' in sprobe
+          and 0 <= sprobe.find("pinctrl_select_state(spk->pins, spk->pins_sleep)") < sprobe.find("devm_snd_soc_register_component("),
+          "default = sleep")
+    check("i2s_spk_state reports the component and the regulator",
+          "dev_attr_i2s_spk_state" in card and "regulator_is_enabled(spk->vdd)" in card
+          and ".dev_groups = lumia_i2s_spk_groups" in card, "the runners' state source")
+    check("the amplifier binds by its own compatible",
+          '{ .compatible = "nokia,lumia1520-i2s-spk" }' in card
+          and "MODULE_DEVICE_TABLE(of, lumia_i2s_spk_of_match);" in card, "an unknown part: no part number")
+    check("the MI2S ops go to the SECONDARY_MI2S_RX back end only",
+          "if (link->id == SECONDARY_MI2S_RX) {" in beops
+          and "link->ops = &lumia_q6_mi2s_ops;" in beops and "link->init = lumia_q6_mi2s_init;" in beops
+          and "link->ops = &lumia_q6_be_ops;" in beops, "the SLIM back end keeps its channel-map ops")
+    check("the CPU is clock provider, I2S, normal polarity",
+          "SND_SOC_DAIFMT_BP_FP |\n\t\t\t\t  SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF" in m_init,
+          "ws_src internal")
+    check("LUMIA_MI2S_BCLK_RATE is 1536000",
+          re.search(r"^#define\s+LUMIA_MI2S_BCLK_RATE\s+1536000\b", card, re.M) is not None, "48 kHz x 2 x 16")
+    check("the bit clock is on at startup and 0 at shutdown",
+          "snd_soc_dai_set_sysclk(cpu_dai, LPAIF_BIT_CLK, LUMIA_MI2S_BCLK_RATE," in m_up
+          and "snd_soc_dai_set_sysclk(cpu_dai, LPAIF_BIT_CLK, 0, SND_SOC_CLOCK_OUT)" in m_down,
+          "the legacy LPAIF_CLK_CONFIG this DSP takes")
+    check("the card declares the Loudspeaker pin",
+          'SND_SOC_DAPM_SPK("Loudspeaker", NULL)' in card and '{ "Loudspeaker", NULL, "I2S_SPK_OUT" }' in card
+          and 'SOC_DAPM_PIN_SWITCH("Loudspeaker")' in card, "a manual switch, off at init (5i)")
+    check("the amplifier driver registers before the card",
+          re.search(r"lumia_q6_drivers\[\]\s*=\s*\{\s*&lumia_i2s_spk_driver,\s*&lumia_q6_driver,\s*\}", card) is not None
+          and "module_platform_driver(" not in card, "the card defers until the component exists")
+    check("the card is q6-card-rc8", 'MODULE_VERSION("q6-card-rc8");' in card, "r189")
+
+    DTS = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
+    dts = DTS.read_text(errors="replace") if DTS.exists() else ""
+    check("rm940.dts found", len(dts) > 0, str(DTS.name))
+
+    def dt_node(label_or_name):
+        """A DT node's text by brace matching, from its 'name {' line."""
+        i = dts.find(label_or_name)
+        if i < 0:
+            return ""
+        b = dts.find("{", i)
+        depth, j = 0, b
+        while 0 <= j < len(dts):
+            if dts[j] == "{":
+                depth += 1
+            elif dts[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return dts[b:j + 1]
+            j += 1
+        return ""
+
+    d18 = dt_node("dai@18 {")
+    sdl = re.findall(r"qcom,sd-lines\s*=\s*<(\d+)>;", d18)
+    check("dai@18 is SECONDARY_MI2S_RX on ONE sd-line",
+          "reg = <SECONDARY_MI2S_RX>;" in d18 and len(sdl) == 1 and sdl[0] in ("0", "1"),
+          "sd-lines <%s> (%s)" % (sdl[0] if sdl else "?",
+                                  {"1": "DATA1, TLMM 82", "0": "DATA0, TLMM 81"}.get(sdl[0] if sdl else "", "?")))
+    act = dt_node("sec_mi2s_active: sec-mi2s-active-state {")
+    slp = dt_node("sec_mi2s_sleep: sec-mi2s-sleep-state {")
+    pins4 = 'pins = "gpio79", "gpio80", "gpio81", "gpio82";'
+    check("the active state: pins 79-82, sec_mi2s, 8 mA, no pull",
+          pins4 in act and 'function = "sec_mi2s";' in act and "drive-strength = <8>;" in act
+          and "bias-disable;" in act, "downstream's sec_auxpcm active setting")
+    check("the sleep state: GPIO, not driven, pulled down",
+          pins4 in slp and 'function = "gpio";' in slp and "bias-pull-down;" in slp
+          and "output-disable;" in slp and "output-high" not in slp and "output-low" not in slp,
+          "Windows' off state")
+    check("pin 78 (the port MCLK) is left alone", '"gpio78"' not in dts, "Windows never muxes it")
+    amp = dt_node("i2s_spk: audio-amplifier {")
+    check("the amplifier node: compatible, the 5 V supply, sleep as default",
+          'compatible = "nokia,lumia1520-i2s-spk";' in amp and "vdd-supply = <&pm8941_5v>;" in amp
+          and 'pinctrl-names = "default", "active";' in amp and "pinctrl-0 = <&sec_mi2s_sleep>;" in amp
+          and "pinctrl-1 = <&sec_mi2s_active>;" in amp and "#sound-dai-cells = <0>;" in amp,
+          "pm8941_5v = PM8941 SMPS4, 5 V")
+    lnk = dt_node("sec-mi2s-dai-link {")
+    check("the third link: SECONDARY_MI2S_RX -> routing -> the amplifier",
+          "sound-dai = <&q6afedai SECONDARY_MI2S_RX>;" in lnk and "sound-dai = <&q6routing>;" in lnk
+          and "sound-dai = <&i2s_spk>;" in lnk, "a back end")
+
+    # The built card module, when the build staged it beside the codec module.
+    cko = pathlib.Path(ko).with_name("snd-soc-lumia1520-q6.ko") if ko else None
+    if cko is not None and cko.exists():
+        cmi = modinfo(str(cko))
+        check("built card is q6-card-rc8", cmi.get("version") == "q6-card-rc8",
+              "found %s" % cmi.get("version"))
+        ce = Elf(str(cko))
+        cs = ce.by_name.get(".modinfo")
+        craw = ce.blob[cs["off"]:cs["off"] + cs["size"]] if cs else b""
+        check("built card aliases the amplifier compatible",
+              b"nokia,lumia1520-i2s-spk" in craw and b"nokia,lumia1520-q6-sndcard" in craw,
+              "both drivers autoload")
+    else:
+        print("  ....  built card module not beside %s -- patch and DT fences only" % ko)
 
     if args.expect_asoc:
         print()

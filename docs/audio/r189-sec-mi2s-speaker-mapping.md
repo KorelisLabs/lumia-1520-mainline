@@ -207,3 +207,61 @@ The audio device has 15 power components (0 to 14). Each has an "on" state
   for on every DATA1/DATA0 stream.
 - **The amp's gain, and so the safe ceiling:** settled by measurement at
   -60/-50/-40 dBFS before any declared escalation.
+
+## 6. As built (r189 `spk-i2s-rc1`, card `q6-card-rc8`, pkgrel 189), staged 2026-11-09
+
+**What changed:**
+- **The codec:** only its version string changed (no code). Its
+  read-bypassed call sites stay at 139.
+- **DT** (`qcom-msm8974-microsoft-rm940.dts`, identical in both pmaports
+  trees):
+  - `sec_mi2s_active`: TLMM 79-82, `sec_mi2s`, 8 mA, no pull.
+  - `sec_mi2s_sleep`: `gpio`, 2 mA, pull-down, `output-disable`.
+  - Pin 78 is untouched.
+  - `q6afedai` `dai@18` (`SECONDARY_MI2S_RX`, `qcom,sd-lines = <1>`).
+  - `i2s_spk: audio-amplifier` (`nokia,lumia1520-i2s-spk`, `vdd-supply =
+    <&pm8941_5v>`, pinctrl default = sleep, active = active).
+  - The third link `sec-mi2s-dai-link`.
+  - The compiled DT resolves `vdd-supply` to the PM8941 `s4` node at
+    5,000,000 µV.
+- **Card** (`snd-soc-lumia1520-q6`, `q6-card-rc8`): the "unknown I2S
+  amplifier" component.
+  - `SPK 5V` is a DAPM supply on `I2S_SPK_OUT`. Up: regulator, then pins.
+    Down: pins, then regulator. A refused pin mux unwinds the rail.
+  - Its DAI is 48 kHz, 2 channels, S16_LE.
+  - `i2s_spk_state` in sysfs.
+  - The MI2S back-end ops: `BP_FP|I2S|NB_NF`, `LPAIF_BIT_CLK` at 1.536 MHz
+    at startup and 0 at shutdown.
+  - The `Loudspeaker` pin, OFF at init.
+  - Two platform drivers, the amplifier's registered first.
+
+**Fences, verifier 5m:**
+- 31 checks on the card patch and the DT, plus 2 on the built card module.
+- Pre-build: 606 pass. The 3 expected failures are the codec version and the
+  two built-card checks, run against r188's modules.
+- Mutation: 16/16 caught.
+
+**Tools:**
+- **The listen runner, `OUTPUT=i2s`:**
+  - the spec is `B:0:84` only, and DBFS may be -60, -50 or -40;
+  - the SEC_MI2S mixer is on, with the SLIMbus mixer off (and the reverse
+    for codec outputs);
+  - it waits on `i2s_spk_state`;
+  - live checks: the amplifier `1 1 1`, the regulator class `enabled`, the
+    pinmux `sec_mi2s` x4, the codec holding nothing, no SLIMbus stream, no
+    MCLK user;
+  - after: everything back, and the amplifier's accounting per run.
+- **The digital gate** has a second tone through the MI2S back end alone,
+  with the Loudspeaker pin OFF. The bit clock must run while the amplifier
+  stays unpowered, the rail off and the pins GPIO.
+- **The teardown** turns the Loudspeaker pin off too.
+- **The selftest:** 105/0.
+
+**Build:**
+```
+tools/build-wcd9320-kernel.sh --pkgrel 189 --version spk-i2s-rc1 \
+    --expect-asoc --expect-dais 1 --stage ~/r189 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+```
