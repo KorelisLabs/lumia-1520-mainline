@@ -45,6 +45,11 @@
 # (earpiece) digital volume. Default plan for both: one stream, B:0:84 --
 # the minimum gain, the probe of docs/audio/wcd9320-r187-speaker-earpiece-mapping.md.
 #
+# r188: OUTPUT=lo, all four line outputs as one output (LO_OUT, the "Lineout"
+# pin). vol is Lineout Volume 0..20 (0 = minimum), dig the RX3 and RX5 digital
+# volume. LO_SELECT (1..15, default 15) is the Lineout Select mask, for
+# bisecting which LINEOUTs matter. docs/audio/wcd9320-r188-lineout-mapping.md.
+#
 # Usage (one line):
 #   sudo env EXPECT_VERSION=outputs-rc1 sh wcd9320-dapm-listen.sh launch
 #   sudo env EXPECT_VERSION=outputs-rc1 OUTPUT=spk sh wcd9320-dapm-listen.sh launch
@@ -89,7 +94,12 @@ case "$DBFS" in
 *)	echo "INVALID SETUP: DBFS=$DBFS (allowed: -40, or -30/-20 with ESCALATE=declared)"; exit 2 ;;
 esac
 OUTPUT="${OUTPUT:-hph}"
-dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk or ear)"; exit 2; }
+dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk, ear or lo)"; exit 2; }
+LO_SELECT="${LO_SELECT:-15}"
+case "$LO_SELECT" in
+1|2|3|4|5|6|7|8|9|10|11|12|13|14|15) ;;
+*) echo "INVALID SETUP: LO_SELECT=$LO_SELECT (1..15)"; exit 2 ;;
+esac
 if [ "$OUTPUT" = "hph" ]; then
 	SPECS="${SPECS:-L:20:84,R:20:84,R:16:84,R:20:78}"	# commas: it survives --setenv
 else
@@ -131,18 +141,19 @@ pin_set() {	# pin_set 0|1 -> 0 when THIS output's pin reads back as asked
 pin_get() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$OUT_PIN" 2>/dev/null)"; }
 # r187: every output pin off (the others must stay off for a single-output run)
 pins_all_off() {
-	for _po in "Headphones Switch" "Speaker Switch" "Earpiece Switch"; do
+	for _po in "Headphones Switch" "Speaker Switch" "Earpiece Switch" "Lineout Switch"; do
 		"$SETCTL" -D "$CTLDEV" --set "$_po" 0 >/dev/null 2>&1
 	done
 }
-# r187: 0 when every PA is chip-verified off -- HPH, speaker, earpiece
+# r187/r188: 0 when every PA is chip-verified off -- HPH, speaker, earpiece, line outs
 all_pa_off() {
 	_ap=$(rv "$(cat "${PGD:-/nonexistent}/hphl_pa_state" 2>/dev/null)" pa_0x1ab)
 	_ao=$(cat "${PGD:-/nonexistent}/out_state" 2>/dev/null)
 	[ -n "$_ap" ] && [ "$(pa_masked "$_ap")" = "00" ] || return 1
 	[ -n "$_ao" ] || return 0
 	[ $(( 0x$(rv "$_ao" spken_0x1df) & 0x80 )) -eq 0 ] &&
-	[ $(( 0x$(rv "$_ao" ear_0x1bc) & 0x10 )) -eq 0 ]
+	[ $(( 0x$(rv "$_ao" ear_0x1bc) & 0x10 )) -eq 0 ] &&
+	[ $(( 0x$(rv "$_ao" locnp_0x1ca) & 0x0f )) -eq 0 ]
 }
 # r185: ctl_set <control> <value> -> 0 when it reads back as asked
 ctl_set() {
@@ -156,6 +167,8 @@ vol_set() {
 	     ctl_set "RX1 Digital Volume" "$2" && ctl_set "RX2 Digital Volume" "$2" ;;
 	spk) ctl_set "Speaker Volume" "$1" && ctl_set "RX7 Digital Volume" "$2" ;;
 	ear) ctl_set "Earpiece Volume" "$1" && ctl_set "RX1 Digital Volume" "$2" ;;
+	lo)  ctl_set "Lineout Volume" "$1" && ctl_set "RX3 Digital Volume" "$2" &&
+	     ctl_set "RX5 Digital Volume" "$2" && ctl_set "Lineout Select" "$LO_SELECT" ;;
 	esac
 }
 # r187: every output back to its boot value
@@ -163,7 +176,9 @@ vol_restore() {
 	ctl_set "HPHL Volume" 0 && ctl_set "HPHR Volume" 0 &&
 	ctl_set "RX1 Digital Volume" 84 && ctl_set "RX2 Digital Volume" 84 &&
 	ctl_set "Speaker Volume" 0 && ctl_set "Earpiece Volume" 0 &&
-	ctl_set "RX7 Digital Volume" 78
+	ctl_set "RX7 Digital Volume" 78 &&
+	ctl_set "Lineout Volume" 0 && ctl_set "Lineout Select" 15 &&
+	ctl_set "RX3 Digital Volume" 84 && ctl_set "RX5 Digital Volume" 84
 }
 
 # ------------------------------------------------------------------- abort --
@@ -268,6 +283,9 @@ preflight() {
 		[ "$(rv "$OPRE" ear_pa)" = "0" ] || _bad="$_bad ear-pa-on"
 		[ "$(rv "$OPRE" ear_0x1bc)" = "00" ] || _bad="$_bad ear-dirty"
 		[ $(( 0x$(rv "$OPRE" spken_0x1df) & 0x80 )) -eq 0 ] || _bad="$_bad spk-en-set"
+		[ "$(rv "$OPRE" lo_pa)" = "0" ] || _bad="$_bad lo-pa-on"
+		[ "$(rv "$OPRE" locnp_0x1ca)" = "00" ] || _bad="$_bad lo-cnp-set"
+		[ "$(rv "$OPRE" clsh_lo)" = "0" ] || _bad="$_bad clsh-lo-on"
 		[ "$(dapm_kv "$D_PRE" "$OUT_KEY")" = "$OUT_NONE" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$D_PRE" "$OUT_KEY")"
 	fi
 	[ -n "$_bad" ] && { say "INVALID SETUP: not idle:$_bad"; return 1; }
@@ -303,6 +321,7 @@ stream() {	# stream <n> <spec>
 	hph) jrn "volumes: HPHL/HPHR $_hv (field $(dapm_spec_field "$_hv")), RX1/RX2 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	spk) jrn "volumes: Speaker Volume $_hv (field $((8 - _hv))), RX7 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	ear) jrn "volumes: Earpiece Volume $_hv, RX1 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
+	lo)  jrn "volumes: Lineout Volume $_hv (field $(dapm_spec_field "$_hv")), RX3/RX5 digital $_dv (0x$(dapm_spec_dig "$_dv")), Lineout Select $LO_SELECT" ;;
 	esac
 	case "$OUTPUT:$_side" in
 	hph:L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
@@ -310,6 +329,7 @@ stream() {	# stream <n> <spec>
 	hph:B) jrn "stream $_n: tone on BOTH channels" ;;
 	spk:*) jrn "stream $_n: SPEAKER, Speaker Volume $_hv -- the mic at its fixed spot over the grille" ;;
 	ear:*) jrn "stream $_n: EARPIECE, Earpiece Volume $_hv -- the mic at its fixed spot over the earpiece slot" ;;
+	lo:*)  jrn "stream $_n: LINE OUTS (select $LO_SELECT), Lineout Volume $_hv -- the mic at its fixed spot" ;;
 	esac
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
@@ -385,6 +405,9 @@ stream() {	# stream <n> <spec>
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	ear) [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
+	lo)  [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
+	     [ $(( 0x$(rv "$_o" locnp_0x1ca) )) -eq "$LO_SELECT" ] || _bad="$_bad cnp=$(rv "$_o" locnp_0x1ca)"
+	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	esac
 	[ "$(rv "$_p" ocp_seen)" = "0" ] || _bad="$_bad ocp"
 	if [ -n "$_bad" ]; then
@@ -439,7 +462,7 @@ check)
 launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=SPECS=$SPECS --setenv=HOLD_ARM=$HOLD_ARM"
-	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE"
+	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE --setenv=LO_SELECT=$LO_SELECT"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -495,7 +518,7 @@ watch_stop
 pins_all_off
 # r185/r187: every volume back to its boot value
 if vol_restore; then
-	jrn "volumes restored: HPH, speaker, earpiece at their minimum; RX1/RX2 0 dB, RX7 -6 dB"
+	jrn "volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15"
 else
 	jrn "THE VOLUMES DID NOT RESTORE -- check HPHL/HPHR Volume by hand"
 fi
@@ -568,6 +591,23 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				check "s$c RX7 interpolator on" "$(printf '%02x' $(( 0x$(rv "$_o" rxclk_0x30f) & 0x40 )))" "40"
 				check "s$c no speaker clip" "$(printf '%02x' $(( 0x$(rv "$_o" intr3_0x09b) & 0x08 )))" "00"
 				check "s$c speaker PA off after" "$(printf '%02x' $(( 0x$(rv "$_oa" spken_0x1df) & 0x80 )))" "00"
+			elif [ "$OUTPUT" = "lo" ]; then
+				_sel=$(printf '%02x' "$LO_SELECT")
+				check "s$c line-out PAs live = select (0x1ca)" "$(rv "$_o" locnp_0x1ca)" "$_sel"
+				_lf=$(dapm_spec_field "${_hv:-0}")
+				for _g in logain_0x1cd logain_0x1d1 logain_0x1d5 logain_0x1d9; do
+					_x=$(rv "$_o" "$_g")
+					check "s$c $_g register source, field = 20 - $_hv" \
+					      "$(printf '%02x' $(( 0x${_x:-ff} & 0x3f )))" "$(printf '%02x' $(( 0x20 | 0x$_lf )))"
+				done
+				check "s$c RDAC5/RDAC7 inverted pairs (0x3b1)" \
+				      "$(printf '%02x' $(( 0x$(rv "$_o" misc_0x3b1) & 0x06 )))" "06"
+				check "s$c class-H in LO mode" "$(rv "$_o" clsh_lo)" "1"
+				check "s$c RX3 and RX5 on" "$(rv "$_o" rx3_on) $(rv "$_o" rx5_on)" "1 1"
+				check "s$c line-out PAs off after" "$(rv "$_oa" locnp_0x1ca)" "00"
+				check "s$c line-out DACs off after" \
+				      "$(rv "$_oa" lodac_0x1cf)$(rv "$_oa" lodac_0x1d3)$(rv "$_oa" lodac_0x1d7)$(rv "$_oa" lodac_0x1db)" "00000000"
+				check "s$c class-H LO off after" "$(rv "$_oa" clsh_lo)" "0"
 			else
 				check "s$c earpiece live (0x1bc DAC1 + switch + PA)" "$(rv "$_o" ear_0x1bc)" "70"
 				check "s$c class-H in EAR mode" "$(rv "$_o" clsh_ear)" "1"
@@ -606,7 +646,7 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "DAPM downs this run" "$(dapm_delta "$D_PRE" "$D_POST" downs)" "$((OUT_STAGES * (n - 1)))"
 	check "DAPM refusals this run" "$(dapm_delta "$D_PRE" "$D_POST" refusals)" "0"
 	check "DAPM failures this run" "$(dapm_delta "$D_PRE" "$D_POST" failures)" "0"
-	check "DAPM holds nothing at the end" "$(dapm_kv "$D_POST" held) $(dapm_kv "$D_POST" spk_held) $(dapm_kv "$D_POST" ear_held)" "000 00 00"
+	check "DAPM holds nothing at the end" "$(dapm_kv "$D_POST" held) $(dapm_kv "$D_POST" spk_held) $(dapm_kv "$D_POST" ear_held) $(dapm_kv "$D_POST" lo_held)" "000 00 00 00"
 	check "nobody holds MCLK at the end" "$(rv "$CPOST" mclk_users)" "0"
 	check "codec back on RCO" "$(rv "$CPOST" on_mclk)" "0"
 	check "guard never tripped" "$(rv "$POST" guard_tripped)" "0"
@@ -653,6 +693,17 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		check "earpiece gain restored" "$(rv "$OPOST" eargain_0x1bd)" "$(rv "$OPRE" eargain_0x1bd)"
 		check "earpiece fully off" "$(rv "$OPOST" ear_0x1bc)" "00"
 		check "RX7 off" "$(rv "$OPOST" rx7_on)" "0"
+		# r188: the line outs, and class-H LO's no-trace restore
+		check "line outs at the minimum, all selected, PAs off" \
+		      "$(rv "$OPOST" lo_field) $(rv "$OPOST" lo_select) $(rv "$OPOST" lo_pa) $(rv "$OPOST" locnp_0x1ca)" "20 f 0 00"
+		for _g in logain_0x1cd logain_0x1d1 logain_0x1d5 logain_0x1d9 misc_0x3b1; do
+			check "$_g restored" "$(rv "$OPOST" "$_g")" "$(rv "$OPRE" "$_g")"
+		done
+		for _g in buck1_0x181 buck4_0x184 buck5_0x185 ncpen_0x192 ncpst_0x194; do
+			check "$_g as before the run (class-H LO no trace)" "$(rv "$OPOST" "$_g")" "$(rv "$OPRE" "$_g")"
+		done
+		check "class-H LO restore mismatches" "$(rv "$OPOST" lo_restore_mismatch)" "0"
+		check "RX3 and RX5 off" "$(rv "$OPOST" rx3_on) $(rv "$OPOST" rx5_on)" "0 0"
 	fi
 
 	hdr "dapm events (dmesg)"

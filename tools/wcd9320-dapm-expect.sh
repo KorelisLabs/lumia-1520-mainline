@@ -61,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc6}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc7}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
@@ -136,8 +136,9 @@ dapm_spec_dig() { printf '%02x' $(( ($1 - 84) & 0xff )); }
 #   hph  held=      nine stages, 1ff, 6 forced writes per stream (r185)
 #   spk  spk_held=  six stages, 3f, 2 forced writes (the 0x314 pair only)
 #   ear  ear_held=  six stages, 3f, 2 forced writes
+#   lo   lo_held=   six stages, 3f, 2 forced writes (r188, all four line outs)
 #
-# dapm_out <hph|spk|ear> -> sets OUT_PIN OUT_KEY OUT_ALL OUT_NONE OUT_STAGES
+# dapm_out <hph|spk|ear|lo> -> sets OUT_PIN OUT_KEY OUT_ALL OUT_NONE OUT_STAGES
 #                           OUT_FORCED OUT_VMAX; returns 1 for anything else
 dapm_out() {
 	case "$1" in
@@ -147,6 +148,8 @@ dapm_out() {
 	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=8 ;;
 	ear) OUT_PIN="Earpiece Switch"; OUT_KEY=ear_held; OUT_ALL=3f; OUT_NONE=00
 	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=6 ;;
+	lo)  OUT_PIN="Lineout Switch"; OUT_KEY=lo_held; OUT_ALL=3f; OUT_NONE=00
+	     OUT_STAGES=6; OUT_FORCED=2; OUT_VMAX=20 ;;
 	*) return 1 ;;
 	esac
 }
@@ -173,7 +176,7 @@ dapm_forced_want_out() {
 
 # dapm_spec_ok_out <out> <spec> -> OK, or REFUSE:<why>. hph is dapm_spec_ok's
 # side:hph:dig; spk and ear take side:vol:dig with vol up to the output's max
-# (Speaker Volume 0..8, Earpiece Volume 0..6).
+# (Speaker Volume 0..8, Earpiece Volume 0..6, r188 Lineout Volume 0..20).
 dapm_spec_ok_out() {
 	dapm_out "$1" || { echo "REFUSE:unknown output '$1'"; return; }
 	[ "$1" = "hph" ] && { dapm_spec_ok "$2"; return; }

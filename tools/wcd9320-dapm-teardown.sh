@@ -29,8 +29,9 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ' 2>/dev/null || echo unknown)
 JOURNAL="${C3A_JOURNAL:-/var/log/wcd9320-c3a-journal.txt}"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 # r187: every output pin, not just the headphones -- the speaker and the
-# earpiece are DAPM outputs too. A pin that fails does not stop the others.
-PINS="${DAPM_PINS:-${DAPM_PIN:-Headphones Switch}|Speaker Switch|Earpiece Switch}"
+# earpiece are DAPM outputs too, and r188's line outs. A pin that fails does
+# not stop the others.
+PINS="${DAPM_PINS:-${DAPM_PIN:-Headphones Switch}|Speaker Switch|Earpiece Switch|Lineout Switch}"
 PLAYER="${DAPM_PLAYER:-pcm-tone}"
 
 note() {

@@ -161,7 +161,13 @@ EXPECT = {
     #            out_state_show, 1 each in wcd9320_spk_prep and
     #            wcd9320_ear_prep (the gain baselines) and 1 in
     #            wcd9320_spk_pa (0x1df after the enable).
-    "read_bypassed_calls": 129,
+    # r188: 139 = 129 + 10, the line outs: 5 in out_state_show (CNP_EN, the
+    #            GAIN and DAC_CTL loop bodies, CONN_MISC, the class-H LO
+    #            loop), 2 in wcd9320_lo_prep (the gain loop, CONN_MISC), 2 in
+    #            wcd9320_clsh_lo (the snapshot and the restore readback) and
+    #            1 in wcd9320_lo_pa. Measured +10 in the compile-check tree
+    #            (123 -> 133); the build is the arbiter.
+    "read_bypassed_calls": 139,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -1788,7 +1794,9 @@ def main():
                       # (WCD9320_DAPM_STAGE), checked in 5k; their PGAs and
                       # outputs are plain widgets
                       ("PGA", "SPK"), ("OUTPUT", "SPK_OUT"),
-                      ("PGA", "EAR"), ("OUTPUT", "EAR_OUT")],
+                      ("PGA", "EAR"), ("OUTPUT", "EAR_OUT"),
+                      # r188: the line outs, the same shape
+                      ("PGA", "LO"), ("OUTPUT", "LO_OUT")],
           "%s" % w_names)
     check("every widget is SND_SOC_NOPM",
           widgets and all("SND_SOC_NOPM" in a for t, n, a in widgets
@@ -1837,7 +1845,11 @@ def main():
                                                      "RX7 CHAIN", "SPK DAC", "SPK PA")] +
                          [("EAR", None, "AIF1 PB"), ("EAR_OUT", None, "EAR")] +
                          [("EAR", None, s) for s in ("EAR MCLK", "EAR PREP", "EAR PREREQ",
-                                                     "EAR RX1", "EAR DAC", "EAR PA")])
+                                                     "EAR RX1", "EAR DAC", "EAR PA")] +
+                         # r188
+                         [("LO", None, "AIF1 PB"), ("LO_OUT", None, "LO")] +
+                         [("LO", None, s) for s in ("LO MCLK", "LO PREP", "LO PREREQ",
+                                                    "RX3+RX5 CHAIN", "LO DAC", "LO PA")])
     check("the routes are exactly the mapped ones", routes == want_routes,
           "%d route(s)" % len(routes))
     comp = array_body("static const struct snd_soc_component_driver wcd9320_soc_component")
@@ -1859,7 +1871,9 @@ def main():
           re.findall(r'SOC_SINGLE_EXT(?:_TLV)?\(\s*"([^"]+)"', ctl)
           == ["HPHL Volume", "HPHR Volume", "RX1 Digital Volume",
               "RX2 Digital Volume", "RX7 Digital Volume", "Speaker Volume",
-              "Earpiece Volume"], "HPH x2, digital x3 (r187: RX7), speaker, earpiece")
+              "Earpiece Volume", "RX3 Digital Volume", "RX5 Digital Volume",
+              "Lineout Volume", "Lineout Select"],
+          "HPH x2, digital x5 (r187 RX7, r188 RX3/RX5), speaker, earpiece, line out x2")
 
     # ---- the dispatcher: the six proven functions, nothing else --------
     want_calls = ["wcd9320_mclk_get(wcd)", "wcd9320_mclk_put(wcd)",
@@ -1872,13 +1886,17 @@ def main():
                   "wcd9320_hphr_pa_path(wcd, on)"]
     # r187: three paths share MCLK and the prereq (3 call sites each) and
     # the earpiece reuses RX1 (2); each output function is called once.
-    want_n = {"wcd9320_mclk_get(wcd)": 3, "wcd9320_mclk_put(wcd)": 3,
-              "wcd9320_cdc_clk_prereq(wcd, on)": 3,
+    # r188: four paths now share MCLK and the prereq.
+    want_n = {"wcd9320_mclk_get(wcd)": 4, "wcd9320_mclk_put(wcd)": 4,
+              "wcd9320_cdc_clk_prereq(wcd, on)": 4,
               "wcd9320_rx_digital_path(wcd, 0, on)": 2}
     want_calls += ["wcd9320_rx_digital_path(wcd, 2, on)",
                    "wcd9320_spk_prep(wcd, on)", "wcd9320_spk_dac(wcd, on)",
                    "wcd9320_spk_pa(wcd, on)", "wcd9320_ear_prep(wcd, on)",
-                   "wcd9320_ear_dac(wcd, on)", "wcd9320_ear_pa(wcd, on)"]
+                   "wcd9320_ear_dac(wcd, on)", "wcd9320_ear_pa(wcd, on)",
+                   # r188
+                   "wcd9320_lo_prep(wcd, on)", "wcd9320_lo_rx(wcd, on)",
+                   "wcd9320_lo_dac(wcd, on)", "wcd9320_lo_pa(wcd, on)"]
     check("the dispatcher calls each proven function as mapped",
           all(d_call.count(c) == want_n.get(c, 1) for c in want_calls),
           ", ".join("%s%d" % (c.split("(")[0][8:], d_call.count(c)) for c in want_calls))
@@ -1925,7 +1943,8 @@ def main():
           "wcd9320_c3_abort(wcd);" in up_branch
           and "wcd->dapm_held &= ~WCD9320_DS_ABORTED;" in up_branch
           and "wcd->dapm_held_spk &= ~WCD9320_DO_ABORTED;" in up_branch
-          and "wcd->dapm_held_ear &= ~WCD9320_DO_ABORTED;" in up_branch,
+          and "wcd->dapm_held_ear &= ~WCD9320_DO_ABORTED;" in up_branch
+          and "wcd->dapm_held_lo &= ~WCD9320_DO_ABORTED;" in up_branch,
           "in the power-up branch, after the failed call")
     check("power-down undoes only what DAPM holds",
           0 <= d_ev.find("!(*held & BIT(stage))")
@@ -1937,7 +1956,10 @@ def main():
                  "wcd->comp1_on", "wcd->clsh_on", "wcd->clsh_r_on",
                  "wcd->rx_bias_refs", "wcd->rx7_digital_on",
                  "wcd->spk_prep_on", "wcd->spk_dac_on", "wcd->spk_pa_on",
-                 "wcd->ear_prep_on", "wcd->ear_dac_on", "wcd->ear_pa_on"):
+                 "wcd->ear_prep_on", "wcd->ear_dac_on", "wcd->ear_pa_on",
+                 # r188
+                 "wcd->rx3_digital_on", "wcd->rx5_digital_on", "wcd->lo_prep_on",
+                 "wcd->lo_dac_on", "wcd->lo_pa_on", "wcd->clsh_lo_on"):
         check("idle means %s is clear" % flag.split("->")[1], "!" + flag in d_idle,
               "wcd9320_dapm_idle")
     check("the event is called from nothing but the widget table",
@@ -1959,11 +1981,11 @@ def main():
     check("the card exposes the pin switch",
           'SOC_DAPM_PIN_SWITCH("Headphones")' in card, '"Headphones Switch"')
     check("the card disables the pin at init",
-          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*\}',
+          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*"Lineout",\s*\}',
                     card) is not None
           and "snd_soc_dapm_disable_pin(&card->dapm, lumia_q6_pins_off[i])" in card
           and "card->late_probe = lumia_q6_late_probe;" in card,
-          "r187: every pin, late_probe, before the first sync")
+          "r187/r188: every pin, late_probe, before the first sync")
     check("the card never enables the pin itself",
           "enable_pin" not in card and "force_enable" not in card,
           "only the jack and the operator's control do")
@@ -2024,7 +2046,7 @@ def main():
 
     rxd = func_body("wcd9320_rx_digital_path")
     rx1w = func_body("wcd9320_rx1_digital_path")
-    chains = array_body("static const struct wcd9320_rx_chain wcd9320_rx_chains[3]")
+    chains = array_body("static const struct wcd9320_rx_chain wcd9320_rx_chains[5]")
     check("RX1 is channel 0 of the one RX function",
           "return wcd9320_rx_digital_path(wcd, 0, enable);" in rx1w
           and len(rx1w.strip("{} \n\t").splitlines()) == 1, "a one-line wrapper")
@@ -2330,17 +2352,20 @@ def main():
           "wcd9320_dsm_route(), called by the HPHL DAC and the earpiece DAC")
     pos, ok = -1, True
     for tok in ("wcd9320_spk_pa(wcd, false)", "wcd9320_ear_pa(wcd, false)",
+                "wcd9320_lo_pa(wcd, false)",
                 "wcd9320_hphl_pa_path(wcd, false)", "wcd9320_hphl_dac_path(wcd, false",
                 "wcd9320_spk_dac(wcd, false)", "wcd9320_ear_dac(wcd, false)",
+                "wcd9320_lo_dac(wcd, false)",
                 "wcd9320_cdc_clk_prereq(wcd, false)", "wcd9320_pa_prep(wcd, false)",
-                "wcd9320_spk_prep(wcd, false)", "wcd9320_ear_prep(wcd, false)"):
+                "wcd9320_spk_prep(wcd, false)", "wcd9320_ear_prep(wcd, false)",
+                "wcd9320_lo_prep(wcd, false)"):
         nxt = abort_body.find(tok, pos + 1)
         if nxt < 0:
             ok = False
             break
         pos = nxt
     check("the C3 abort takes every PA down before any DAC", ok,
-          "speaker, earpiece, HPH PAs; DACs; prereq; preps")
+          "speaker, earpiece, line-out, HPH PAs; DACs; prereq; preps")
     stage_rows = re.findall(r'WCD9320_DAPM_STAGE\("([^"]+)",\s*(WCD9320_DP_\w+),\s*(WCD9320_DO_\w+)\)',
                             w_body)
     check("the speaker and earpiece chains are the mapped six stages each",
@@ -2355,7 +2380,14 @@ def main():
                          ("EAR PREREQ", "WCD9320_DP_EAR", "WCD9320_DO_PREREQ"),
                          ("EAR RX1", "WCD9320_DP_EAR", "WCD9320_DO_RX"),
                          ("EAR DAC", "WCD9320_DP_EAR", "WCD9320_DO_DAC"),
-                         ("EAR PA", "WCD9320_DP_EAR", "WCD9320_DO_PA")],
+                         ("EAR PA", "WCD9320_DP_EAR", "WCD9320_DO_PA"),
+                         # r188
+                         ("LO MCLK", "WCD9320_DP_LO", "WCD9320_DO_MCLK"),
+                         ("LO PREP", "WCD9320_DP_LO", "WCD9320_DO_PREP"),
+                         ("LO PREREQ", "WCD9320_DP_LO", "WCD9320_DO_PREREQ"),
+                         ("RX3+RX5 CHAIN", "WCD9320_DP_LO", "WCD9320_DO_RX"),
+                         ("LO DAC", "WCD9320_DP_LO", "WCD9320_DO_DAC"),
+                         ("LO PA", "WCD9320_DP_LO", "WCD9320_DO_PA")],
           "%d row(s)" % len(stage_rows))
     check("the stage macro is a NOPM SUPPLY_S, subsequence = stage",
           re.search(r"#define WCD9320_DAPM_STAGE\(wname, path, stage\) \\\n\tSND_SOC_DAPM_SUPPLY_S\(wname, stage, SND_SOC_NOPM, \\\n"
@@ -2378,6 +2410,147 @@ def main():
           and 'SOC_DAPM_PIN_SWITCH("Speaker")' in card and 'SOC_DAPM_PIN_SWITCH("Earpiece")' in card,
           "manual switches, off at init (5i)")
     check("out_state is registered", "&dev_attr_out_state.attr" in ptext_all, "in wcd9320_attrs[]")
+
+    # ==================================================================
+    # 5l. r188: THE LINE OUTPUTS. docs/audio/wcd9320-r188-lineout-mapping.md
+    #   1. every address and field is downstream's, pinned
+    #   2. CNP_EN is written only by the line-out PA, DAC_CTL only by its DAC
+    #   3. the DAC and PA refuse what they do not own, in downstream's order
+    #   4. the gains boot at the minimum; the prep sets source + field first
+    #   5. class-H LO is state_lo's 2.15 V branch, never touches CLSH_B1, and
+    #      restores the five registers it changes (no trace)
+    #   6. RX3/RX5 are table rows 3/4; the stage takes both or neither
+    #   7. the controls, the abort, the card pin
+    # ==================================================================
+    print()
+    print("=== 5l. the r188 line-out fence ===")
+    for sym, want in (("WCD9320_A_RX_LINE_CNP_EN", "0x1ca"), ("WCD9320_CDC_CONN_MISC", "0x3b1"),
+                      ("WCD9320_LINE_ALL", "0x0f"), ("WCD9320_LINE_GAIN_PA", "0x40"),
+                      ("WCD9320_LINE_GAIN_SRC", "0x20"), ("WCD9320_LINE_GAIN_FIELD", "0x1f"),
+                      ("WCD9320_LINE_GAIN_MIN", "0x14"), ("WCD9320_LINE_DAC_PWR", "0x80"),
+                      ("WCD9320_LINE_DAC_SW", "0x40"), ("WCD9320_LINE_RDAC_INV", "0x06"),
+                      ("WCD9320_CDC_CONN_RX3_B1_CTL", "0x386"), ("WCD9320_CDC_RX3_VOL_CTL_B2_CTL", "0x2c7"),
+                      ("WCD9320_CDC_RX3_B5_CTL", "0x2c4"), ("WCD9320_CDC_CONN_RX5_B1_CTL", "0x38a"),
+                      ("WCD9320_CDC_RX5_VOL_CTL_B2_CTL", "0x2d7"), ("WCD9320_CDC_RX5_B5_CTL", "0x2d4"),
+                      ("WCD9320_BUCK_VREF_1P8V", "0xe6"), ("WCD9320_NCP_FCLK_LEVEL_5", "0x05")):
+        pat = re.compile(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym), re.M)
+        found = pat.findall(ptext_all)
+        check("%s is %s" % (sym, want), found == [want], "found %s" % (found or "no definition"))
+    check("LINE_n_GAIN is 0x1cd + 4n, LINE_n_DAC_CTL 0x1cf + 4n",
+          re.search(r"^#define\s+WCD9320_A_RX_LINE_GAIN\(n\)\s+\(0x1cd \+ 4 \* \(n\)\)", ptext_all, re.M)
+          is not None and
+          re.search(r"^#define\s+WCD9320_A_RX_LINE_DAC_CTL\(n\)\s+\(0x1cf \+ 4 \* \(n\)\)", ptext_all, re.M)
+          is not None, "1cd/1d1/1d5/1d9 and 1cf/1d3/1d7/1db")
+    for sym, want in (("WCD9320_LINE_N", "4"), ("WCD9320_LINE_SETTLE_US", "3000")):
+        pat = re.compile(r"^#define\s+%s\s+(\d+)\b" % re.escape(sym), re.M)
+        check("%s is %s" % (sym, want), pat.findall(ptext_all) == [want], "pinned")
+    check("RX3/RX5 interpolator bits are 2 and 4",
+          re.search(r"^#define\s+WCD9320_RX3_INTERP_BIT\s+BIT\(2\)", ptext_all, re.M) is not None
+          and re.search(r"^#define\s+WCD9320_RX5_INTERP_BIT\s+BIT\(4\)", ptext_all, re.M) is not None,
+          "0x301 / 0x30f")
+
+    lpa, ldac, lprep = func_body("wcd9320_lo_pa"), func_body("wcd9320_lo_dac"), func_body("wcd9320_lo_prep")
+    lclsh, lrx = func_body("wcd9320_clsh_lo"), func_body("wcd9320_lo_rx")
+    for nm, bd in (("wcd9320_lo_pa", lpa), ("wcd9320_lo_dac", ldac), ("wcd9320_lo_prep", lprep),
+                   ("wcd9320_clsh_lo", lclsh), ("wcd9320_lo_rx", lrx)):
+        check("%s found in source" % nm, len(bd) > 0, "%d bytes of body" % len(bd))
+    lpa_l, ldac_l = set(lpa.splitlines()), set(ldac.splitlines())
+    cnp_w = [ln for ln in added if "WCD9320_A_RX_LINE_CNP_EN" in ln and any(c in ln for c in CALLS)]
+    check("LINE_CNP_EN is written only by the line-out PA",
+          len(cnp_w) == 2 and all(ln in lpa_l for ln in cnp_w),
+          "%d write line(s): the selected enable, the all-four disable" % len(cnp_w))
+    dac_w = [ln for ln in added if "WCD9320_A_RX_LINE_DAC_CTL(" in ln and any(c in ln for c in CALLS)]
+    check("LINE_n_DAC_CTL is written only by the line-out DAC",
+          len(dac_w) == 4 and all(ln in ldac_l for ln in dac_w),
+          "%d write line(s): switch and power, on and off" % len(dac_w))
+    check("the line-out PA refuses without its DAC",
+          0 <= lpa.find("if (!wcd->lo_dac_on || !wcd->lo_on_mask)") < lpa.find("WCD9320_A_RX_LINE_CNP_EN, wcd->lo_on_mask"),
+          "before the write")
+    check("the line-out PA sets gain bit 6 before CNP_EN",
+          0 <= lpa.find("WCD9320_LINE_GAIN_PA, WCD9320_LINE_GAIN_PA") < lpa.find("WCD9320_A_RX_LINE_CNP_EN, wcd->lo_on_mask")
+          < lpa.find("WCD9320_LINE_SETTLE_US"), "PRE_PMU, the PA bit, then 3 ms")
+    td = lpa[lpa.find("teardown:"):]
+    check("the line-out PA tears down in downstream's order",
+          0 <= td.find("WCD9320_A_RX_LINE_CNP_EN, WCD9320_LINE_ALL, 0") < td.find("wcd9320_clsh_lo(wcd, false)")
+          < td.find("WCD9320_LINE_GAIN_PA, 0"), "all PA bits, class-H LO off, gain bit 6s")
+    check("the line-out DAC refuses without prep, RX3, RX5, the prereq and free class-H",
+          "!wcd->lo_prep_on || !wcd->rx3_digital_on || !wcd->rx5_digital_on ||\n\t    !wcd->clk_prereq_on || wcd->clsh_on || wcd->clsh_lo_on" in ldac,
+          "exclusive with HPH and EAR")
+    check("the line-out DAC refuses an empty or out-of-range select",
+          "!wcd->lo_select || wcd->lo_select > WCD9320_LINE_ALL" in ldac, "before anything powers")
+    check("the line-out DAC order is downstream's",
+          0 <= ldac.find("wcd9320_rx_bias(wcd, true)") < ldac.find("wcd9320_clsh_lo(wcd, true)")
+          < ldac.find("WCD9320_LINE_DAC_SW, WCD9320_LINE_DAC_SW") < ldac.find("WCD9320_LINE_DAC_PWR,\n"),
+          "RX bias, class-H LO PRE_DAC, switch, power")
+    check("the line-out DAC drives only the selected LINEOUTs",
+          "if (!(wcd->lo_select & BIT(n)))" in ldac and "if (!(wcd->lo_on_mask & BIT(n)))" in lpa,
+          "Lineout Select, latched in lo_on_mask")
+    check("the line-out prep sets source + field with the PA bit clear, and restores",
+          "WCD9320_LINE_GAIN_PA | WCD9320_LINE_GAIN_SRC |\n\t\t\t\t\tWCD9320_LINE_GAIN_FIELD,\n\t\t\t\t\tWCD9320_LINE_GAIN_SRC | wcd->lo_gain_field" in lprep
+          and "wcd->lo_gain_base[n]" in lprep and "wcd->lo_misc_base" in lprep,
+          "the four gains booted at 00 = maximum, on a source never set")
+    check("the line-out prep selects the LIQUID differential pairs",
+          "WCD9320_CDC_CONN_MISC, WCD9320_LINE_RDAC_INV,\n\t\t\t\tWCD9320_LINE_RDAC_INV" in lprep,
+          "RDAC5 = DEM3_INV, RDAC7 = DEM5_INV")
+    check("the line outs boot at the minimum, all four selected",
+          re.search(r"wcd->lo_gain_field\s*=\s*WCD9320_LINE_GAIN_MIN\s*;", probe_body) is not None
+          and re.search(r"wcd->lo_select\s*=\s*WCD9320_LINE_ALL\s*;", probe_body) is not None,
+          "field 0x14")
+    lb = array_body("static const struct wcd9320_rmv wcd9320_clsh_lo_buck[]")
+    ln_ = array_body("static const struct wcd9320_rmv wcd9320_clsh_lo_ncp[]")
+    check("class-H LO is state_lo: buck vref 1.8 V, NCP fclk 5",
+          "WCD9320_A_BUCK_MODE_4, 0xff, WCD9320_BUCK_VREF_1P8V" in lb
+          and "WCD9320_A_BUCK_MODE_1, 0x80, 0x80" in lb
+          and "WCD9320_A_NCP_STATIC, 0x0f, WCD9320_NCP_FCLK_LEVEL_5" in ln_
+          and "WCD9320_A_NCP_EN, 0x01, 0x01" in ln_, "enable_buck_mode, set_fclk_enable_ncp")
+    check("class-H LO takes the 2.15 V branch",
+          "WCD9320_A_NCP_EN, 0x40, 0x00" in lclsh and "WCD9320_A_BUCK_MODE_5, 0x01, 0x01" in lclsh
+          and "WCD9320_A_BUCK_MODE_5, 0xfb, 0x08" in lclsh and "WCD9320_A_BUCK_MODE_1, 0x04, 0x00" in lclsh,
+          "buck_mv != 1P8 on this board")
+    check("class-H LO never touches CLSH_B1_CTL",
+          "CLSH_B1" not in lclsh and "CLSH_B1" not in lb and "CLSH_B1" not in ln_,
+          "no block, no K table, no comp_req")
+    sv = array_body("static const unsigned int wcd9320_clsh_lo_saved[5]")
+    check("class-H LO saves the five registers it changes",
+          all(r in sv for r in ("WCD9320_A_BUCK_MODE_1", "WCD9320_A_BUCK_MODE_4", "WCD9320_A_BUCK_MODE_5",
+                                "WCD9320_A_NCP_EN", "WCD9320_A_NCP_STATIC")), "the no-trace deviation")
+    tl = lclsh[lclsh.find("teardown:"):]
+    check("class-H LO restores them after the NCP and the buck are off",
+          0 <= tl.find('"LO ncp disable"') < tl.find('"LO buck disable"') < tl.find("wcd->lo_clsh_base[i]"),
+          "state_idle(disable, LO), then the restore")
+    check("class-H LO refuses while class-H is in use",
+          0 <= lclsh.find("if (wcd->clsh_on || wcd->clsh_lo_on)") < lclsh.find("wcd9320_clsh_lo_buck"),
+          "exclusive with HPH and EAR")
+    check("a restore mismatch is counted and reported",
+          "wcd->lo_restore_mismatch++" in lclsh and "lo_restore_mismatch=%u" in ptext_all, "out_state")
+    rx3 = chains.split("},")[3] if chains.count("},") >= 4 else ""
+    rx5 = chains.split("},")[4] if chains.count("},") >= 5 else ""
+    check("RX3 is row 3: SLIM RX1 in, no CHAIN, bit 2",
+          "WCD9320_CDC_CONN_RX3_B1_CTL" in rx3 and "\t  0, WCD9320_CDC_RX3_B5_CTL" in rx3
+          and "WCD9320_RX_MIX1_INP_MASK, WCD9320_RX_MIX1_INP_RX1" in rx3 and "WCD9320_RX3_INTERP_BIT" in rx3,
+          "LINEOUT1, and -LINEOUT3")
+    check("RX5 is row 4: SLIM RX2 in, no CHAIN, bit 4",
+          "WCD9320_CDC_CONN_RX5_B1_CTL" in rx5 and "\t  0, WCD9320_CDC_RX5_B5_CTL" in rx5
+          and "WCD9320_RX_MIX1_INP_MASK, WCD9320_RX_MIX1_INP_RX2" in rx5 and "WCD9320_RX5_INTERP_BIT" in rx5,
+          "LINEOUT2, and -LINEOUT4")
+    check("the RX3+RX5 stage takes both chains or neither",
+          0 <= lrx.find("wcd9320_rx_digital_path(wcd, 3, true)") < lrx.find("wcd9320_rx_digital_path(wcd, 4, true)")
+          and lrx.find("wcd9320_rx_digital_path(wcd, 4, false)") < lrx.find("wcd9320_rx_digital_path(wcd, 3, false)")
+          and lrx.count("wcd9320_rx_digital_path(wcd, 3, false)") == 2,
+          "RX5 fails -> RX3 unwound; down in reverse")
+    ovp = func_body("wcd9320_out_vol_put")
+    check("Lineout Select cannot change under a live DAC",
+          "if (wcd->lo_dac_on) {\n\t\t\tret = -EBUSY;" in ovp, "the mask is latched at DAC power-up")
+    check("Lineout Volume is bounded to the field",
+          "v > WCD9320_LINE_GAIN_MIN" in ovp and "want = WCD9320_LINE_GAIN_MIN - v;" in ovp, "0..20, 20 loudest")
+    check("the digital volume labels name their channel",
+          '"RX7 Digital Volume (ALSA)"' in ptext_all and "wcd9320_dig_vol_what[mc->reg]" in ptext_all,
+          "r187 logged RX7 as RX2")
+    check("the event's path bound includes the line outs",
+          "path > WCD9320_DP_LO" in d_ev and "&wcd->dapm_held_lo" in d_ev, "four paths")
+    check("the card declares the Lineout pin",
+          'SND_SOC_DAPM_LINE("Lineout", NULL)' in card and '{ "Lineout", NULL, "LO_OUT" }' in card
+          and 'SOC_DAPM_PIN_SWITCH("Lineout")' in card, "a manual switch, off at init (5i)")
     check("dev_attr_out_state present", "dev_attr_out_state" in e.syms, "in the artefact")
 
     if args.expect_asoc:

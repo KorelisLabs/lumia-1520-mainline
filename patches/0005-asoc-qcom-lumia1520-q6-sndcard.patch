@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-08 14:37:43.728920534 -0500
-@@ -0,0 +1,399 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-09 05:59:52.190184091 -0500
+@@ -0,0 +1,406 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -322,27 +322,34 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * switched only by hand ("Speaker Switch", "Earpiece Switch") -- no jack
 + * linkage. Choosing between outputs is UCM's job later; the codec plays one
 + * output at a time and refuses a second.
++ *
++ * r188: the four line outputs, as one "Lineout" pin on the codec's LO_OUT
++ * ("Lineout Switch"), OFF at boot like the others. Which LINEOUTs a stream
++ * drives is the codec's "Lineout Select".
 + */
 +static const struct snd_soc_dapm_widget lumia_q6_widgets[] = {
 +	SND_SOC_DAPM_HP("Headphones", NULL),
 +	SND_SOC_DAPM_SPK("Speaker", NULL),
 +	SND_SOC_DAPM_SPK("Earpiece", NULL),
++	SND_SOC_DAPM_LINE("Lineout", NULL),
 +};
 +
 +static const struct snd_soc_dapm_route lumia_q6_routes[] = {
 +	{ "Headphones", NULL, "HEADPHONE" },
 +	{ "Speaker", NULL, "SPK_OUT" },
 +	{ "Earpiece", NULL, "EAR_OUT" },
++	{ "Lineout", NULL, "LO_OUT" },
 +};
 +
 +static const struct snd_kcontrol_new lumia_q6_controls[] = {
 +	SOC_DAPM_PIN_SWITCH("Headphones"),
 +	SOC_DAPM_PIN_SWITCH("Speaker"),
 +	SOC_DAPM_PIN_SWITCH("Earpiece"),
++	SOC_DAPM_PIN_SWITCH("Lineout"),
 +};
 +
 +static const char * const lumia_q6_pins_off[] = {
-+	"Headphones", "Speaker", "Earpiece",
++	"Headphones", "Speaker", "Earpiece", "Lineout",
 +};
 +
 +static struct snd_soc_jack lumia_q6_jack;
@@ -381,7 +388,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		}
 +	}
 +	dev_info(card->dev,
-+		 "Headphones, Speaker and Earpiece pins OFF at init -- nothing on the codec powers until the jack or a pin switch turns one on\n");
++		 "Headphones, Speaker, Earpiece and Lineout pins OFF at init -- nothing on the codec powers until the jack or a pin switch turns one on\n");
 +	ret = snd_soc_dapm_sync(&card->dapm);
 +	if (ret)
 +		return ret;
@@ -472,4 +479,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc6");
++MODULE_VERSION("q6-card-rc7");

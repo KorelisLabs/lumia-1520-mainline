@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-08 14:38:02.948812840 -0500
-@@ -0,0 +1,12822 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-09 06:01:28.367799612 -0500
+@@ -0,0 +1,13381 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1980,6 +1980,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int rx7_disables;
 +	unsigned int rx7_writes;
 +	bool rx7_vol_set;		/* the -6 dB default has been applied */
++	/* r188: the RX3 and RX5 chains (line outs) */
++	bool rx3_digital_on, rx5_digital_on;
++	unsigned int rx3_enables, rx3_disables, rx3_writes;
++	unsigned int rx5_enables, rx5_disables, rx5_writes;
 +	/* r187: the speaker and the earpiece */
 +	bool spk_prep_on, spk_dac_on, spk_pa_on, spk_bias_held, spk_pwrstg_set;
 +	u8 spk_gain_base;
@@ -1990,6 +1994,18 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 ear_gain_field;		/* 0..7 (6 undefined), 7 = minimum (the boot value) */
 +	unsigned int ear_pa_enables, ear_pa_disables;
 +	bool clsh_ear;			/* class-H is in EAR mode */
++	/* r188: the line outputs */
++	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
++	u8 lo_gain_base[4];
++	u8 lo_misc_base;
++	u8 lo_gain_field;		/* 0..20, 20 = minimum (the boot value) */
++	u8 lo_select;			/* which LINEOUTs a stream drives, boot 0xf */
++	u8 lo_on_mask;			/* which LINEOUT DACs are actually up */
++	unsigned int lo_pa_enables, lo_pa_disables;
++	bool clsh_lo_on;		/* class-H in LO mode (state_lo) */
++	bool lo_clsh_saved;
++	u8 lo_clsh_base[5];		/* the five registers state_lo leaves changed */
++	unsigned int lo_restore_mismatch;
 +	bool comp1_on;
 +	unsigned int comp1_enables;
 +	unsigned int comp1_disables;
@@ -2042,6 +2058,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int dapm_held;        /* BIT(stage) for each stage DAPM powered */
 +	unsigned int dapm_held_spk;    /* r187: the speaker path's stages */
 +	unsigned int dapm_held_ear;    /* r187: the earpiece path's stages */
++	unsigned int dapm_held_lo;     /* r188: the line-out path's stages */
 +	unsigned int dapm_ups, dapm_downs, dapm_refusals, dapm_failures;
 +
 +	/* ---- the codec clock source switch (r168) ---- */
@@ -5151,6 +5168,23 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_RX7_VOL_DEFAULT		0xfa	/* -6 dB */
 +
 +/*
++ * r188: the RX3 and RX5 chains, which feed the line outputs. RX3 MIX1 takes
++ * SLIM RX1 (L) and drives LINEOUT1, and LINEOUT3 through RDAC5 "DEM3_INV";
++ * RX5 MIX1 takes SLIM RX2 (R) and drives LINEOUT2, and LINEOUT4 through RDAC7
++ * "DEM5_INV" -- downstream's LIQUID external-amp configuration. Neither has a
++ * CHAIN bit (B6 reg default 80, as RX7). docs/audio/
++ * wcd9320-r188-lineout-mapping.md sections 1 and 3.
++ */
++#define WCD9320_CDC_CONN_RX3_B1_CTL	0x386
++#define WCD9320_CDC_RX3_VOL_CTL_B2_CTL	0x2c7
++#define WCD9320_CDC_RX3_B5_CTL		0x2c4
++#define WCD9320_RX3_INTERP_BIT		BIT(2)
++#define WCD9320_CDC_CONN_RX5_B1_CTL	0x38a
++#define WCD9320_CDC_RX5_VOL_CTL_B2_CTL	0x2d7
++#define WCD9320_CDC_RX5_B5_CTL		0x2d4
++#define WCD9320_RX5_INTERP_BIT		BIT(4)
++
++/*
 + * Compander 1. Declared here rather than beside its own code, because
 + * rx1_digital_state_show() reads these registers and sits earlier in the
 + * file than the compander functions -- which must stay where they are,
@@ -5175,10 +5209,52 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * One verified write, logged the way the RX-port path already logs its own.
 + * r185: per channel -- channel 0 logs "rx1-digital", exactly as before.
 + */
-+/* the logged channel number: RX1, RX2, RX7 */
++/* the logged channel number: RX1, RX2, RX7, RX3 (r188), RX5 (r188) */
 +static unsigned int wcd9320_rx_name(unsigned int ch)
 +{
-+	return ch == 2 ? 7 : ch + 1;
++	static const u8 name[] = { 1, 2, 7, 3, 5 };
++
++	return ch < ARRAY_SIZE(name) ? name[ch] : 0;
++}
++
++/* r188: one place that maps a channel to its state and counters */
++static void wcd9320_rx_ctrs(struct wcd9320 *wcd, unsigned int ch, bool **on,
++			    unsigned int **ens, unsigned int **dis,
++			    unsigned int **writes)
++{
++	bool *o;
++	unsigned int *e, *d, *w;
++
++	switch (ch) {
++	case 1:
++		o = &wcd->rx2_digital_on; e = &wcd->rx2_enables;
++		d = &wcd->rx2_disables; w = &wcd->rx2_writes;
++		break;
++	case 2:
++		o = &wcd->rx7_digital_on; e = &wcd->rx7_enables;
++		d = &wcd->rx7_disables; w = &wcd->rx7_writes;
++		break;
++	case 3:
++		o = &wcd->rx3_digital_on; e = &wcd->rx3_enables;
++		d = &wcd->rx3_disables; w = &wcd->rx3_writes;
++		break;
++	case 4:
++		o = &wcd->rx5_digital_on; e = &wcd->rx5_enables;
++		d = &wcd->rx5_disables; w = &wcd->rx5_writes;
++		break;
++	default:
++		o = &wcd->rx1_digital_on; e = &wcd->rx1_enables;
++		d = &wcd->rx1_disables; w = &wcd->rx1_writes;
++		break;
++	}
++	if (on)
++		*on = o;
++	if (ens)
++		*ens = e;
++	if (dis)
++		*dis = d;
++	if (writes)
++		*writes = w;
 +}
 +
 +static int wcd9320_rx_write(struct wcd9320 *wcd, unsigned int ch,
@@ -5187,6 +5263,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	unsigned int got;
++	unsigned int *ctr;
 +	int ret;
 +
 +	ret = regmap_update_bits(wcd->regmap, reg, mask, want);
@@ -5195,12 +5272,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd9320_rx_name(ch), reg, ret);
 +		return ret;
 +	}
-+	if (ch == 2)
-+		wcd->rx7_writes++;
-+	else if (ch)
-+		wcd->rx2_writes++;
-+	else
-+		wcd->rx1_writes++;
++	wcd9320_rx_ctrs(wcd, ch, NULL, NULL, NULL, &ctr);
++	(*ctr)++;
 +
 +	ret = regmap_read(wcd->regmap, reg, &got);
 +	if (ret) {
@@ -5235,8 +5308,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 bit;			/* the interpolator's bit in 0x301 and 0x30f */
 +};
 +
-+/* Channel 0 RX1, 1 RX2, 2 RX7 (r187, the speaker). */
-+static const struct wcd9320_rx_chain wcd9320_rx_chains[3] = {
++/* Channel 0 RX1, 1 RX2, 2 RX7 (r187, the speaker), 3 RX3 and 4 RX5 (r188). */
++static const struct wcd9320_rx_chain wcd9320_rx_chains[5] = {
 +	{ WCD9320_CDC_CONN_RX1_B1_CTL, WCD9320_CDC_RX1_VOL_CTL_B2_CTL,
 +	  WCD9320_CDC_RX1_B6_CTL, WCD9320_CDC_RX1_B5_CTL,
 +	  WCD9320_RX_MIX1_INP_MASK, WCD9320_RX_MIX1_INP_RX1,
@@ -5249,6 +5322,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	  0, WCD9320_CDC_RX7_B5_CTL,
 +	  0xff, WCD9320_RX7_INP_RX1_RX2,
 +	  WCD9320_RX7_INTERP_BIT },
++	/* r188: RX3 <- SLIM RX1 (L), RX5 <- SLIM RX2 (R); INP1 only */
++	{ WCD9320_CDC_CONN_RX3_B1_CTL, WCD9320_CDC_RX3_VOL_CTL_B2_CTL,
++	  0, WCD9320_CDC_RX3_B5_CTL,
++	  WCD9320_RX_MIX1_INP_MASK, WCD9320_RX_MIX1_INP_RX1,
++	  WCD9320_RX3_INTERP_BIT },
++	{ WCD9320_CDC_CONN_RX5_B1_CTL, WCD9320_CDC_RX5_VOL_CTL_B2_CTL,
++	  0, WCD9320_CDC_RX5_B5_CTL,
++	  WCD9320_RX_MIX1_INP_MASK, WCD9320_RX_MIX1_INP_RX2,
++	  WCD9320_RX5_INTERP_BIT },
 +};
 +
 +
@@ -5267,14 +5349,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ch >= ARRAY_SIZE(wcd9320_rx_chains))
 +		return -EINVAL;
 +	c = &wcd9320_rx_chains[ch];
-+	on = ch == 2 ? &wcd->rx7_digital_on :
-+	     ch ? &wcd->rx2_digital_on : &wcd->rx1_digital_on;
-+	ens = ch == 2 ? &wcd->rx7_enables :
-+	      ch ? &wcd->rx2_enables : &wcd->rx1_enables;
-+	dis = ch == 2 ? &wcd->rx7_disables :
-+	      ch ? &wcd->rx2_disables : &wcd->rx1_disables;
-+	writes = ch == 2 ? &wcd->rx7_writes :
-+		 ch ? &wcd->rx2_writes : &wcd->rx1_writes;
++	wcd9320_rx_ctrs(wcd, ch, &on, &ens, &dis, &writes);
 +
 +	if (!wcd->online) {
 +		dev_err(dev, "rx%u-digital: codec is not online\n", n);
@@ -5306,8 +5381,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* 1. the input mux: RXn MIX1 INP1 <- SLIM RXn (RX7: INP1 RX1, INP2 RX2) */
 +	ret = wcd9320_rx_write(wcd, ch, c->conn, c->inp_mask, c->inp,
-+			       ch == 2 ? "MIX1 INP1 = RX1, INP2 = RX2" :
-+			       ch ? "MIX1 INP1 = RX2" : "MIX1 INP1 = RX1");
++			       c->inp == WCD9320_RX_MIX1_INP_RX1 ? "MIX1 INP1 = RX1" :
++			       c->inp == WCD9320_RX_MIX1_INP_RX2 ? "MIX1 INP1 = RX2" :
++			       "MIX1 INP1 = RX1, INP2 = RX2");
 +	if (ret)
 +		goto unwind;
 +
@@ -5324,9 +5400,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* 3. the interpolator clock */
 +	ret = wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_B1_CTL,
 +			       c->bit, c->bit,
-+			       ch == 2 ? "RX7 interpolator clock on" :
-+			       ch ? "RX2 interpolator clock on"
-+				  : "RX1 interpolator clock on");
++			       "interpolator clock on");
 +	if (ret)
 +		goto unwind;
 +
@@ -5376,9 +5450,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd9320_rx_write(wcd, ch, c->b6, WCD9320_RX1_CHAIN_BIT, 0,
 +				 ch ? "RX2 CHAIN disabled" : "RX1 CHAIN disabled");
 +	wcd9320_rx_write(wcd, ch, WCD9320_CDC_CLK_RX_B1_CTL, c->bit, 0,
-+			 ch == 2 ? "RX7 interpolator clock off" :
-+			 ch ? "RX2 interpolator clock off"
-+			    : "RX1 interpolator clock off");
++			 "interpolator clock off");
 +	wcd9320_rx_write(wcd, ch, c->conn, c->inp_mask, 0,
 +			 "MIX1 input(s) = ZERO");
 +
@@ -5515,6 +5587,27 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_EAR_GAIN_FIELD			0xe0
 +#define WCD9320_EAR_GAIN_SHIFT			5
 +#define WCD9320_EAR_SETTLE_US			5000	/* taiko_codec_enable_ear_pa */
++
++/*
++ * r188: the line outputs. n = 0..3 for LINEOUT1..4. GAIN [4:0] is inverted
++ * like HPH (0 loudest, 0x14 quietest), bit 5 the gain source (1 = register),
++ * bit 6 set around the PA (taiko_codec_enable_lineout). DAC_CTL bit 7 is the
++ * DAC, bit 6 its switch (taiko_lineout_dac_event). CNP_EN bit n is PA n.
++ */
++#define WCD9320_A_RX_LINE_CNP_EN		0x1ca
++#define WCD9320_A_RX_LINE_GAIN(n)		(0x1cd + 4 * (n))
++#define WCD9320_A_RX_LINE_DAC_CTL(n)		(0x1cf + 4 * (n))
++#define WCD9320_CDC_CONN_MISC			0x3b1
++#define WCD9320_LINE_N				4
++#define WCD9320_LINE_ALL			0x0f
++#define WCD9320_LINE_GAIN_PA			0x40
++#define WCD9320_LINE_GAIN_SRC			0x20
++#define WCD9320_LINE_GAIN_FIELD			0x1f
++#define WCD9320_LINE_GAIN_MIN			0x14	/* 20 = quietest */
++#define WCD9320_LINE_DAC_PWR			0x80
++#define WCD9320_LINE_DAC_SW			0x40
++#define WCD9320_LINE_RDAC_INV			0x06	/* RDAC5 DEM3_INV (b2), RDAC7 DEM5_INV (b1) */
++#define WCD9320_LINE_SETTLE_US			3000	/* taiko_codec_enable_lineout */
 +
 +#define WCD9320_CDC_CLK_RDAC_CLK_EN_CTL		0x30d
 +#define WCD9320_CDC_COMP1_B4_CTL		0x373
@@ -6226,6 +6319,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +#define WCD9320_BUCK_VREF_2V			0xff
 +#define WCD9320_NCP_FCLK_LEVEL_8		0x08
++#define WCD9320_BUCK_VREF_1P8V			0xe6	/* r188: class-H LO */
++#define WCD9320_NCP_FCLK_LEVEL_5		0x05	/* r188: class-H LO */
 +#define WCD9320_BUCK_SETTLE_US			50
 +#define WCD9320_NCP_SETTLE_US			50
 +
@@ -6504,6 +6599,135 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static int wcd9320_clsh_ear(struct wcd9320 *wcd, bool enable)
 +{
 +	return wcd9320_clsh_mode(wcd, enable, true);
++}
++
++/*
++ * r188: CLASS-H IN LO MODE, wcd9xxx_clsh_state_lo() on this board's 2.15 V
++ * buck (wcd9320-buck-voltage.md), and state_idle(disable, LO). Map section 2.
++ * No class-H block, no K table, no charge-pump clock, no comp_req: LO mode
++ * never touches CLSH_B1_CTL.
++ *
++ * DELIBERATE DEVIATION, NO TRACE: downstream leaves BUCK_MODE_4 at the 1.8 V
++ * vref, BUCK_MODE_5's bits, NCP_EN bit 6 clear and NCP_STATIC at fclk 5. The
++ * proven HPH path does not rewrite all of those, so the disable restores the
++ * five registers' measured pre-enable values -- after the buck and NCP are
++ * off -- and the headphones always start from the state they were proven on.
++ */
++static const unsigned int wcd9320_clsh_lo_saved[5] = {
++	WCD9320_A_BUCK_MODE_1, WCD9320_A_BUCK_MODE_4, WCD9320_A_BUCK_MODE_5,
++	WCD9320_A_NCP_EN, WCD9320_A_NCP_STATIC,
++};
++
++/* wcd9xxx_enable_buck_mode(BUCK_VREF_1P8V), then a 50 us settle. */
++static const struct wcd9320_rmv wcd9320_clsh_lo_buck[] = {
++	{ WCD9320_A_BUCK_MODE_5, 0x02, 0x03, "LO buck mode5" },
++	{ WCD9320_A_BUCK_MODE_4, 0xff, WCD9320_BUCK_VREF_1P8V, "LO buck vref 1.8V" },
++	{ WCD9320_A_BUCK_MODE_1, 0x04, 0x04, "LO buck mode1 bit2" },
++	{ WCD9320_A_BUCK_MODE_1, 0x08, 0x00, "LO buck mode1 bit3" },
++	{ WCD9320_A_BUCK_MODE_3, 0x04, 0x00, "LO buck mode3 bit2" },
++	{ WCD9320_A_BUCK_MODE_3, 0x08, 0x00, "LO buck mode3 bit3" },
++	{ WCD9320_A_BUCK_MODE_1, 0x80, 0x80, "LO buck enable" },
++};
++
++/* wcd9xxx_set_fclk_enable_ncp(NCP_FCLK_LEVEL_5), then a 50 us settle. */
++static const struct wcd9320_rmv wcd9320_clsh_lo_ncp[] = {
++	{ WCD9320_A_NCP_STATIC, 0x10, 0x00, "LO ncp static bit4" },
++	{ WCD9320_A_NCP_STATIC, 0x0f, WCD9320_NCP_FCLK_LEVEL_5, "LO ncp fclk 5" },
++	{ WCD9320_A_NCP_STATIC, 0x20, 0x20, "LO ncp static bit5" },
++	{ WCD9320_A_NCP_EN, 0x01, 0x01, "LO ncp enable" },
++};
++
++static int wcd9320_clsh_lo(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int i, v;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!enable)
++		goto teardown;
++	if (wcd->clsh_on || wcd->clsh_lo_on) {
++		dev_err(dev, "clsh-lo: class-H is already in use\n");
++		return -EBUSY;
++	}
++	for (i = 0; i < ARRAY_SIZE(wcd9320_clsh_lo_saved); i++) {
++		ret = regmap_read_bypassed(wcd->regmap,
++					   wcd9320_clsh_lo_saved[i], &v);
++		if (ret)
++			return ret;
++		wcd->lo_clsh_base[i] = v & 0xff;
++	}
++	wcd->lo_clsh_saved = true;
++	dev_info(dev, "clsh-lo: LO enable (state_lo, 2.15 V buck), saved %02x %02x %02x %02x %02x\n",
++		 wcd->lo_clsh_base[0], wcd->lo_clsh_base[1],
++		 wcd->lo_clsh_base[2], wcd->lo_clsh_base[3],
++		 wcd->lo_clsh_base[4]);
++
++	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_lo_buck,
++				 ARRAY_SIZE(wcd9320_clsh_lo_buck));
++	if (ret)
++		goto unwind;
++	usleep_range(WCD9320_BUCK_SETTLE_US, WCD9320_BUCK_SETTLE_US + 10);
++	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_lo_ncp,
++				 ARRAY_SIZE(wcd9320_clsh_lo_ncp));
++	if (ret)
++		goto unwind;
++	usleep_range(WCD9320_NCP_SETTLE_US, WCD9320_NCP_SETTLE_US + 10);
++	/* buck_mv != 1P8: the 2.15 V branch */
++	ret = wcd9320_clsh_one(wcd, WCD9320_A_NCP_EN, 0x40, 0x00, "LO ncp en bit6");
++	if (!ret)
++		ret = wcd9320_clsh_one(wcd, WCD9320_A_NCP_EN, 0x01, 0x01,
++				       "LO ncp enable (2.15 V branch)");
++	if (ret)
++		goto unwind;
++	usleep_range(WCD9320_NCP_SETTLE_US, WCD9320_NCP_SETTLE_US + 10);
++	ret = wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_5, 0x01, 0x01,
++			       "LO buck mode5 bit0");
++	if (!ret)
++		ret = wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_5, 0xfb, 0x08,
++				       "LO buck mode5 fb <- 08");
++	if (!ret)
++		ret = wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_1, 0x04, 0x00,
++				       "LO buck mode1 bit2 clear");
++	if (ret)
++		goto unwind;
++	wcd->clsh_lo_on = true;
++	wcd->clsh_enables++;
++	dev_info(dev, "clsh-lo: ENABLED\n");
++	return 0;
++
++unwind:
++	dev_err(dev, "clsh-lo: enable failed, unwinding\n");
++teardown:
++	/* state_idle(disable, LO): the charge pump, then the buck */
++	wcd9320_clsh_one(wcd, WCD9320_A_NCP_EN, 0x01, 0x00, "LO ncp disable");
++	wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_1, 0x80, 0x00, "LO buck disable");
++	/* the deviation: no trace, both already off */
++	if (wcd->lo_clsh_saved) {
++		for (i = 0; i < ARRAY_SIZE(wcd9320_clsh_lo_saved); i++) {
++			regmap_update_bits(wcd->regmap, wcd9320_clsh_lo_saved[i],
++					   0xff, wcd->lo_clsh_base[i]);
++			wcd->clsh_writes++;
++			v = 0;
++			regmap_read_bypassed(wcd->regmap,
++					     wcd9320_clsh_lo_saved[i], &v);
++			if ((v & 0xff) != wcd->lo_clsh_base[i]) {
++				wcd->lo_restore_mismatch++;
++				dev_warn(dev, "clsh-lo: 0x%03x restored %02x, chip reads %02x\n",
++					 wcd9320_clsh_lo_saved[i],
++					 wcd->lo_clsh_base[i], v & 0xff);
++			}
++		}
++		wcd->lo_clsh_saved = false;
++		dev_info(dev, "clsh-lo: five registers restored to their pre-enable values\n");
++	}
++	if (wcd->clsh_lo_on) {
++		wcd->clsh_lo_on = false;
++		wcd->clsh_disables++;
++		dev_info(dev, "clsh-lo: DISABLED\n");
++	}
++	return enable ? (ret ? ret : -EIO) : 0;
 +}
 +
 +/*
@@ -9922,6 +10146,196 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return on ? -EIO : 0;
 +}
 +
++/* ------------------------------------------------- r188: the line outputs -- */
++
++/*
++ * THE LINE OUTPUTS, all four as one output (LO_OUT) in downstream's LIQUID
++ * configuration: L on LINEOUT1 and -L on LINEOUT3, R on LINEOUT2 and -R on
++ * LINEOUT4. docs/audio/wcd9320-r188-lineout-mapping.md section 3. Prep, DAC,
++ * PA, each best-effort on the way down, each refusing what it does not own.
++ *
++ * The four gains boot at 00 -- the MAXIMUM, on a gain source this port never
++ * set (taiko_codec_reg_init_val's bit 5). The prep sets bit 5 and the field
++ * before anything powers, and restores the measured baseline after.
++ */
++static int wcd9320_lo_prep(struct wcd9320 *wcd, bool on)
++{
++	unsigned int cur, n;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!on)
++		goto teardown;
++	if (wcd->lo_prep_on)
++		return -EBUSY;
++	if (wcd->lo_gain_field > WCD9320_LINE_GAIN_MIN)
++		return -EINVAL;
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_GAIN(n),
++					   &cur);
++		if (ret)
++			return ret;
++		wcd->lo_gain_base[n] = cur & 0xff;
++	}
++	ret = regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CONN_MISC, &cur);
++	if (ret)
++		return ret;
++	wcd->lo_misc_base = cur & 0xff;
++	wcd->lo_prep_on = true;
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_GAIN(n),
++					WCD9320_LINE_GAIN_PA | WCD9320_LINE_GAIN_SRC |
++					WCD9320_LINE_GAIN_FIELD,
++					WCD9320_LINE_GAIN_SRC | wcd->lo_gain_field,
++					"LINEOUT gain: register source, the set field, PA bit clear");
++		if (ret)
++			goto teardown;
++	}
++	ret = wcd9320_c2b_write(wcd, WCD9320_CDC_CONN_MISC, WCD9320_LINE_RDAC_INV,
++				WCD9320_LINE_RDAC_INV,
++				"RDAC5 = DEM3_INV, RDAC7 = DEM5_INV (LO3 = -LO1, LO4 = -LO2)");
++	if (ret)
++		goto teardown;
++	return 0;
++
++teardown:
++	if (!wcd->lo_prep_on)
++		return 0;
++	for (n = 0; n < WCD9320_LINE_N; n++)
++		wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_GAIN(n), 0xff,
++				  wcd->lo_gain_base[n],
++				  "LINEOUT gain restored to its measured baseline");
++	wcd9320_c2b_write(wcd, WCD9320_CDC_CONN_MISC, WCD9320_LINE_RDAC_INV,
++			  wcd->lo_misc_base, "RDAC5/RDAC7 restored to their baseline");
++	wcd->lo_prep_on = false;
++	return on ? (ret ? ret : -EIO) : 0;
++}
++
++static int wcd9320_lo_dac(struct wcd9320 *wcd, bool on)
++{
++	struct device *dev = &wcd->sdev->dev;
++	unsigned int n;
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!on)
++		goto teardown;
++	if (wcd->lo_dac_on)
++		return -EBUSY;
++	if (!wcd->lo_prep_on || !wcd->rx3_digital_on || !wcd->rx5_digital_on ||
++	    !wcd->clk_prereq_on || wcd->clsh_on || wcd->clsh_lo_on) {
++		dev_err(dev, "lo: the DAC needs prep, RX3, RX5 and the prereq, and class-H free\n");
++		return -EAGAIN;
++	}
++	if (!wcd->lo_select || wcd->lo_select > WCD9320_LINE_ALL) {
++		dev_err(dev, "lo: Lineout Select is %x -- nothing to drive\n",
++			wcd->lo_select);
++		return -EINVAL;
++	}
++	/* every LINEOUTn DAC <- RX_BIAS */
++	ret = wcd9320_rx_bias(wcd, true);
++	if (ret)
++		goto teardown;
++	wcd->lo_bias_held = true;
++	/* taiko_lineout_dac_event PRE_PMU: class-H LO PRE_DAC, then bit 6 */
++	ret = wcd9320_clsh_lo(wcd, true);
++	if (ret)
++		goto teardown;
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		if (!(wcd->lo_select & BIT(n)))
++			continue;
++		wcd->lo_on_mask |= BIT(n);
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_DAC_CTL(n),
++					WCD9320_LINE_DAC_SW, WCD9320_LINE_DAC_SW,
++					"LINEOUT DAC switch (bit 6)");
++		if (!ret)
++			ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_DAC_CTL(n),
++						WCD9320_LINE_DAC_PWR,
++						WCD9320_LINE_DAC_PWR,
++						"LINEOUT DAC power (bit 7)");
++		if (ret)
++			goto teardown;
++	}
++	wcd->lo_dac_on = true;
++	dev_info(dev, "lo: DACs up, mask %x (RX bias held, class-H LO)\n",
++		 wcd->lo_on_mask);
++	return 0;
++
++teardown:
++	/* every DAC, whatever the mask says: bit 7, then bit 6 */
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_DAC_CTL(n),
++				  WCD9320_LINE_DAC_PWR, 0, "LINEOUT DAC power off");
++		wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_DAC_CTL(n),
++				  WCD9320_LINE_DAC_SW, 0, "LINEOUT DAC switch off");
++	}
++	if (wcd->clsh_lo_on || wcd->lo_clsh_saved)
++		wcd9320_clsh_lo(wcd, false);
++	if (wcd->lo_bias_held) {
++		wcd9320_rx_bias(wcd, false);
++		wcd->lo_bias_held = false;
++	}
++	wcd->lo_on_mask = 0;
++	wcd->lo_dac_on = false;
++	return on ? (ret ? ret : -EIO) : 0;
++}
++
++static int wcd9320_lo_pa(struct wcd9320 *wcd, bool on)
++{
++	unsigned int n, en = 0;
++	int ret = 0;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (!on)
++		goto teardown;
++	if (wcd->lo_pa_on)
++		return -EBUSY;
++	if (!wcd->lo_dac_on || !wcd->lo_on_mask) {
++		dev_err(&wcd->sdev->dev, "lo: the PA needs the DAC first\n");
++		return -EAGAIN;
++	}
++	/* taiko_codec_enable_lineout PRE_PMU: gain bit 6, then the PA bit */
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		if (!(wcd->lo_on_mask & BIT(n)))
++			continue;
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_GAIN(n),
++					WCD9320_LINE_GAIN_PA, WCD9320_LINE_GAIN_PA,
++					"LINEOUT gain bit 6 (PA PRE_PMU)");
++		if (ret)
++			goto teardown;
++	}
++	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_CNP_EN, wcd->lo_on_mask,
++				wcd->lo_on_mask, "LINEOUT PA enable (CNP_EN)");
++	if (ret)
++		goto teardown;
++	usleep_range(WCD9320_LINE_SETTLE_US, WCD9320_LINE_SETTLE_US + 100);
++	wcd->lo_pa_on = true;
++	wcd->lo_pa_enables++;
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_CNP_EN, &en);
++	dev_info(&wcd->sdev->dev, "lo: PA ENABLED, 0x1ca = %02x, mask %x, gain field %u\n",
++		 en & 0xff, wcd->lo_on_mask, wcd->lo_gain_field);
++	return 0;
++
++teardown:
++	/* POST_PMD in downstream's order: the PA bits, class-H, the gain bit 6s */
++	wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_CNP_EN, WCD9320_LINE_ALL, 0,
++			  "LINEOUT PA disable (all four)");
++	if (wcd->clsh_lo_on || wcd->lo_clsh_saved)
++		wcd9320_clsh_lo(wcd, false);
++	for (n = 0; n < WCD9320_LINE_N; n++)
++		wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_GAIN(n),
++				  WCD9320_LINE_GAIN_PA, 0,
++				  "LINEOUT gain bit 6 clear (PA POST_PMD)");
++	if (wcd->lo_pa_on) {
++		wcd->lo_pa_on = false;
++		wcd->lo_pa_disables++;
++	}
++	return on ? (ret ? ret : -EIO) : 0;
++}
++
 +/* Everything the r187 gates read, from the CHIP. */
 +static ssize_t out_state_show(struct device *dev,
 +			      struct device_attribute *attr, char *buf)
@@ -9929,9 +10343,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct wcd9320 *wcd = dev_get_drvdata(dev);
 +	unsigned int en = 0, gain = 0, pwr = 0, ear = 0, eg = 0, mux = 0;
 +	unsigned int vol = 0, clk = 0, b1 = 0, st = 0;
++	unsigned int cnp = 0, lg[4] = { 0 }, ld[4] = { 0 }, misc = 0, bk[5] = { 0 };
++	unsigned int n;
++	int len;
 +
 +	if (wcd->is_ifd)
 +		return sysfs_emit(buf, "interface function: not applicable\n");
++	/* r188: the line outputs, and the five registers class-H LO restores */
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_CNP_EN, &cnp);
++	for (n = 0; n < WCD9320_LINE_N; n++) {
++		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_GAIN(n), &lg[n]);
++		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_DAC_CTL(n), &ld[n]);
++	}
++	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CONN_MISC, &misc);
++	for (n = 0; n < ARRAY_SIZE(wcd9320_clsh_lo_saved); n++)
++		regmap_read_bypassed(wcd->regmap, wcd9320_clsh_lo_saved[n], &bk[n]);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_SPKR_DRV_EN, &en);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_SPKR_DRV_GAIN, &gain);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_SPKR_DRV_DBG_PWRSTG, &pwr);
@@ -9942,7 +10368,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RX_B1_CTL, &clk);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_INTR_STATUS0 + 3, &st);
-+	return sysfs_emit(buf,
++	len = sysfs_emit(buf,
 +			  "spk_prep=%u spk_dac=%u spk_pa=%u spk_enables=%u spk_disables=%u spk_field=%u\n"
 +			  "ear_prep=%u ear_dac=%u ear_pa=%u ear_enables=%u ear_disables=%u ear_field=%u clsh_ear=%u\n"
 +			  "rx7_on=%u rx7_enables=%u rx7_disables=%u\n"
@@ -9957,6 +10383,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			  wcd->rx7_digital_on, wcd->rx7_enables, wcd->rx7_disables,
 +			  en & 0xff, gain & 0xff, pwr & 0xff, ear & 0xff, eg & 0xff,
 +			  mux & 0xff, vol & 0xff, clk & 0xff, b1 & 0xff, st & 0xff);
++	len += sysfs_emit_at(buf, len,
++			     "lo_prep=%u lo_dac=%u lo_pa=%u lo_enables=%u lo_disables=%u lo_field=%u lo_select=%x lo_mask=%x clsh_lo=%u rx3_on=%u rx5_on=%u lo_restore_mismatch=%u\n"
++			     "locnp_0x1ca=%02x logain_0x1cd=%02x logain_0x1d1=%02x logain_0x1d5=%02x logain_0x1d9=%02x lodac_0x1cf=%02x lodac_0x1d3=%02x lodac_0x1d7=%02x lodac_0x1db=%02x misc_0x3b1=%02x\n"
++			     "buck1_0x181=%02x buck4_0x184=%02x buck5_0x185=%02x ncpen_0x192=%02x ncpst_0x194=%02x\n",
++			     wcd->lo_prep_on, wcd->lo_dac_on, wcd->lo_pa_on,
++			     wcd->lo_pa_enables, wcd->lo_pa_disables,
++			     wcd->lo_gain_field, wcd->lo_select, wcd->lo_on_mask,
++			     wcd->clsh_lo_on, wcd->rx3_digital_on,
++			     wcd->rx5_digital_on, wcd->lo_restore_mismatch,
++			     cnp & 0xff, lg[0] & 0xff, lg[1] & 0xff, lg[2] & 0xff,
++			     lg[3] & 0xff, ld[0] & 0xff, ld[1] & 0xff, ld[2] & 0xff,
++			     ld[3] & 0xff, misc & 0xff,
++			     bk[0] & 0xff, bk[1] & 0xff, bk[2] & 0xff, bk[3] & 0xff,
++			     bk[4] & 0xff);
++	return len;
 +}
 +static DEVICE_ATTR_RO(out_state);
 +
@@ -9997,17 +10438,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		"c3a: C3 ABORT: full mapped teardown, attempt %u -- every step is attempted regardless of failures\n",
 +		wcd->c3_aborts);
 +
-+	/* r187: every PA first -- the speaker's and the earpiece's too */
++	/* r187/r188: every PA first -- the speaker's, earpiece's, line outs' */
 +	wcd9320_spk_pa(wcd, false);
 +	wcd9320_ear_pa(wcd, false);
++	wcd9320_lo_pa(wcd, false);
 +	wcd9320_hphl_pa_path(wcd, false);
 +	wcd9320_hphl_dac_path(wcd, false, true, WCD9320_GAIN_SRC_REGISTER);
 +	wcd9320_spk_dac(wcd, false);
 +	wcd9320_ear_dac(wcd, false);
++	wcd9320_lo_dac(wcd, false);
 +	wcd9320_cdc_clk_prereq(wcd, false);
 +	wcd9320_pa_prep(wcd, false);
 +	wcd9320_spk_prep(wcd, false);
 +	wcd9320_ear_prep(wcd, false);
++	wcd9320_lo_prep(wcd, false);
 +
 +	wcd9320_pa_irq_sample(wcd, "after the C3 abort");
 +	dev_err(dev,
@@ -11276,7 +11720,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	WCD9320_DO_N,
 +};
 +
-+enum { WCD9320_DP_HPH, WCD9320_DP_SPK, WCD9320_DP_EAR };
++enum { WCD9320_DP_HPH, WCD9320_DP_SPK, WCD9320_DP_EAR, WCD9320_DP_LO };
 +#define WCD9320_DAPM_SHIFT(path, stage)	(((path) << 4) | (stage))
 +
 +static const char * const wcd9320_dapm_stage_name[WCD9320_DS_N] = {
@@ -11290,9 +11734,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	[WCD9320_DS_PAL]	= "hphl pa",
 +	[WCD9320_DS_PAR]	= "hphr pa",
 +};
-+static const char * const wcd9320_dapm_out_name[2][WCD9320_DO_N] = {
++static const char * const wcd9320_dapm_out_name[3][WCD9320_DO_N] = {
 +	{ "spk mclk", "spk prep", "spk prereq", "rx7", "spk dac", "spk pa" },
 +	{ "ear mclk", "ear prep", "ear prereq", "ear rx1", "ear dac", "ear pa" },
++	{ "lo mclk", "lo prep", "lo prereq", "rx3+rx5", "lo dac", "lo pa" },
 +};
 +
 +/* What wcd9320_c3_abort() takes down: everything but MCLK and the RX chains. */
@@ -11314,7 +11759,29 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	       !wcd->rx_bias_refs &&
 +	       !wcd->rx7_digital_on && !wcd->spk_prep_on && !wcd->spk_dac_on &&
 +	       !wcd->spk_pa_on && !wcd->ear_prep_on && !wcd->ear_dac_on &&
-+	       !wcd->ear_pa_on;
++	       !wcd->ear_pa_on &&
++	       !wcd->rx3_digital_on && !wcd->rx5_digital_on &&
++	       !wcd->lo_prep_on && !wcd->lo_dac_on && !wcd->lo_pa_on &&
++	       !wcd->clsh_lo_on;
++}
++
++/* r188: the RX3+RX5 stage -- both chains or neither */
++static int wcd9320_lo_rx(struct wcd9320 *wcd, bool on)
++{
++	int ret;
++
++	if (!on) {
++		wcd9320_rx_digital_path(wcd, 4, false);
++		wcd9320_rx_digital_path(wcd, 3, false);
++		return 0;
++	}
++	ret = wcd9320_rx_digital_path(wcd, 3, true);
++	if (ret)
++		return ret;
++	ret = wcd9320_rx_digital_path(wcd, 4, true);
++	if (ret)
++		wcd9320_rx_digital_path(wcd, 3, false);
++	return ret;
 +}
 +
 +/* The proven functions, and nothing else. Under c3_lock. */
@@ -11335,6 +11802,23 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			return wcd9320_spk_dac(wcd, on);
 +		case WCD9320_DO_PA:
 +			return wcd9320_spk_pa(wcd, on);
++		}
++		return -EINVAL;
++	}
++	if (path == WCD9320_DP_LO) {
++		switch (stage) {
++		case WCD9320_DO_MCLK:
++			return on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd);
++		case WCD9320_DO_PREP:
++			return wcd9320_lo_prep(wcd, on);
++		case WCD9320_DO_PREREQ:
++			return wcd9320_cdc_clk_prereq(wcd, on);
++		case WCD9320_DO_RX:
++			return wcd9320_lo_rx(wcd, on);
++		case WCD9320_DO_DAC:
++			return wcd9320_lo_dac(wcd, on);
++		case WCD9320_DO_PA:
++			return wcd9320_lo_pa(wcd, on);
 +		}
 +		return -EINVAL;
 +	}
@@ -11390,13 +11874,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct device *dev;
 +	int ret = 0;
 +
-+	if (!wcd || wcd->is_ifd || path > WCD9320_DP_EAR)
++	if (!wcd || wcd->is_ifd || path > WCD9320_DP_LO)
 +		return -ENODEV;
 +	n = path == WCD9320_DP_HPH ? WCD9320_DS_N : WCD9320_DO_N;
 +	if (stage >= n)
 +		return -ENODEV;
 +	held = path == WCD9320_DP_SPK ? &wcd->dapm_held_spk :
-+	       path == WCD9320_DP_EAR ? &wcd->dapm_held_ear : &wcd->dapm_held;
++	       path == WCD9320_DP_EAR ? &wcd->dapm_held_ear :
++	       path == WCD9320_DP_LO ? &wcd->dapm_held_lo : &wcd->dapm_held;
 +	name = path == WCD9320_DP_HPH ? wcd9320_dapm_stage_name[stage] :
 +	       wcd9320_dapm_out_name[path - 1][stage];
 +	dev = &wcd->sdev->dev;
@@ -11434,6 +11919,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->dapm_held &= ~WCD9320_DS_ABORTED;
 +			wcd->dapm_held_spk &= ~WCD9320_DO_ABORTED;
 +			wcd->dapm_held_ear &= ~WCD9320_DO_ABORTED;
++			wcd->dapm_held_lo &= ~WCD9320_DO_ABORTED;
 +			goto out;
 +		}
 +		*held |= BIT(stage);
@@ -11456,6 +11942,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->dapm_held &= ~WCD9320_DS_ABORTED;
 +			wcd->dapm_held_spk &= ~WCD9320_DO_ABORTED;
 +			wcd->dapm_held_ear &= ~WCD9320_DO_ABORTED;
++			wcd->dapm_held_lo &= ~WCD9320_DO_ABORTED;
 +		} else {
 +			dev_info(dev, "dapm: %s down, path holds %03x\n",
 +				 name, *held);
@@ -11522,6 +12009,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	WCD9320_DAPM_STAGE("EAR PA", WCD9320_DP_EAR, WCD9320_DO_PA),
 +	SND_SOC_DAPM_PGA("EAR", SND_SOC_NOPM, 0, 0, NULL, 0),
 +	SND_SOC_DAPM_OUTPUT("EAR_OUT"),
++	/* r188: the four line outputs, as one output */
++	WCD9320_DAPM_STAGE("LO MCLK", WCD9320_DP_LO, WCD9320_DO_MCLK),
++	WCD9320_DAPM_STAGE("LO PREP", WCD9320_DP_LO, WCD9320_DO_PREP),
++	WCD9320_DAPM_STAGE("LO PREREQ", WCD9320_DP_LO, WCD9320_DO_PREREQ),
++	WCD9320_DAPM_STAGE("RX3+RX5 CHAIN", WCD9320_DP_LO, WCD9320_DO_RX),
++	WCD9320_DAPM_STAGE("LO DAC", WCD9320_DP_LO, WCD9320_DO_DAC),
++	WCD9320_DAPM_STAGE("LO PA", WCD9320_DP_LO, WCD9320_DO_PA),
++	SND_SOC_DAPM_PGA("LO", SND_SOC_NOPM, 0, 0, NULL, 0),
++	SND_SOC_DAPM_OUTPUT("LO_OUT"),
 +};
 +
 +static const struct snd_soc_dapm_route wcd9320_dapm_routes[] = {
@@ -11552,6 +12048,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ "EAR", NULL, "EAR RX1" },
 +	{ "EAR", NULL, "EAR DAC" },
 +	{ "EAR", NULL, "EAR PA" },
++	{ "LO", NULL, "AIF1 PB" },
++	{ "LO_OUT", NULL, "LO" },
++	{ "LO", NULL, "LO MCLK" },
++	{ "LO", NULL, "LO PREP" },
++	{ "LO", NULL, "LO PREREQ" },
++	{ "LO", NULL, "RX3+RX5 CHAIN" },
++	{ "LO", NULL, "LO DAC" },
++	{ "LO", NULL, "LO PA" },
 +};
 +
 +static ssize_t dapm_state_show(struct device *dev,
@@ -11564,11 +12068,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -ENODEV;
 +	mutex_lock(&wcd->c3_lock);
 +	n = sysfs_emit(buf,
-+		       "held=%03x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u pa_on=%d pa_r_on=%d spk_held=%02x ear_held=%02x spk_pa=%d ear_pa=%d\n",
++		       "held=%03x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u pa_on=%d pa_r_on=%d spk_held=%02x ear_held=%02x spk_pa=%d ear_pa=%d lo_held=%02x lo_pa=%d\n",
 +		       wcd->dapm_held, wcd->dapm_ups, wcd->dapm_downs,
 +		       wcd->dapm_refusals, wcd->dapm_failures, wcd->mclk_users,
 +		       wcd->hphl_pa_on, wcd->hphr_pa_on, wcd->dapm_held_spk,
-+		       wcd->dapm_held_ear, wcd->spk_pa_on, wcd->ear_pa_on);
++		       wcd->dapm_held_ear, wcd->spk_pa_on, wcd->ear_pa_on,
++		       wcd->dapm_held_lo, wcd->lo_pa_on);
 +	mutex_unlock(&wcd->c3_lock);
 +	return n;
 +}
@@ -11594,9 +12099,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +static const DECLARE_TLV_DB_SCALE(wcd9320_digital_tlv, -8400, 100, 0);
 +
-+static const unsigned int wcd9320_dig_vol_reg[3] = {
++static const unsigned int wcd9320_dig_vol_reg[5] = {
 +	WCD9320_CDC_RX1_VOL_CTL_B2_CTL, WCD9320_CDC_RX2_VOL_CTL_B2_CTL,
 +	WCD9320_CDC_RX7_VOL_CTL_B2_CTL,
++	WCD9320_CDC_RX3_VOL_CTL_B2_CTL, WCD9320_CDC_RX5_VOL_CTL_B2_CTL,	/* r188 */
++};
++/* r188: the write's label names the channel (RX7 used to log "RX2") */
++static const char * const wcd9320_dig_vol_what[5] = {
++	"RX1 Digital Volume (ALSA)", "RX2 Digital Volume (ALSA)",
++	"RX7 Digital Volume (ALSA)", "RX3 Digital Volume (ALSA)",
++	"RX5 Digital Volume (ALSA)",
 +};
 +
 +static struct wcd9320 *wcd9320_kc_wcd(struct snd_kcontrol *kc)
@@ -11689,8 +12201,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	ret = regmap_read(wcd->regmap, wcd9320_dig_vol_reg[mc->reg], &cur);
 +	if (!ret && (cur & 0xff) != want)
 +		ret = wcd9320_c2b_write(wcd, wcd9320_dig_vol_reg[mc->reg], 0xff,
-+					want, mc->reg ? "RX2 Digital Volume (ALSA)"
-+						      : "RX1 Digital Volume (ALSA)") ?: 1;
++					want, wcd9320_dig_vol_what[mc->reg]) ?: 1;
 +	mutex_unlock(&wcd->c3_lock);
 +	return ret;
 +}
@@ -11709,7 +12220,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int i, v = 0;
 +
 +	mutex_lock(&wcd->c3_lock);
-+	if (mc->reg == 0) {
++	if (mc->reg == 2) {
++		v = WCD9320_LINE_GAIN_MIN - wcd->lo_gain_field;
++	} else if (mc->reg == 3) {
++		v = wcd->lo_select;
++	} else if (mc->reg == 0) {
 +		v = WCD9320_SPKR_GAIN_STEPS - wcd->spk_gain_field;
 +	} else {
 +		for (i = 0; i < ARRAY_SIZE(wcd9320_ear_gain_steps); i++)
@@ -11728,9 +12243,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
 +	long v = uc->value.integer.value[0];
 +	u8 want;
++	unsigned int n;
 +	int ret = 0;
 +
-+	if (mc->reg == 0) {
++	/* r188: Lineout Volume (2) and Lineout Select (3) */
++	if (mc->reg == 2) {
++		if (v < 0 || v > WCD9320_LINE_GAIN_MIN)
++			return -EINVAL;
++		want = WCD9320_LINE_GAIN_MIN - v;
++	} else if (mc->reg == 3) {
++		if (v < 0 || v > WCD9320_LINE_ALL)
++			return -EINVAL;
++		want = v;
++	} else if (mc->reg == 0) {
 +		if (v < 0 || v > WCD9320_SPKR_GAIN_STEPS)
 +			return -EINVAL;
 +		want = WCD9320_SPKR_GAIN_STEPS - v;
@@ -11741,7 +12266,27 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	mutex_lock(&wcd->c3_lock);
-+	if (mc->reg == 0) {
++	if (mc->reg == 3) {
++		if (wcd->lo_select == want)
++			goto out;
++		if (wcd->lo_dac_on) {
++			ret = -EBUSY;	/* the mask is read at DAC power-up */
++			goto out;
++		}
++		wcd->lo_select = want;
++		ret = 1;
++	} else if (mc->reg == 2) {
++		if (wcd->lo_gain_field == want)
++			goto out;
++		for (n = 0; n < WCD9320_LINE_N && wcd->lo_prep_on && !ret; n++)
++			ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_LINE_GAIN(n),
++						WCD9320_LINE_GAIN_FIELD, want,
++						"Lineout Volume (ALSA, live)");
++		if (!ret) {
++			wcd->lo_gain_field = want;
++			ret = 1;
++		}
++	} else if (mc->reg == 0) {
 +		if (wcd->spk_gain_field == want)
 +			goto out;
 +		if (wcd->spk_prep_on)
@@ -11789,6 +12334,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	SOC_SINGLE_EXT("Speaker Volume", 0, 0, WCD9320_SPKR_GAIN_STEPS, 0,
 +		       wcd9320_out_vol_get, wcd9320_out_vol_put),
 +	SOC_SINGLE_EXT("Earpiece Volume", 1, 0, 6, 0,
++		       wcd9320_out_vol_get, wcd9320_out_vol_put),
++	/* r188 */
++	SOC_SINGLE_EXT_TLV("RX3 Digital Volume", 3, 0, WCD9320_DIG_VOL_STEPS, 0,
++			   wcd9320_dig_vol_get, wcd9320_dig_vol_put,
++			   wcd9320_digital_tlv),
++	SOC_SINGLE_EXT_TLV("RX5 Digital Volume", 4, 0, WCD9320_DIG_VOL_STEPS, 0,
++			   wcd9320_dig_vol_get, wcd9320_dig_vol_put,
++			   wcd9320_digital_tlv),
++	SOC_SINGLE_EXT("Lineout Volume", 2, 0, WCD9320_LINE_GAIN_MIN, 0,
++		       wcd9320_out_vol_get, wcd9320_out_vol_put),
++	SOC_SINGLE_EXT("Lineout Select", 3, 0, WCD9320_LINE_ALL, 0,
 +		       wcd9320_out_vol_get, wcd9320_out_vol_put),
 +};
 +
@@ -12712,6 +13268,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* r187: the speaker and earpiece at their minimum, too */
 +	wcd->spk_gain_field = WCD9320_SPKR_GAIN_STEPS;
 +	wcd->ear_gain_field = wcd9320_ear_gain_steps[0];
++	/* r188: the line outs at their minimum, all four selected */
++	wcd->lo_gain_field = WCD9320_LINE_GAIN_MIN;
++	wcd->lo_select = WCD9320_LINE_ALL;
 +	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
 +	dev_set_drvdata(dev, wcd);
 +
@@ -13167,7 +13726,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("outputs-rc1");
++MODULE_VERSION("lineout-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

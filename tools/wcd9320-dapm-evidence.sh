@@ -21,7 +21,8 @@
 # reason this gate did not test.
 #
 # r187: every output pin OFF -- headphones, speaker, earpiece -- and all three
-# graphs must see the stream and power nothing.
+# graphs must see the stream and power nothing. r188: the line outs too, four
+# graphs.
 #
 # Usage:  EXPECT_VERSION=outputs-rc1 sudo -E sh wcd9320-dapm-evidence.sh
 # Exit:   0 pass, 1 checks failed, 2 invalid setup.
@@ -38,7 +39,7 @@ OUTDIR="${OUTDIR:-/var/log}"
 CTLDEV="${CTLDEV:-/dev/snd/controlC0}"
 MIXER="${MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 DBFS="${DBFS:--40}"
-WIDGETS="MCLK|CLASS_H PREP|CDC PREREQ|RX1 CHAIN|RX2 CHAIN|HPHL DAC|HPHR DAC|HPHL PA|HPHR PA|HPH|HEADPHONE|AIF1 PB|SPK MCLK|SPK PREP|SPK PREREQ|RX7 CHAIN|SPK DAC|SPK PA|SPK|SPK_OUT|EAR MCLK|EAR PREP|EAR PREREQ|EAR RX1|EAR DAC|EAR PA|EAR|EAR_OUT"
+WIDGETS="MCLK|CLASS_H PREP|CDC PREREQ|RX1 CHAIN|RX2 CHAIN|HPHL DAC|HPHR DAC|HPHL PA|HPHR PA|HPH|HEADPHONE|AIF1 PB|SPK MCLK|SPK PREP|SPK PREREQ|RX7 CHAIN|SPK DAC|SPK PA|SPK|SPK_OUT|EAR MCLK|EAR PREP|EAR PREREQ|EAR RX1|EAR DAC|EAR PA|EAR|EAR_OUT|LO MCLK|LO PREP|LO PREREQ|RX3+RX5 CHAIN|LO DAC|LO PA|LO|LO_OUT"
 
 TONE=""
 for c in "${PCM_TONE:-}" "$DIR/pcm-tone" /tmp/pcm-tone; do
@@ -86,10 +87,10 @@ pin() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"
 JACK0=$(cat "$PGD/jack_detect" 2>/dev/null)
 "$SETCTL" -D "$CTLDEV" --set "$DAPM_PIN" 0 >/dev/null 2>&1
 # r187: the speaker and earpiece pins too -- every output OFF
-for _po in "Speaker Switch" "Earpiece Switch"; do
+for _po in "Speaker Switch" "Earpiece Switch" "Lineout Switch"; do
 	"$SETCTL" -D "$CTLDEV" --set "$_po" 0 >/dev/null 2>&1
 done
-PINS_OTHER() { printf '%s %s' "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Speaker Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Earpiece Switch" 2>/dev/null)")"; }
+PINS_OTHER() { printf '%s %s %s' "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Speaker Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Earpiece Switch" 2>/dev/null)")" "$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Lineout Switch" 2>/dev/null)")"; }
 CARDV=$(cat "$DAPM_CARD_VERSION_PATH" 2>/dev/null)
 _cok=$(dapm_card_ok "$CARDV" "$(pin)")
 [ "$_cok" = "OK" ] || { say "INVALID SETUP: ${_cok#REFUSE:}. Nothing was played."; exit 2; }
@@ -162,7 +163,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	check "pin OFF before" "$PIN0" "0"
 	check "pin OFF during" "$PIN1" "0"
 	check "pin OFF after" "$PIN2" "0"
-	check "speaker and earpiece pins OFF during" "$PO1" "0 0"
+	check "speaker, earpiece and line-out pins OFF during" "$PO1" "0 0 0"
 	check "gain field at the minimum" "$G0" "14"
 	check "HPHR gain field at the minimum" "$GR0" "14"
 	check "DAPM holds nothing before" "$(dapm_held_is "$D0" "$DAPM_HELD_NONE")" "OK"
@@ -183,7 +184,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 		"in=$_in -- the stream never reached the codec graph" "in=$_in"
 	check "HPH sees no sink (out 0)" "$(printf '%s' "$_hp" | cut -d/ -f3)" "0"
 	# r187: the speaker and earpiece graphs reach the stream too, and stay off
-	for _g in SPK EAR; do
+	for _g in SPK EAR LO; do
 		_gw=$(wfield "$W1" "$_g")
 		_gi=$(printf '%s' "$_gw" | cut -d/ -f2)
 		check_cond "$_g sees the active DAI (in >= 1)" \
@@ -193,12 +194,13 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	done
 	for _w in MCLK CLASS_H_PREP CDC_PREREQ RX1_CHAIN RX2_CHAIN HPHL_DAC HPHR_DAC HPHL_PA HPHR_PA \
 		  SPK_MCLK SPK_PREP SPK_PREREQ RX7_CHAIN SPK_DAC SPK_PA SPK \
-		  EAR_MCLK EAR_PREP EAR_PREREQ EAR_RX1 EAR_DAC EAR_PA EAR; do
+		  EAR_MCLK EAR_PREP EAR_PREREQ EAR_RX1 EAR_DAC EAR_PA EAR \
+		  LO_MCLK LO_PREP LO_PREREQ RX3+RX5_CHAIN LO_DAC LO_PA LO; do
 		check "$_w off during" "$(wfield "$W1" "$_w" | cut -d/ -f1)" "Off"
 	done
 	check "DAPM holds nothing during" "$(dapm_held_is "$D1" "$DAPM_HELD_NONE")" "OK"
-	check "speaker and earpiece paths hold nothing during" \
-	      "$(dapm_kv "$D1" spk_held) $(dapm_kv "$D1" ear_held)" "00 00"
+	check "speaker, earpiece and line-out paths hold nothing during" \
+	      "$(dapm_kv "$D1" spk_held) $(dapm_kv "$D1" ear_held) $(dapm_kv "$D1" lo_held)" "00 00 00"
 	check "PA off during (0x1ab)" "$(rv "$PA1" pa_0x1ab)" "80"
 
 	say ""
