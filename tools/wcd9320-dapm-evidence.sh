@@ -65,18 +65,45 @@ PDIR=$(dirname "$(find /sys/kernel/debug/asoc -maxdepth 3 -path '*/dapm/Headphon
 [ -d "$WDIR" ] && [ -d "$PDIR" ] || {
 	say "INVALID SETUP: no DAPM debugfs (codec '$WDIR', card '$PDIR') -- is debugfs mounted?"; exit 2; }
 
-widgets() {	# one "name=power/in/out" per codec widget, then the pin
+# r188: the snapshot is two steps. widgets_raw reads the first line of every
+# widget file in ONE awk -- one fork, not six per widget -- so the snapshot
+# taken during the tone finishes inside it. pcm-tone plays a fixed 1 s; read
+# one pipeline per widget, 37 widgets ran past its end on r188's first gate,
+# which then saw LO, LO_OUT and the pin with in=0. The PCM's own status file
+# is read LAST, in the same awk: "@pcm@state: RUNNING" proves the stream was
+# still up when the last widget was read. widgets_fmt parses it afterwards.
+PCMSTATUS=$(printf '%s' "${PCMDEV:-/dev/snd/pcmC0D0p}" |
+	sed -n 's#^/dev/snd/pcmC\([0-9]*\)D\([0-9]*\)p$#/proc/asound/card\1/pcm\2p/sub0/status#p')
+widgets_raw() {	# "<widget>=<first line>" per widget, "@pin@Headphones=", "@pcm@<state>"
 	_w_ifs=$IFS; IFS='|'
+	set --
+	for _w in $WIDGETS; do set -- "$@" "$WDIR/$_w"; done
+	IFS=$_w_ifs
+	awk -v pd="$PDIR/" -v ps="$PCMSTATUS" 'FNR == 1 {
+		n = FILENAME; sub(/.*\//, "", n)
+		if (FILENAME == ps) { print "@pcm@" $0; next }
+		if (index(FILENAME, pd) == 1) n = "@pin@" n
+		print n "=" $0 }' "$@" "$PDIR/Headphones" ${PCMSTATUS:+"$PCMSTATUS"} 2>/dev/null
+}
+raw_line() {	# raw_line <raw> <key> -> what follows "<key>=" on its line
+	printf '%s\n' "$1" | while IFS= read -r _r; do
+		[ "${_r%%=*}" = "$2" ] && { printf '%s' "${_r#*=}"; break; }
+	done
+}
+widgets_fmt() {	# raw -> one "name=power/in/out;" per codec widget, then the pin
+	_raw=$1; _w_ifs=$IFS; IFS='|'
 	for _w in $WIDGETS; do
 		IFS=$_w_ifs
-		set -- $(dapm_widget "$(head -n1 "$WDIR/$_w" 2>/dev/null)")
+		set -- $(dapm_widget "$(raw_line "$_raw" "$_w")")
 		printf '%s=%s/%s/%s;' "$(printf '%s' "$_w" | tr ' ' '_')" "$1" "$2" "$3"
 		IFS='|'
 	done
 	IFS=$_w_ifs
-	set -- $(dapm_widget "$(head -n1 "$PDIR/Headphones" 2>/dev/null)")
+	set -- $(dapm_widget "$(raw_line "$_raw" "@pin@Headphones")")
 	printf 'Headphones=%s/%s/%s\n' "$1" "$2" "$3"
 }
+widgets() { widgets_fmt "$(widgets_raw)"; }
+raw_pcm_state() { printf '%s\n' "$1" | sed -n 's/^@pcm@state: *//p' | head -n1; }
 wfield() { printf '%s' "$1" | tr ';' '\n' | sed -n "s/^$2=//p" | head -n1; }
 
 pin() { dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "$DAPM_PIN" 2>/dev/null)"; }
@@ -116,14 +143,26 @@ DM0=$(dmesg_mark)	# r187: a timestamp; the ring may have wrapped
 # ---------------------------------------------------------------- during --
 "$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" --side B >/tmp/.dapm-tone.$$ 2>&1 &
 TPID=$!
-sleep 0.3
+# r188: poll, don't sleep. A fixed 0.3 s found the stream still OPEN on r188
+# (hw_params not yet done) and RUNNING only by ~0.9 s of a ~1.07 s run, so the
+# snapshot starts the moment the PCM says RUNNING (3 s cap), and the PCM
+# state at both ends of it is checked below.
+_pw=0
+while [ $_pw -lt 60 ]; do
+	PCM0=$(head -n1 "$PCMSTATUS" 2>/dev/null); PCM0=${PCM0#state: }
+	[ "$PCM0" = "RUNNING" ] && break
+	kill -0 "$TPID" 2>/dev/null || break
+	sleep 0.05; _pw=$((_pw + 1))
+done
 D1=$(cat "$PGD/dapm_state" 2>/dev/null)
-W1=$(widgets)
+R1=$(widgets_raw)	# r188: raw now, parsed after the tone
 PA1=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 PIN1=$(pin)
 PO1=$(PINS_OTHER)
 wait "$TPID"
 TRC=$?
+W1=$(widgets_fmt "$R1")
+PCM1=$(raw_pcm_state "$R1")
 
 # ----------------------------------------------------------------- after --
 sleep 1
@@ -176,6 +215,12 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 
 	say ""
 	say "-- during the stream: reached the graph, powered nothing --"
+	# r188: the snapshot is evidence only if the stream outlived it
+	check "the stream was RUNNING when the snapshot began" "${PCM0:-?}" "RUNNING"
+	check_cond "the stream was still up when the last widget was read" \
+		"$(case "$PCM1" in RUNNING|DRAINING) echo 1 ;; *) echo 0 ;; esac)" \
+		"PCM state '${PCM1:-?}' at the end of the snapshot -- it ran past the tone, the in= counts below are not evidence" \
+		"PCM $PCM1"
 	_hp=$(wfield "$W1" HPH)
 	check "HPH off during" "${_hp%%/*}" "Off"
 	_in=$(printf '%s' "$_hp" | cut -d/ -f2)

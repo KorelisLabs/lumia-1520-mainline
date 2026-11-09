@@ -289,3 +289,64 @@ tools/build-wcd9320-kernel.sh --pkgrel 188 --version lineout-rc1 \
 ```
 
 `pcm-tone` is unchanged from r186.
+
+## 6. Hardware (r188 boot, phone clock 2026-09-02; PC 2026-11-09)
+
+**The build:** the verifier passed 580/0. The read-bypassed call count was
+139, the same as predicted before the build.
+
+**Gates before the probes:**
+- **Regressions:** mclk-own 90/0, vm 57/0.
+- **zdet:** at boot it measured an open jack, because the headset was out.
+  A re-run was refused (`zdet_already_run`, once per boot by design), so it
+  is owed on the next boot, headset in.
+- **The digital gate:** 67/0 on the second run. The first run failed "LO sees
+  the active DAI" (`in=0`), and the cause was the gate's timing, not the
+  graph:
+  - the DAPM debugfs showed LO wired exactly like SPK;
+  - the gate slept a fixed 0.3 s, and on this boot the PCM was still `OPEN`
+    at 0.3 s and `RUNNING` only by ~0.9 s of a ~1.07 s run;
+  - its widget snapshot, one shell pipeline per widget with the 8 new LO
+    widgets, ran past the end of the tone.
+
+  Fix (`wcd9320-dapm-evidence.sh`): the gate now polls `/proc/asound/.../status`
+  until `RUNNING`, reads every widget in one `awk`, and reads the PCM status
+  last in that same `awk`. Two new checks require `RUNNING` at both ends of
+  the snapshot. All four graphs then show `in=1` and power nothing.
+
+**Probe L (all four line outs): silent.** Four streams:
+- Lineout Volume 0 and 20 at -40 dBFS;
+- full gain at -30 and -20 dBFS, declared.
+
+On every stream (73/0):
+- **live:** `0x1ca = 0f`, the four gains read back as set (`34` at the
+  minimum, `20` at full), `0x3b1 & 06 = 06`, class-H in LO mode, RX3 and RX5
+  on, no clip;
+- **after:** clean teardown, everything restored, the five buck/NCP registers
+  equal to before the run.
+
+The operator heard nothing at the grille or the earpiece slot. The mic
+covers the -30 dBFS full-gain stream: silent. The other three recordings were
+stopped early by a helper bug (see `r188-acoustic-analysis.txt`), so for those
+the ears are the evidence.
+
+**The HPH no-trace stream, after the line outs:**
+- the chip state was identical to r187's proven run;
+- the burst was +47.7 dB over its neighbours, 34 dB over the floor
+  (r187: 33.9);
+- class-H LO left the headphones as proven.
+
+The runner's two FAILs on that run were its own bug: it applied the LO
+no-trace check to an HPH run, whose class-H moves `0x185`/`0x194` by design.
+Fixed: the check applies only when `OUTPUT=lo`.
+
+**Verdict:**
+- Every analog output of the WCD9320 has now been probed live on the chip at
+  up to -20 dBFS, full gain, and none sounds: HPH sounds, SPK_OUT, EAR and
+  LINEOUT1-4 do not.
+- The loudspeaker and earpiece need an enable the driver never asserts (a
+  PMIC GPIO/MPP or SoC GPIO for an external amplifier, or an I2C smart amp
+  on its own I2S/MI2S), or they are not on this codec.
+- **Next:** stop and re-plan, by searching for the amplifier enable on the
+  running phone (ACPI/DSDT resources, PMIC GPIO/MPP state, I2C buses)
+  before any new driver code.

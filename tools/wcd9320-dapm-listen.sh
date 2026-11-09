@@ -699,9 +699,18 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		for _g in logain_0x1cd logain_0x1d1 logain_0x1d5 logain_0x1d9 misc_0x3b1; do
 			check "$_g restored" "$(rv "$OPOST" "$_g")" "$(rv "$OPRE" "$_g")"
 		done
-		for _g in buck1_0x181 buck4_0x184 buck5_0x185 ncpen_0x192 ncpst_0x194; do
-			check "$_g as before the run (class-H LO no trace)" "$(rv "$OPOST" "$_g")" "$(rv "$OPRE" "$_g")"
-		done
+		# Only a line-out run owes this: class-H in HPH mode (state_hph) moves
+		# 0x185 and 0x194 itself and leaves them (r188's HPH run after the line
+		# outs: 02 -> 00, 28 -> 08, r187's post-HPH baseline), by design.
+		if [ "$OUTPUT" = "lo" ]; then
+			for _g in buck1_0x181 buck4_0x184 buck5_0x185 ncpen_0x192 ncpst_0x194; do
+				check "$_g as before the run (class-H LO no trace)" "$(rv "$OPOST" "$_g")" "$(rv "$OPRE" "$_g")"
+			done
+		else
+			_le1=$(rv "$OPOST" lo_enables); _le0=$(rv "$OPRE" lo_enables)
+			check "the line outs never powered this run (lo_enables delta)" \
+			      "$(( ${_le1:-0} - ${_le0:-0} ))" "0"
+		fi
 		check "class-H LO restore mismatches" "$(rv "$OPOST" lo_restore_mismatch)" "0"
 		check "RX3 and RX5 off" "$(rv "$OPOST" rx3_on) $(rv "$OPOST" rx5_on)" "0 0"
 	fi

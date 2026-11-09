@@ -1,0 +1,3518 @@
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=120
+selftest=TIMEOUT abort_path_proven=0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-off-c1 timeout=600
+ask=dc-pa-off-c1 result=APPROVE
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-on-c1 timeout=120
+ask=dc-pa-on-c1 result=APPROVE
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.947
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=post-tone-c1 timeout=120
+ask=post-tone-c1 result=APPROVE
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-off-c1 timeout=600
+ask=dc-pa-off-c1 result=APPROVE
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-on-c1 timeout=120
+ask=dc-pa-on-c1 result=APPROVE
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.947
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=post-tone-c1 timeout=120
+ask=post-tone-c1 result=APPROVE
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-off-c2 timeout=600
+ask=dc-pa-off-c2 result=APPROVE
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+ask=dc-pa-on-c2 timeout=120
+ask=dc-pa-on-c2 result=TIMEOUT treated_as=ABORT
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.951
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.057
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.062
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.107
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.956
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.138
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.059
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.041
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.952
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.058
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.078
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.153
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.124
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.112
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.947
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.071
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.559
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.225
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.149
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.333
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.047
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=TIMEOUT abort_path_proven=0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event3 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=0.955
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=1
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=2
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.114
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+side=mono
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=1
+side=mono
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=L
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.124
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=R
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.163
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=R
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.127
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=R
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.122
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.137
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.149
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.083
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.137
+final_rc=0
+complete=1
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.138
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.170
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,135,268,396
+table_quarter=1036
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.138
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,428,848,1254
+table_quarter=3277
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.114
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.128
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.167
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,135,268,396
+table_quarter=1036
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.146
+final_rc=0
+complete=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,428,848,1254
+table_quarter=3277
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.129
+final_rc=0
+complete=1
+20260902T223922Z ================ DAPM listen run 20260902T223922Z ================
+20260902T223922Z stimulus -40 dBFS, 1 stream(s): B:0:84
+20260902T223922Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260902T223922Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T223922Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T223922Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T223922Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260902T223956Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260902T223956Z forced-write journal starts this run at 4 of 64
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260902T223957Z abort watcher armed, pid 8417
+20260902T223957Z front-end mixer enabled
+20260902T223957Z === stream 1: begin -- spec B:0:84 ===
+20260902T223957Z volumes: Lineout Volume 0 (field 14), RX3/RX5 digital 84 (0x00), Lineout Select 15
+20260902T223957Z stream 1: LINE OUTS (select 15), Lineout Volume 0 -- the mic at its fixed spot
+20260902T223957Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260902T224005Z GATE dapm-c1: APPROVED (chat)
+20260902T224005Z fail-safe armed: 30 s, phase stream-c1
+20260902T224005Z pin ON; with no stream: held=000 ups=0 downs=0 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0
+20260902T224006Z tone: 1 kHz, -40 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260902T224008Z path wait: ~500 ms, lo_held=3f slim_up=1
+20260902T224009Z live: held=000 ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=3f lo_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.087
+final_rc=0
+complete=1
+20260902T224011Z tone finished rc=0
+20260902T224011Z after the stream (~0 ms): held=000 ups=6 downs=6 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=80
+20260902T224012Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260902T224012Z === stream 1: complete ===
+20260902T224012Z volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15
+20260902T224015Z evidence written to /var/log/wcd9320-dapm-listen-20260902T223922Z.txt
+20260902T224130Z ================ DAPM listen run 20260902T224130Z ================
+20260902T224130Z stimulus -40 dBFS, 1 stream(s): B:20:84
+20260902T224130Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260902T224130Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T224130Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T224131Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T224131Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260902T224147Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260902T224147Z forced-write journal starts this run at 6 of 64
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260902T224148Z abort watcher armed, pid 9774
+20260902T224148Z front-end mixer enabled
+20260902T224148Z === stream 1: begin -- spec B:20:84 ===
+20260902T224148Z volumes: Lineout Volume 20 (field 00), RX3/RX5 digital 84 (0x00), Lineout Select 15
+20260902T224149Z stream 1: LINE OUTS (select 15), Lineout Volume 20 -- the mic at its fixed spot
+20260902T224149Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260902T224159Z GATE dapm-c1: APPROVED (chat)
+20260902T224159Z fail-safe armed: 30 s, phase stream-c1
+20260902T224159Z pin ON; with no stream: held=000 ups=6 downs=6 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0
+20260902T224159Z tone: 1 kHz, -40 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260902T224202Z path wait: ~600 ms, lo_held=3f slim_up=1
+20260902T224203Z live: held=000 ups=12 downs=6 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=3f lo_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.165
+final_rc=0
+complete=1
+20260902T224205Z tone finished rc=0
+20260902T224205Z after the stream (~0 ms): held=000 ups=12 downs=12 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=80
+20260902T224206Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260902T224206Z === stream 1: complete ===
+20260902T224206Z volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15
+20260902T224209Z evidence written to /var/log/wcd9320-dapm-listen-20260902T224130Z.txt
+20260902T224417Z ================ DAPM listen run 20260902T224417Z ================
+20260902T224418Z stimulus -30 dBFS, 1 stream(s): B:20:84
+20260902T224418Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,135,268,396
+table_quarter=1036
+20260902T224418Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T224418Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T224418Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T224418Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=TIMEOUT abort_path_proven=0
+20260902T224919Z preflight refused -- nothing armed, nothing written
+20260902T224932Z ================ DAPM listen run 20260902T224932Z ================
+20260902T224932Z stimulus -30 dBFS, 1 stream(s): B:20:84
+20260902T224932Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,135,268,396
+table_quarter=1036
+20260902T224933Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T224933Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T224933Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T224933Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=TIMEOUT abort_path_proven=0
+20260902T225433Z preflight refused -- nothing armed, nothing written
+20260902T225541Z ================ DAPM listen run 20260902T225541Z ================
+20260902T225541Z stimulus -30 dBFS, 1 stream(s): B:20:84
+20260902T225541Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,135,268,396
+table_quarter=1036
+20260902T225541Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T225541Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T225542Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T225542Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260902T225551Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260902T225551Z forced-write journal starts this run at 8 of 64
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260902T225552Z abort watcher armed, pid 12439
+20260902T225552Z front-end mixer enabled
+20260902T225552Z === stream 1: begin -- spec B:20:84 ===
+20260902T225552Z volumes: Lineout Volume 20 (field 00), RX3/RX5 digital 84 (0x00), Lineout Select 15
+20260902T225552Z stream 1: LINE OUTS (select 15), Lineout Volume 20 -- the mic at its fixed spot
+20260902T225552Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260902T225601Z GATE dapm-c1: APPROVED (chat)
+20260902T225602Z fail-safe armed: 30 s, phase stream-c1
+20260902T225602Z pin ON; with no stream: held=000 ups=12 downs=12 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0
+20260902T225602Z tone: 1 kHz, -30 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260902T225605Z path wait: ~500 ms, lo_held=3f slim_up=1
+20260902T225606Z live: held=000 ups=18 downs=12 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=3f lo_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-30.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=1036
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.118
+final_rc=0
+complete=1
+20260902T225608Z tone finished rc=0
+20260902T225608Z after the stream (~0 ms): held=000 ups=18 downs=18 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=80
+20260902T225608Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260902T225608Z === stream 1: complete ===
+20260902T225609Z volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15
+20260902T225612Z evidence written to /var/log/wcd9320-dapm-listen-20260902T225541Z.txt
+20260902T225623Z ================ DAPM listen run 20260902T225623Z ================
+20260902T225623Z stimulus -20 dBFS, 1 stream(s): B:20:84
+20260902T225623Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,428,848,1254
+table_quarter=3277
+20260902T225623Z jack: on=1 pending=0 has_jack=1 inserted=0 irqs=0 reports=3 virq=88 detect_0x14a=6f status_0x14b=04
+20260902T225623Z output lo: pin Lineout Switch, lo_held full 3f
+20260902T225624Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T225624Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260902T225729Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260902T225729Z forced-write journal starts this run at 10 of 64
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260902T225730Z abort watcher armed, pid 13887
+20260902T225730Z front-end mixer enabled
+20260902T225730Z === stream 1: begin -- spec B:20:84 ===
+20260902T225730Z volumes: Lineout Volume 20 (field 00), RX3/RX5 digital 84 (0x00), Lineout Select 15
+20260902T225730Z stream 1: LINE OUTS (select 15), Lineout Volume 20 -- the mic at its fixed spot
+20260902T225730Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260902T225752Z GATE dapm-c1: APPROVED (chat)
+20260902T225753Z fail-safe armed: 30 s, phase stream-c1
+20260902T225753Z pin ON; with no stream: held=000 ups=18 downs=18 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0
+20260902T225753Z tone: 1 kHz, -20 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260902T225756Z path wait: ~500 ms, lo_held=3f slim_up=1
+20260902T225757Z live: held=000 ups=24 downs=18 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=3f lo_pa=1 | 0x1ab=80 ocp=0 | 0x1b1=00 0x1b7=00 | 0x1ae=00 0x1b4=00 | mclk_users=1 on_mclk=1 | 1b3=04 1b9=04
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-20.0
+ceiling_dbfs=-20.0
+escalation_armed=1
+peak_sample=3277
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=-5
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.175
+final_rc=0
+complete=1
+20260902T225759Z tone finished rc=0
+20260902T225759Z after the stream (~0 ms): held=000 ups=24 downs=24 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=80
+20260902T225759Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260902T225759Z === stream 1: complete ===
+20260902T225800Z volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15
+20260902T225802Z evidence written to /var/log/wcd9320-dapm-listen-20260902T225623Z.txt
+20260902T225957Z ================ DAPM listen run 20260902T225957Z ================
+20260902T225957Z stimulus -40 dBFS, 1 stream(s): B:20:84
+20260902T225957Z module lineout-rc1, codec /sys/bus/slimbus/devices/217:a0:1:0
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+tool=pcm-tone
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+dry_run=1
+table_first4=0,43,85,126
+table_quarter=328
+20260902T225957Z jack: on=1 pending=0 has_jack=1 inserted=1 irqs=1 reports=4 virq=88 detect_0x14a=6d status_0x14b=08
+20260902T225958Z output hph: pin Headphones Switch, held full 1ff
+20260902T225958Z baseline idle: dapm held 000, pin off, RCO, both PAs off
+20260902T225958Z awaiting the arm-time Volume Down press, up to 300 s
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+selftest=await_abort label=armtime timeout=300
+selftest=PASS abort_path_proven=1
+20260902T230004Z ABORT PATH PROVEN ON HARDWARE at arm time
+20260902T230004Z forced-write journal starts this run at 12 of 64
+approve_dev=gpio-keys approve_node=/dev/input/event0 approve_key=115
+abort_dev=pm8941_resin abort_node=/dev/input/event2 abort_key=114
+watch=armed flag=/run/wcd9320-c3a.abort
+20260902T230005Z abort watcher armed, pid 15255
+20260902T230005Z front-end mixer enabled
+20260902T230005Z === stream 1: begin -- spec B:20:84 ===
+20260902T230005Z volumes: HPHL/HPHR 20 (field 00), RX1/RX2 digital 84 (0x00)
+20260902T230005Z stream 1: tone on BOTH channels
+20260902T230005Z GATE dapm-c1: waiting up to 600 s for the approval in chat -- Volume Down aborts
+20260902T230016Z GATE dapm-c1: APPROVED (chat)
+20260902T230017Z fail-safe armed: 30 s, phase stream-c1
+20260902T230017Z pin ON; with no stream: held=000 ups=24 downs=24 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0
+20260902T230017Z tone: 1 kHz, -40 dBFS, side B, 250 ms tone/silence/tone/silence, one stream, DAPM-powered
+tool=pcm-tone
+20260902T230021Z path wait: ~800 ms, held=1ff slim_up=1
+20260902T230022Z live: held=1ff ups=33 downs=24 refusals=0 failures=0 mclk_users=1 pa_on=1 pa_r_on=1 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=b0 ocp=0 | 0x1b1=c0 0x1b7=c0 | 0x1ae=20 0x1b4=20 | mclk_users=1 on_mclk=1 | 1b3=08 1b9=08
+device=/dev/snd/pcmC0D0p
+signal=sine
+tone_hz=1000
+requested_rate=48000
+requested_channels=2
+side=B
+requested_format=S16_LE
+declared_dbfs=-40.0
+ceiling_dbfs=-20.0
+escalation_armed=0
+peak_sample=328
+full_scale=32767
+segment_ms=250
+segment_frames=12000
+segments=4
+segment_plan=tone,silence,tone,silence
+cycles_per_segment=250
+total_frames=48000
+total_ms=1000
+open_rc=0
+hw_params_rc=0
+actual_rate=48000
+actual_channels=2
+actual_period_frames=960
+actual_buffer_frames=3840
+frame_bytes=4
+sw_params_rc=0
+prepare_rc=0
+start_requested=1
+start_rc=0
+drain_rc=0
+final_state=1
+frames_written=48000
+writes=50
+xruns=0
+elapsed_s=1.119
+final_rc=0
+complete=1
+20260902T230024Z tone finished rc=0
+20260902T230024Z after the stream (~0 ms): held=000 ups=33 downs=33 refusals=0 failures=0 mclk_users=0 pa_on=0 pa_r_on=0 spk_held=00 ear_held=00 spk_pa=0 ear_pa=0 lo_held=00 lo_pa=0 | 0x1ab=80
+20260902T230024Z fail-safe disarmed: the PA is chip-verified off and DAPM holds nothing
+20260902T230025Z === stream 1: complete ===
+20260902T230025Z volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15
+20260902T230028Z evidence written to /var/log/wcd9320-dapm-listen-20260902T225957Z.txt

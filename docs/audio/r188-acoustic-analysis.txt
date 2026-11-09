@@ -1,0 +1,57 @@
+r188 (lineout-rc1 / q6-card-rc7) acoustic probes, phone clock 2026-09-02, PC 2026-11-09
+Instrument: DGM20 USB mic on the PC, c3a-capture.py record/analyse (winmm, 48 kHz mono).
+Stimulus: 1 kHz, 250 ms tone / silence / tone / silence, both channels (side B).
+"matched" = a 200 ms window sliding by 25 ms; its 1 kHz level and its contrast
+against 900 / 1100 Hz. A real tone shows as a 1 kHz level far above the floor
+AND a large contrast in the same window (the HPH stream below: -53.9 dBFS,
++47.7 dB). Windows at the floor with ~20 dB "contrast" are noise statistics.
+
+LINE OUTS (OUTPUT=lo, all four, Lineout Select 15, LIQUID differential layout;
+headset unplugged; mic at the loudspeaker grille; operator listening at the
+grille and the earpiece slot)
+  run       spec     dBFS  phone verdict     live (every stream)                         recording
+  223922Z   B:0:84   -40   PASS 73/0         0x1ca=0f, gains 34 (src, field 0x14 = min)   c3a-lo-r188a.wav    *
+  224130Z   B:20:84  -40   PASS 73/0         0x1ca=0f, gains 20 (src, field 0 = max)      c3a-lo-r188b.wav    *
+  225541Z   B:20:84  -30   PASS 73/0 (decl.) 0x1ca=0f, gains 20                           c3a-lo-r188-esc.wav silent: no window above the floor (-93 dBFS median)
+  225623Z   B:20:84  -20   PASS 73/0 (decl.) 0x1ca=0f, gains 20                           c3a-lo-r188-esc.wav *
+  On every stream: 0x3b1 & 06 = 06 (RDAC5/RDAC7 inverted), class-H in LO mode,
+  RX3 and RX5 on, no clip, line-out PAs and DACs off after, the gains and 0x3b1
+  restored, and the five buck/NCP registers equal to before the run
+  (class-H LO restore: 0 mismatches).
+  Operator heard nothing on any line-out stream, at the grille or the earpiece.
+
+  * RECORDING COVERAGE. The recorder was stopped too early on these streams.
+    lgate.sh was given the LAUNCH time as its "since", so waitgate2 matched
+    this run's own, already-answered "GATE ... waiting" line and returned about
+    2 s after the approval. The stop file was then touched before the tone, or
+    during it. (The recorder's own queue is only 16 x 50 ms.) So the -40 dBFS
+    min/max and the -20 dBFS tones are probably not in their recordings. None
+    of those recordings shows a tone in its last 3 s, but that does not prove
+    silence. The -30 dBFS stream ran ~2 min before its recording stopped and
+    is fully covered: silent. lgate.sh now waits from the phone's clock after
+    the approval (scratch helper; r187's calls passed a time after the gate
+    line).
+  The acoustic verdict rests on the operator's ears for all four streams,
+  plus the mic for the -30 dBFS full-gain stream. That is 10 dB above a level
+  at which any transducer on a line out, amplified or not, would be plain.
+
+HPH no-trace check, after the line outs (B:20:84, -40 dBFS, headset in, mic on the earcup)
+  225957Z   PASS on every live check: 0x1ab b0, DACs c0, fields 00, MCLK, 0x1b3 08
+            matched: 1 kHz -53.9 dBFS, +47.7 dB contrast; burst-on 34 dB over
+            the floor; the 250 ms on / 250 ms off pattern (r187: 33.9 dB).
+            Cut 1 s in by the same early stop; the analyser's "0 events" is
+            that cut, not silence.
+            The runner said FAIL 80/2. The two failures were runner bugs: it
+            applied the class-H LO no-trace check to an HPH run. HPH's own
+            class-H (state_hph) moves 0x185 02 -> 00 and 0x194 28 -> 08, and
+            leaves them by design; that is r187's post-HPH baseline. Before
+            the run, both registers held exactly what the line-out runs had
+            restored. Fixed: the check applies only when OUTPUT=lo, and other
+            runs check that the line outs never powered.
+
+Verdict: the four LINEOUTs, like SPK_OUT and EAR in r187, are live on the
+chip up to -20 dBFS at full gain, and no transducer sounds. Every WCD9320
+analog output is now probed. The loudspeaker and earpiece are behind
+something the codec driver does not enable (an amplifier enable on a PMIC
+GPIO/MPP or another SoC GPIO, an I2C/I2S smart amp), or they are not on this
+codec.

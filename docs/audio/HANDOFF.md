@@ -1031,10 +1031,31 @@ re-confirmed on r182). No scope was needed; the MBHC voltmeter did it.
   The tag does not claim a scope measurement, HPHR as an output, or MCLK
   bring-up inside the driver.
 
-**r187 `outputs-rc1` + `q6-card-rc6`: THE SPEAKER AND THE EARPIECE ARE NOT ON SPK_OUT OR EAR
-(2026-11-08, [wcd9320-r187-speaker-earpiece-mapping.md](wcd9320-r187-speaker-earpiece-mapping.md) section 6).**
+**r188 `lineout-rc1` + `q6-card-rc7`: THE LINE OUTS ARE SILENT TOO; NO CODEC OUTPUT REACHES THE SPEAKER OR EARPIECE
+(2026-11-09, [wcd9320-r188-lineout-mapping.md](wcd9320-r188-lineout-mapping.md) section 6).**
 This is the current build. It installs and runs, and plays as before through
 the headphones.
+- **Gates:** verify 580/0, digital gate 67/0, mclk-own 90/0, vm 57/0. zdet
+  is owed on the next boot, headset in.
+- **Probe L:** all four LINEOUTs in LIQUID's differential layout were live on
+  the chip on every stream, up to -20 dBFS at full gain (declared): 73/0
+  each, no clip, clean teardown. They are silent to the operator and to the
+  mic (covered at -30 dBFS).
+- **The headphones are unaffected:** the HPH stream after the line outs was
+  34 dB over the floor, as in r187. Class-H LO restores what it changes.
+- **Every WCD9320 analog output is now probed**, and only HPH sounds.
+- **Next:** re-plan by searching for the amplifier enable (or a separate
+  amp) on the running phone, before any new driver code.
+- **Results:** [r188-acoustic-analysis.txt](r188-acoustic-analysis.txt).
+- **Tooling fixes:**
+  - the digital gate polls the PCM to `RUNNING` and snapshots in one read,
+    with both ends checked;
+  - the listen runner's class-H LO no-trace check is now for `OUTPUT=lo`
+    only.
+
+**r187 `outputs-rc1` + `q6-card-rc6`: THE SPEAKER AND THE EARPIECE ARE NOT ON SPK_OUT OR EAR
+(2026-11-08, [wcd9320-r187-speaker-earpiece-mapping.md](wcd9320-r187-speaker-earpiece-mapping.md) section 6).**
+The proven build before r188.
 - **Regressions:** the HPH regression passes (69/0, analyser at 33.9 dB),
   the digital gate passes 56/0, and so do mclk-own, vm and zdet.
 - **The speaker and earpiece paths work on the chip:** each PA is live,
