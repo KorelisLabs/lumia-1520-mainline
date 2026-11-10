@@ -111,11 +111,12 @@ HOLD_5V="${HOLD_5V:-}"
 # r191: AMP=visa powers the VISA speaker amplifier (Windows' power-on script)
 # around each stream of a codec output, and standby + GPIO20 low after it;
 # every abort and teardown powers it off too. The amplifier's input is
-# unknown, so this is how each codec output is probed with it on.
+# unknown, so this is how each codec output -- and r189's I2S port -- is probed
+# with it on.
 AMP="${AMP:-}"
 case "$AMP:$OUTPUT" in
-:*|visa:spk|visa:ear|visa:lo|visa:hph) ;;
-*) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for a codec output)"; exit 2 ;;
+:*|visa:spk|visa:ear|visa:lo|visa:hph|visa:i2s) ;;
+*) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for spk, ear, lo, hph or i2s)"; exit 2 ;;
 esac
 case "$HOLD_5V:$OUTPUT" in
 :*|i2s:lo|i2s:ear) ;;
