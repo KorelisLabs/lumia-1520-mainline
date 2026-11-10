@@ -278,3 +278,38 @@ touches the amplifier.
   after, and the VISA powers equal the streams.
 - The digital gate's I2S tone (pin OFF) requires VISA off.
 - Selftest 105/0.
+
+## 7. r192 on hardware (phone clock 2026-09-04; PC 2026-11-10): plain playback plays the loudspeaker
+
+**Gates:**
+- Digital gate **83/0**, after the r192 runner fix (`26b6b3e`). That
+  includes the VISA amplifier off during the I2S tone with the
+  `Loudspeaker` pin OFF.
+- mclk-own 90/0, vm 57/0.
+
+**Stream `003145Z`:**
+- `OUTPUT=i2s`, no `AMP`: the runner never touches the amplifier.
+- `B:0:84` at -50 dBFS.
+- **77/0.** VISA `powered dapm_held gpio` = `1 1 1` live and `0 0 0`
+  after.
+- **Analyser PASS:** 999.97 Hz, tone -49.0 / silence -85.3 to -90.0 dBFS,
+  36.3 dB contrast.
+
+**The kernel's order:**
+1. `visa: POWERED ON (... 0 read-back mismatch(es))`;
+2. `i2s-spk: 5 V rail on, sec_mi2s pins active, VISA amplifier powered`;
+3. then `visa: standby, GPIO20 low`;
+4. `i2s-spk: sec_mi2s pins asleep, 5 V rail off`.
+
+**Reg `0x00`:**
+- Under r191's runner (the amplifier powered before the stream, with no I2S
+  clocks), the script's final `0x00` ← `0x00` read back `0x20`.
+- Under DAPM (BCLK already running from the BE startup), it reads back
+  `0x00`.
+- So bit 5 of reg `0x00` is most likely a clock or input status flag, not
+  a fault.
+
+**Step 1 is done.** The loudspeaker is an ordinary DAPM output: route
+MultiMedia1 to `SEC_MI2S_RX`, turn the `Loudspeaker` pin on, play.
+
+**Next:** the 5 V question, volume, channels, the earpiece, and cleanup.
