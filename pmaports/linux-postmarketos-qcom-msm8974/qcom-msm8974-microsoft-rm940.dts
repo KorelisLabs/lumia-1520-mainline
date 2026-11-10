@@ -118,6 +118,26 @@
 		bias-disable;
 	};
 
+	/*
+	 * r191: BLSP1 I2C5, the loudspeaker amplifier's bus. Windows' PEP muxes
+	 * TLMM 25 to function 4 and 26 to function 5 for its I2C5, which are
+	 * exactly blsp_i2c5 on those pins. Mainline's msm8974 dtsi has no
+	 * f9927000 node and no states for it; these follow its I2C6 pattern.
+	 */
+	blsp1_i2c5_default: blsp1-i2c5-default-state {
+		pins = "gpio25", "gpio26";
+		function = "blsp_i2c5";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	blsp1_i2c5_sleep: blsp1-i2c5-sleep-state {
+		pins = "gpio25", "gpio26";
+		function = "blsp_i2c5";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
 	sec_mi2s_sleep: sec-mi2s-sleep-state {
 		pins = "gpio79", "gpio80", "gpio81", "gpio82";
 		function = "gpio";
@@ -559,6 +579,40 @@
 };
 
 &soc {
+	/*
+	 * r191: BLSP1 QUP5 as I2C -- Windows' \_SB.I2C5 (I2Cn = BLSP1 QUP n:
+	 * the touchscreen on its I2C2 is Linux's f9924000). SPI 99 and the QUP5
+	 * clock follow QUP3 (97) and QUP6 (100) in mainline's dtsi.
+	 * docs/audio/r191-visa-amp-mapping.md.
+	 */
+	blsp1_i2c5: i2c@f9927000 {
+		compatible = "qcom,i2c-qup-v2.1.1";
+		reg = <0xf9927000 0x1000>;
+		interrupts = <GIC_SPI 99 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&gcc GCC_BLSP1_QUP5_I2C_APPS_CLK>, <&gcc GCC_BLSP1_AHB_CLK>;
+		clock-names = "core", "iface";
+		clock-frequency = <400000>;
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&blsp1_i2c5_default>;
+		pinctrl-1 = <&blsp1_i2c5_sleep>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * The loudspeaker amplifier: ACPI Device (VISA), I2cSerialBusV2
+		 * 0x40 at 400 kHz on I2C5, GpioIo \_SB.PM01 pin 0x698 = PM8941
+		 * GPIO20 (PM01 pin = 0x5F8 + 8n, from the buttons). Windows'
+		 * Visa.sys raises it before any register access and drops it
+		 * after standby. Its power source is left as found: Windows
+		 * never sets one either.
+		 */
+		visa_amp: speaker-amp@40 {
+			compatible = "nokia,lumia1520-visa";
+			reg = <0x40>;
+			enable-gpios = <&pm8941_gpios 20 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
 	/*
 	 * SLIMbus BAM. qcom,controlled-remotely because the ADSP initialises
 	 * the BAM -- the APPS side must not reset it.

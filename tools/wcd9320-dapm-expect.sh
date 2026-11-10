@@ -61,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc8}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc9}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>
@@ -201,6 +201,12 @@ dapm_spec_ok_out() {
 # the regulator class for the 5 V rail (PM8941 s4) and the TLMM pinmux.
 I2S_MIXER="${I2S_MIXER:-SEC_MI2S_RX Audio Mixer MultiMedia1}"
 SLIM_MIXER="${SLIM_MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
+# r191: THE VISA SPEAKER AMPLIFIER (I2C5 @ 0x40, PM8941 GPIO20) -- its sysfs
+# in the card module's I2C driver: visa_state, visa_dump, visa_identify
+# (read-only on the chip), visa_power (Windows' script / standby + GPIO low).
+visa_dir() { ls -d /sys/bus/i2c/drivers/lumia1520-visa/*-0040 2>/dev/null | head -n1; }
+visa_state() { _vsd=$(visa_dir); [ -n "$_vsd" ] && cat "$_vsd/visa_state" 2>/dev/null; }
+visa_power() { _vsd=$(visa_dir); [ -n "$_vsd" ] && echo "$1" > "$_vsd/visa_power" 2>/dev/null; }
 i2s_state_file() { ls /sys/bus/platform/drivers/lumia1520-i2s-spk/*/i2s_spk_state 2>/dev/null | head -n1; }
 i2s_state() { _isf=$(i2s_state_file); [ -n "$_isf" ] && cat "$_isf" 2>/dev/null; }
 # vreg_5v -> "<state> <num_users>" of the regulator named s4 at 5000000 uV

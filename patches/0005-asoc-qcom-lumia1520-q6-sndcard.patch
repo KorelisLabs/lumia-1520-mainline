@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-09 18:20:51.022185233 -0500
-@@ -0,0 +1,759 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-10 17:19:48.153421755 -0500
+@@ -0,0 +1,1089 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -139,6 +139,9 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + * was measure first, then encode, and this is the encoding step.
 + */
 +
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
 +#include <linux/of.h>
@@ -810,6 +813,322 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	},
 +};
 +
++/*
++ * r191: THE LOUDSPEAKER AMPLIFIER, "VISA" -- I2C5 @ 0x40, enable PM8941 GPIO20.
++ *
++ * docs/audio/r191-visa-amp-mapping.md. Every WCD9320 output and Secondary
++ * MI2S proved silent (r187-r190); the speaker is behind ACPI Device (VISA),
++ * driven on Windows by Nokia's Visa.sys. Its protocol, from a read-only
++ * analysis of that driver:
++ *
++ *   enable    GPIO20 high before any register access
++ *   power on  a byte-coded script: 'w' reg val (a one-byte register write),
++ *             'd' _ ms (a delay), 'e' (end) -- reproduced below, exactly
++ *   power off reg 0x01 |= 0x02 (standby), then GPIO20 low
++ *
++ * The part is unidentified, so this claims no part number. identify is
++ * read-only on the chip; power runs the script and reads every write back --
++ * a mismatch is recorded, not fatal (the script writes 0x21 five times in a
++ * row, the shape of a command register), an I2C error aborts to standby.
++ */
++#define VISA_REG_CTRL		0x01
++#define VISA_CTRL_STANDBY	0x02
++#define VISA_NREGS		0x22	/* 0x00..0x21, the registers the script touches */
++#define VISA_SETTLE_MS		10	/* after GPIO20 high; Windows raises it earlier */
++
++struct visa_step {
++	u8 op, a, b;
++};
++
++/* Visa.sys .data va 0x406040, in order: w reg val | d 0 ms | e */
++static const struct visa_step visa_power_on_script[] = {
++	{ 'w', 0x01, 0x12 }, { 'w', 0x03, 0x00 }, { 'w', 0x03, 0x4d },
++	{ 'w', 0x05, 0x00 }, { 'w', 0x07, 0xc1 }, { 'w', 0x08, 0x20 },
++	{ 'w', 0x0b, 0x8a }, { 'w', 0x0c, 0xd0 }, { 'w', 0x0d, 0xa9 },
++	{ 'w', 0x0e, 0x38 }, { 'w', 0x0f, 0x08 }, { 'w', 0x12, 0x16 },
++	{ 'w', 0x14, 0x0c }, { 'w', 0x21, 0x02 }, { 'w', 0x21, 0x01 },
++	{ 'w', 0x21, 0x04 }, { 'w', 0x21, 0x07 }, { 'w', 0x21, 0x00 },
++	{ 'w', 0x20, 0x06 }, { 'w', 0x01, 0x10 }, { 'w', 0x02, 0x78 },
++	{ 'd', 0x00, 0x32 }, { 'w', 0x02, 0xfe }, { 'w', 0x20, 0x00 },
++	{ 'w', 0x00, 0x00 }, { 'e', 0x00, 0x00 },
++};
++
++struct visa {
++	struct i2c_client *client;
++	struct gpio_desc *enable;
++	struct mutex lock;
++	bool gpio_on;
++	bool powered;
++	unsigned int identifies, powers_on, powers_off;
++	unsigned int writes, i2c_errors, verify_mismatches;
++	int last_err;
++	u8 mm_reg, mm_want, mm_got;
++	u8 dump[VISA_NREGS];
++	bool dump_valid;
++	unsigned int dump_errors;
++};
++
++static void visa_gpio(struct visa *v, int on)
++{
++	gpiod_set_value_cansleep(v->enable, on);
++	v->gpio_on = on;
++}
++
++static int visa_write(struct visa *v, u8 reg, u8 val)
++{
++	int ret, rb;
++
++	ret = i2c_smbus_write_byte_data(v->client, reg, val);
++	v->writes++;
++	if (ret) {
++		v->i2c_errors++;
++		v->last_err = ret;
++		return ret;
++	}
++	rb = i2c_smbus_read_byte_data(v->client, reg);
++	if (rb < 0) {
++		v->i2c_errors++;
++		v->last_err = rb;
++		return rb;
++	}
++	if (rb != val) {
++		v->verify_mismatches++;
++		v->mm_reg = reg;
++		v->mm_want = val;
++		v->mm_got = rb;
++		dev_info(&v->client->dev, "visa: reg %02x wrote %02x, reads back %02x\n",
++			 reg, val, rb);
++	}
++	return 0;
++}
++
++/* Windows' power-off: standby bit, then GPIO20 low -- GPIO low whatever the bus says */
++static void visa_power_off_locked(struct visa *v)
++{
++	int c, r;
++
++	if (v->gpio_on) {
++		c = i2c_smbus_read_byte_data(v->client, VISA_REG_CTRL);
++		if (c < 0) {
++			v->i2c_errors++;
++			v->last_err = c;
++		} else {
++			r = i2c_smbus_write_byte_data(v->client, VISA_REG_CTRL,
++						      c | VISA_CTRL_STANDBY);
++			if (r) {
++				v->i2c_errors++;
++				v->last_err = r;
++			}
++		}
++	}
++	visa_gpio(v, 0);
++	if (v->powered) {
++		v->powered = false;
++		v->powers_off++;
++	}
++	dev_info(&v->client->dev, "visa: standby, GPIO20 low\n");
++}
++
++static int visa_power_on_locked(struct visa *v)
++{
++	const struct visa_step *s;
++	unsigned int mm0 = v->verify_mismatches;
++	int ret;
++
++	if (v->powered)
++		return -EBUSY;
++	visa_gpio(v, 1);
++	msleep(VISA_SETTLE_MS);
++	for (s = visa_power_on_script; s->op != 'e'; s++) {
++		if (s->op == 'w') {
++			ret = visa_write(v, s->a, s->b);
++			if (ret) {
++				dev_err(&v->client->dev,
++					"visa: power-on write %02x <- %02x failed: %d -- standby\n",
++					s->a, s->b, ret);
++				visa_power_off_locked(v);
++				return ret;
++			}
++		} else if (s->op == 'd') {
++			msleep(s->b);
++		} else {
++			visa_power_off_locked(v);
++			return -EINVAL;
++		}
++	}
++	v->powered = true;
++	v->powers_on++;
++	dev_info(&v->client->dev, "visa: POWERED ON (Windows' script, %u read-back mismatch(es))\n",
++		 v->verify_mismatches - mm0);
++	return 0;
++}
++
++/* Read-only on the chip: GPIO20 high, read 0x00..0x21, GPIO20 low. */
++static int visa_identify_locked(struct visa *v)
++{
++	unsigned int r, errs = 0;
++	int x;
++
++	if (v->powered)
++		return -EBUSY;
++	visa_gpio(v, 1);
++	msleep(VISA_SETTLE_MS);
++	for (r = 0; r < VISA_NREGS; r++) {
++		x = i2c_smbus_read_byte_data(v->client, r);
++		if (x < 0) {
++			errs++;
++			v->last_err = x;
++			v->dump[r] = 0;
++		} else {
++			v->dump[r] = x;
++		}
++	}
++	visa_gpio(v, 0);
++	v->dump_valid = true;
++	v->dump_errors = errs;
++	v->identifies++;
++	dev_info(&v->client->dev, "visa: identify: %u of %u registers read, GPIO20 back low\n",
++		 VISA_NREGS - errs, VISA_NREGS);
++	return 0;
++}
++
++static ssize_t visa_state_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct visa *v = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&v->lock);
++	n = sysfs_emit(buf,
++		       "gpio=%d powered=%d identifies=%u powers_on=%u powers_off=%u writes=%u i2c_errors=%u verify_mismatches=%u last_err=%d last_mismatch=%02x:%02x:%02x dump_valid=%d dump_errors=%u\n",
++		       v->gpio_on, v->powered, v->identifies, v->powers_on, v->powers_off,
++		       v->writes, v->i2c_errors, v->verify_mismatches, v->last_err,
++		       v->mm_reg, v->mm_want, v->mm_got, v->dump_valid, v->dump_errors);
++	mutex_unlock(&v->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(visa_state);
++
++static ssize_t visa_dump_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct visa *v = dev_get_drvdata(dev);
++	ssize_t n = 0;
++	unsigned int r;
++
++	mutex_lock(&v->lock);
++	for (r = 0; r < VISA_NREGS; r++)
++		n += sysfs_emit_at(buf, n, "%s%02x:%02x", r ? " " : "", r, v->dump[r]);
++	n += sysfs_emit_at(buf, n, "\n");
++	mutex_unlock(&v->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(visa_dump);
++
++static ssize_t visa_identify_store(struct device *dev, struct device_attribute *attr,
++				   const char *buf, size_t count)
++{
++	struct visa *v = dev_get_drvdata(dev);
++	bool go;
++	int ret;
++
++	ret = kstrtobool(buf, &go);
++	if (ret)
++		return ret;
++	if (!go)
++		return count;
++	mutex_lock(&v->lock);
++	ret = visa_identify_locked(v);
++	mutex_unlock(&v->lock);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_WO(visa_identify);
++
++static ssize_t visa_power_store(struct device *dev, struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct visa *v = dev_get_drvdata(dev);
++	bool on;
++	int ret = 0;
++
++	ret = kstrtobool(buf, &on);
++	if (ret)
++		return ret;
++	mutex_lock(&v->lock);
++	if (on)
++		ret = visa_power_on_locked(v);
++	else
++		visa_power_off_locked(v);
++	mutex_unlock(&v->lock);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_WO(visa_power);
++
++static struct attribute *visa_attrs[] = {
++	&dev_attr_visa_state.attr,
++	&dev_attr_visa_dump.attr,
++	&dev_attr_visa_identify.attr,
++	&dev_attr_visa_power.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(visa);
++
++static int visa_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct visa *v;
++	int ret;
++
++	v = devm_kzalloc(dev, sizeof(*v), GFP_KERNEL);
++	if (!v)
++		return -ENOMEM;
++	v->client = client;
++	ret = devm_mutex_init(dev, &v->lock);
++	if (ret)
++		return ret;
++	/* low at probe: the amplifier stays off until identify or power */
++	v->enable = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(v->enable))
++		return dev_err_probe(dev, PTR_ERR(v->enable), "no enable GPIO (PM8941 GPIO20)\n");
++	v->gpio_on = false;
++	i2c_set_clientdata(client, v);
++	dev_info(dev, "visa: speaker amplifier at 0x%02x, GPIO20 low, no bus traffic until identify or power\n",
++		 client->addr);
++	return 0;
++}
++
++static void visa_remove(struct i2c_client *client)
++{
++	struct visa *v = i2c_get_clientdata(client);
++
++	mutex_lock(&v->lock);
++	if (v->powered || v->gpio_on)
++		visa_power_off_locked(v);
++	mutex_unlock(&v->lock);
++}
++
++static const struct of_device_id visa_of_match[] = {
++	{ .compatible = "nokia,lumia1520-visa" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, visa_of_match);
++
++static const struct i2c_device_id visa_id[] = {
++	{ "lumia1520-visa" },
++	{}
++};
++MODULE_DEVICE_TABLE(i2c, visa_id);
++
++static struct i2c_driver visa_driver = {
++	.probe = visa_probe,
++	.remove = visa_remove,
++	.shutdown = visa_remove,
++	.id_table = visa_id,
++	.driver = {
++		.name = "lumia1520-visa",
++		.of_match_table = visa_of_match,
++		.dev_groups = visa_groups,
++	},
++};
++
 +/* r189: the amplifier first; the card defers until its component exists. */
 +static struct platform_driver * const lumia_q6_drivers[] = {
 +	&lumia_i2s_spk_driver,
@@ -818,13 +1137,24 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +static int __init lumia_q6_init(void)
 +{
-+	return platform_register_drivers(lumia_q6_drivers,
-+					 ARRAY_SIZE(lumia_q6_drivers));
++	int ret;
++
++	ret = platform_register_drivers(lumia_q6_drivers,
++					ARRAY_SIZE(lumia_q6_drivers));
++	if (ret)
++		return ret;
++	/* r191: the VISA speaker amplifier on I2C5 */
++	ret = i2c_add_driver(&visa_driver);
++	if (ret)
++		platform_unregister_drivers(lumia_q6_drivers,
++					    ARRAY_SIZE(lumia_q6_drivers));
++	return ret;
 +}
 +module_init(lumia_q6_init);
 +
 +static void __exit lumia_q6_exit(void)
 +{
++	i2c_del_driver(&visa_driver);
 +	platform_unregister_drivers(lumia_q6_drivers,
 +				    ARRAY_SIZE(lumia_q6_drivers));
 +}
@@ -832,4 +1162,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus, I2S loudspeaker on Secondary MI2S)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc8");
++MODULE_VERSION("q6-card-rc9");

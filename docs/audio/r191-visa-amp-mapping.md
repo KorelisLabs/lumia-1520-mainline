@@ -143,3 +143,50 @@ Driver:
   stream, off after, and in every teardown and abort.
 - **Probe each codec output with the amplifier on**, minimum gain first:
   LINEOUT (all four) and SPK_OUT, then EAR. Then 5 V held, if silent.
+
+## 4. As built (r191 `visa-rc1`, card `q6-card-rc9`, pkgrel 191), staged 2026-11-10
+
+**DT:**
+- the `blsp1_i2c5` states (TLMM 25/26, `blsp_i2c5`);
+- `blsp1_i2c5: i2c@f9927000` (SPI 99, QUP5/AHB clocks, 400 kHz);
+- `visa_amp: speaker-amp@40` (`nokia,lumia1520-visa`, `enable-gpios =
+  <&pm8941_gpios 20 GPIO_ACTIVE_HIGH>`).
+
+The compiled DT resolves the GPIO to the PM8941 `gpio@c000` controller, pin
+20.
+
+**Card** (`q6-card-rc9`), the `lumia1520-visa` I2C driver:
+- **Probe:** GPIO20 low, no bus traffic.
+- **`visa_identify`:** GPIO20 high, 10 ms, **read** regs `0x00` to `0x21`,
+  GPIO20 low.
+- **`visa_power` 1:** GPIO20 high, 10 ms, then Windows' script with every
+  write read back. A mismatch is recorded and an I2C error goes to standby.
+- **`visa_power` 0:** reg `0x01` |= `0x02`, then GPIO20 low.
+- **Remove and shutdown** power off.
+- **`visa_state` and `visa_dump`** report the state and the last identify.
+
+**The codec:** only the version string (`visa-rc1`) changed.
+
+**Checks:**
+- Verifier 5o: 22 checks.
+- Pre-build, against r190's modules: 639 pass, 2 expected failures (the
+  version and the built card).
+- Mutation: 9/9 caught.
+
+**Runners:**
+- **The listen runner, `AMP=visa`** (with a codec output):
+  - the amplifier is powered before the pin, after the gate and the
+    fail-safe;
+  - it must read `powered=1 gpio=1` with no new I2C errors, or the run
+    aborts;
+  - standby + GPIO low after the pin;
+  - per-stream and per-run checks.
+- **The preflight** refuses a powered amplifier.
+- **`all_pa_off`** requires it off.
+- **The teardown** powers it off on every abort.
+- **Selftest:** 105/0.
+
+**Order on hardware:**
+1. identify (read-only);
+2. then `AMP=visa` with LINEOUT, then SPK_OUT, then EAR;
+3. minimum gain, -50 dBFS first.

@@ -2642,7 +2642,7 @@ def main():
     check("the amplifier driver registers before the card",
           re.search(r"lumia_q6_drivers\[\]\s*=\s*\{\s*&lumia_i2s_spk_driver,\s*&lumia_q6_driver,\s*\}", card) is not None
           and "module_platform_driver(" not in card, "the card defers until the component exists")
-    check("the card is q6-card-rc8", 'MODULE_VERSION("q6-card-rc8");' in card, "r189")
+    check("the card is q6-card-rc9", 'MODULE_VERSION("q6-card-rc9");' in card, "r191")
 
     DTS = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
     dts = DTS.read_text(errors="replace") if DTS.exists() else ""
@@ -2697,7 +2697,7 @@ def main():
     cko = pathlib.Path(ko).with_name("snd-soc-lumia1520-q6.ko") if ko else None
     if cko is not None and cko.exists():
         cmi = modinfo(str(cko))
-        check("built card is q6-card-rc8", cmi.get("version") == "q6-card-rc8",
+        check("built card is q6-card-rc9", cmi.get("version") == "q6-card-rc9",
               "found %s" % cmi.get("version"))
         ce = Elf(str(cko))
         cs = ce.by_name.get(".modinfo")
@@ -2757,6 +2757,87 @@ def main():
     check("DT: codec@1,0 takes VDD_SPKDRV from the 5 V boost",
           "vdd-spkdrv-supply = <&pm8941_5v>;" in cn and dts5.count("vdd-spkdrv-supply") == 1,
           "pm8941_5v = PM8941 SMPS4")
+
+    # ==================================================================
+    # 5o. r191: the loudspeaker amplifier "VISA" (I2C5 @ 0x40, GPIO20).
+    #
+    # docs/audio/r191-visa-amp-mapping.md. Windows' Visa.sys protocol:
+    #   1. the power-on script, byte for byte
+    #   2. identify is read-only on the chip and always drops GPIO20
+    #   3. power on: GPIO20 before the first write, 'd' in ms, a failed write
+    #      unwinds to standby; every write is read back
+    #   4. power off: the standby bit, then GPIO20 low on every path
+    #   5. probe: GPIO20 low, no bus traffic; remove and shutdown power off
+    #   6. the DT: the f9927000 bus, its pins, the amp at 0x40 on GPIO20
+    # ==================================================================
+    print()
+    print("=== 5o. the r191 VISA amplifier fence ===")
+    WANT = [("w", 0x01, 0x12), ("w", 0x03, 0x00), ("w", 0x03, 0x4d), ("w", 0x05, 0x00),
+            ("w", 0x07, 0xc1), ("w", 0x08, 0x20), ("w", 0x0b, 0x8a), ("w", 0x0c, 0xd0),
+            ("w", 0x0d, 0xa9), ("w", 0x0e, 0x38), ("w", 0x0f, 0x08), ("w", 0x12, 0x16),
+            ("w", 0x14, 0x0c), ("w", 0x21, 0x02), ("w", 0x21, 0x01), ("w", 0x21, 0x04),
+            ("w", 0x21, 0x07), ("w", 0x21, 0x00), ("w", 0x20, 0x06), ("w", 0x01, 0x10),
+            ("w", 0x02, 0x78), ("d", 0x00, 0x32), ("w", 0x02, 0xfe), ("w", 0x20, 0x00),
+            ("w", 0x00, 0x00), ("e", 0x00, 0x00)]
+    si = card.find("static const struct visa_step visa_power_on_script[] = {")
+    sb = card[si:card.find("};", si)] if si >= 0 else ""
+    got = [(m.group(1), int(m.group(2), 16), int(m.group(3), 16))
+           for m in re.finditer(r"\{\s*'(\w)',\s*0x([0-9a-f]{2}),\s*0x([0-9a-f]{2})\s*\}", sb)]
+    check("the power-on script is Visa.sys's, byte for byte", got == WANT,
+          "%d step(s)%s" % (len(got), "" if got == WANT else " -- first difference at %s" %
+                            next((k for k in range(max(len(got), len(WANT)))
+                                  if k >= len(got) or k >= len(WANT) or got[k] != WANT[k]), "?")))
+    vprobe, vrem = func_body("visa_probe", card), func_body("visa_remove", card)
+    vid, von = func_body("visa_identify_locked", card), func_body("visa_power_on_locked", card)
+    voff, vwr = func_body("visa_power_off_locked", card), func_body("visa_write", card)
+    for nm, bd in (("visa_probe", vprobe), ("visa_remove", vrem), ("visa_identify_locked", vid),
+                   ("visa_power_on_locked", von), ("visa_power_off_locked", voff), ("visa_write", vwr)):
+        check("%s found in the card" % nm, len(bd) > 0, "%d bytes of body" % len(bd))
+    check("identify never writes to the chip",
+          "write" not in vid.replace("visa_identify", "") and "i2c_smbus_read_byte_data(v->client, r)" in vid,
+          "reads 0x00..0x21 only")
+    check("identify raises GPIO20 and always drops it",
+          0 <= vid.find("visa_gpio(v, 1);") < vid.find("i2c_smbus_read_byte_data") < vid.find("visa_gpio(v, 0);"),
+          "low again before it returns")
+    check("power on: GPIO20 before the first write",
+          0 <= von.find("visa_gpio(v, 1);") < von.find("visa_write(v, s->a, s->b)"), "as Windows")
+    check("power on: 'd' sleeps the third byte in ms",
+          "else if (s->op == 'd') {\n\t\t\tmsleep(s->b);" in von, "Visa.sys: x10000 x 100 ns")
+    check("power on: a failed write goes to standby",
+          "visa_power_off_locked(v);\n\t\t\t\treturn ret;" in von, "no amplifier left half-configured")
+    check("every write is read back", 0 <= vwr.find("i2c_smbus_write_byte_data") < vwr.find("i2c_smbus_read_byte_data"),
+          "mismatches recorded")
+    check("power off: the standby bit, then GPIO20 low on every path",
+          0 <= voff.find("c | VISA_CTRL_STANDBY") < voff.find("visa_gpio(v, 0);")
+          and voff.find("visa_gpio(v, 0);") > voff.rfind("}\n\t}") , "GPIO low whatever the bus says")
+    check("VISA_CTRL_STANDBY is 0x02 on reg 0x01",
+          re.search(r"^#define\s+VISA_REG_CTRL\s+0x01\b", card, re.M) is not None
+          and re.search(r"^#define\s+VISA_CTRL_STANDBY\s+0x02\b", card, re.M) is not None, "Visa.sys 0x403d38")
+    check("probe: GPIO20 low and no bus traffic",
+          'devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW)' in vprobe and "i2c_smbus" not in vprobe,
+          "off until identify or power")
+    check("remove and shutdown power the amplifier off",
+          "visa_power_off_locked(v);" in vrem and ".remove = visa_remove," in card and ".shutdown = visa_remove," in card,
+          "unload and reboot")
+    check("the I2C driver is registered, with the platform drivers unwound on failure",
+          "ret = i2c_add_driver(&visa_driver);" in card and "i2c_del_driver(&visa_driver);" in card,
+          "module init/exit")
+    check("visa binds by its own compatible",
+          '{ .compatible = "nokia,lumia1520-visa" }' in card, "an unidentified part")
+    ii = dts5.find("blsp1_i2c5: i2c@f9927000 {")
+    inode = dts5[ii:dts5.find("\n\t};", ii)] if ii >= 0 else ""
+    check("DT: BLSP1 I2C5 at f9927000, SPI 99, QUP5 clocks, its pins",
+          'compatible = "qcom,i2c-qup-v2.1.1";' in inode and "reg = <0xf9927000 0x1000>;" in inode
+          and "interrupts = <GIC_SPI 99 IRQ_TYPE_LEVEL_HIGH>;" in inode
+          and "<&gcc GCC_BLSP1_QUP5_I2C_APPS_CLK>, <&gcc GCC_BLSP1_AHB_CLK>" in inode
+          and "pinctrl-0 = <&blsp1_i2c5_default>;" in inode, "Windows' \\_SB.I2C5")
+    check("DT: the amplifier at 0x40 on PM8941 GPIO20, active high",
+          "speaker-amp@40 {" in inode and "reg = <0x40>;" in inode
+          and "enable-gpios = <&pm8941_gpios 20 GPIO_ACTIVE_HIGH>;" in inode, "ACPI VISA, PM01 pin 0x698")
+    pd = dts5[dts5.find("blsp1_i2c5_default: blsp1-i2c5-default-state {"):]
+    pd = pd[:pd.find("};")]
+    check("DT: TLMM 25/26 on blsp_i2c5", 'pins = "gpio25", "gpio26";' in pd and 'function = "blsp_i2c5";' in pd,
+          "the PEP's functions 4 and 5")
 
     if args.expect_asoc:
         print()

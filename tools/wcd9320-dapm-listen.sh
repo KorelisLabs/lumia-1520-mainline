@@ -102,6 +102,25 @@ case "$DBFS" in
 esac
 OUTPUT="${OUTPUT:-hph}"
 dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk, ear, lo or i2s)"; exit 2; }
+# r190: HOLD_5V=i2s plays a CODEC output (lo or ear) with the PM8941 5 V rail
+# held up for the whole stream by the I2S back end alongside it: one stream,
+# both routes, the Loudspeaker pin on with the output's own pin. It answers
+# "is the loudspeaker an analog amp on a codec output, powered from the boost?"
+# without a rebuild. The I2S side carries the same tone to TLMM 79-82.
+HOLD_5V="${HOLD_5V:-}"
+# r191: AMP=visa powers the VISA speaker amplifier (Windows' power-on script)
+# around each stream of a codec output, and standby + GPIO20 low after it;
+# every abort and teardown powers it off too. The amplifier's input is
+# unknown, so this is how each codec output is probed with it on.
+AMP="${AMP:-}"
+case "$AMP:$OUTPUT" in
+:*|visa:spk|visa:ear|visa:lo|visa:hph) ;;
+*) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for a codec output)"; exit 2 ;;
+esac
+case "$HOLD_5V:$OUTPUT" in
+:*|i2s:lo|i2s:ear) ;;
+*) echo "INVALID SETUP: HOLD_5V=$HOLD_5V with OUTPUT=$OUTPUT (HOLD_5V=i2s is for lo or ear)"; exit 2 ;;
+esac
 # r189: one front-end route at a time -- this output's mixer on, the other off
 if [ "$OUTPUT" = "i2s" ]; then
 	MIXER="${MIXER:-$I2S_MIXER}"; OTHER_MIXER="$SLIM_MIXER"
@@ -169,6 +188,11 @@ all_pa_off() {
 		[ "$(rv "$_ai" supply_on)" = "0" ] || return 1
 		[ "$(vreg_5v | cut -d' ' -f1)" = "disabled" ] || return 1
 	fi
+	# r191: the VISA amplifier in standby, GPIO20 low
+	_av=$(visa_state)
+	if [ -n "$_av" ]; then
+		[ "$(rv "$_av" powered) $(rv "$_av" gpio)" = "0 0" ] || return 1
+	fi
 	[ -n "$_ao" ] || return 0
 	[ $(( 0x$(rv "$_ao" spken_0x1df) & 0x80 )) -eq 0 ] &&
 	[ $(( 0x$(rv "$_ao" ear_0x1bc) & 0x10 )) -eq 0 ] &&
@@ -203,7 +227,7 @@ path_ready() {	# path_ready <dapm_state>
 }
 path_down() {	# path_down <dapm_state>
 	[ "$(dapm_held_key_is "$1" "$OUT_KEY" "$OUT_NONE")" = "OK" ] || return 1
-	[ "$OUTPUT" = "i2s" ] || return 0
+	[ "$OUTPUT" = "i2s" ] || [ -n "$HOLD_5V" ] || return 0
 	_pd=$(i2s_state)
 	[ "$(rv "$_pd" supply_on)" = "0" ] && [ "$(rv "$_pd" bclk_on)" = "0" ]
 }
@@ -326,6 +350,10 @@ preflight() {
 		[ "$(rv "$OPRE" clsh_lo)" = "0" ] || _bad="$_bad clsh-lo-on"
 		[ "$(dapm_kv "$D_PRE" "$OUT_KEY")" = "$OUT_NONE" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$D_PRE" "$OUT_KEY")"
 	fi
+	# r191: the VISA amplifier off -- whatever this run's output is
+	APRE=$(visa_state)
+	[ -z "$AMP" ] || [ -n "$APRE" ] || _bad="$_bad no-visa-amp"
+	[ -z "$APRE" ] || [ "$(rv "$APRE" powered) $(rv "$APRE" gpio)" = "0 0" ] || _bad="$_bad visa-on"
 	# r189: the I2S amplifier idle -- whatever this run's output is
 	IPRE=$(i2s_state)
 	VPRE=$(vreg_5v)
@@ -395,7 +423,29 @@ stream() {	# stream <n> <spec>
 
 	failsafe_arm "stream-c$_n" || { dl_abort "failsafe-unavailable"; return 1; }
 
+	# r191: the VISA amplifier on BEFORE the pin -- Windows' script, read back
+	if [ -n "$AMP" ]; then
+		_a0=$(visa_state)
+		visa_power 1
+		_a1=$(visa_state)
+		eval "S${_n}_VISAON=\$_a1"
+		jrn "visa power on: $_a1"
+		if [ "$(rv "$_a1" powered) $(rv "$_a1" gpio)" != "1 1" ] ||
+		   [ "$(rv "$_a1" i2c_errors)" != "$(rv "$_a0" i2c_errors)" ]; then
+			jrn "THE VISA AMPLIFIER DID NOT POWER ON CLEANLY -- abort"
+			dl_abort "visa-on-c$_n"
+			return 1
+		fi
+		_mm=$(( $(rv "$_a1" verify_mismatches) - $(rv "$_a0" verify_mismatches) ))
+		eval "S${_n}_VISAMM=\$_mm"
+		jrn "visa: $_mm read-back mismatch(es) in the script (last $(rv "$_a1" last_mismatch) reg:want:got)"
+		flag_ok "visa-on-c$_n" || return 1
+	fi
+
 	pin_set 1 || { jrn "pin ON did not read back"; dl_abort "pin-on"; return 1; }
+	if [ -n "$HOLD_5V" ]; then
+		ctl_set "Loudspeaker Switch" 1 || { jrn "Loudspeaker pin ON did not read back"; dl_abort "hold-pin-on"; return 1; }
+	fi
 	_s=$(cat "$PGD/dapm_state" 2>/dev/null)
 	eval "S${_n}_PINON=\$_s"
 	jrn "pin ON; with no stream: $_s"
@@ -456,6 +506,7 @@ stream() {	# stream <n> <spec>
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs; S${_n}_R=\$_r; S${_n}_R1=\$_r1"
 	eval "S${_n}_I2S=\$_i; S${_n}_V5=\$_v; S${_n}_MUX=\$_m; S${_n}_SLIM=\$_su"
+	_vl=$(visa_state); eval "S${_n}_VISALIVE=\$_vl"
 	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | 0x1b1=$(rv "$_p" dac_0x1b1) 0x1b7=$(rv "$_r" rdac_0x1b7) | 0x1ae=$(rv "$_p" lgain_0x1ae) 0x1b4=$(rv "$_r" rgain_0x1b4) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
 	_bad=""
 	[ "$(dapm_held_key_is "$_l" "$OUT_KEY" "$OUT_ALL")" = "OK" ] || _bad="$_bad $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY")"
@@ -468,9 +519,11 @@ stream() {	# stream <n> <spec>
 		[ "$(rv "$_o" spkdrv)" = "1" ] || _bad="$_bad spkdrv=$(rv "$_o" spkdrv)"
 		[ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad 5v=$_v"
 	     fi ;;
-	ear) [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
+	ear) [ -z "$HOLD_5V" ] || [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad held-5v=$_v"
+	     [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
-	lo)  [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
+	lo)  [ -z "$HOLD_5V" ] || [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad held-5v=$_v"
+	     [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
 	     [ $(( 0x$(rv "$_o" locnp_0x1ca) )) -eq "$LO_SELECT" ] || _bad="$_bad cnp=$(rv "$_o" locnp_0x1ca)"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	i2s) [ "$(rv "$_i" supply_on) $(rv "$_i" pins_active) $(rv "$_i" bclk_on)" = "1 1 1" ] ||
@@ -508,6 +561,14 @@ stream() {	# stream <n> <spec>
 	jrn "after the stream (~$((_w * 100)) ms): $_a | 0x1ab=$(rv "$_p" pa_0x1ab)"
 
 	pin_set 0 || jrn "pin OFF did not read back"
+	[ -z "$HOLD_5V" ] || ctl_set "Loudspeaker Switch" 0 || jrn "Loudspeaker pin OFF did not read back"
+	# r191: the VISA amplifier to standby, GPIO20 low, after the pin
+	if [ -n "$AMP" ]; then
+		visa_power 0
+		_a2=$(visa_state)
+		eval "S${_n}_VISAOFF=\$_a2"
+		jrn "visa power off: $_a2"
+	fi
 	_pin=$(pin_get)
 	eval "S${_n}_PIN=\$_pin"
 
@@ -538,6 +599,8 @@ launch)
 	CMD="systemd-run --unit=$UNIT --collect --setenv=OUTDIR=$OUTDIR"
 	CMD="$CMD --setenv=DBFS=$DBFS --setenv=SPECS=$SPECS --setenv=HOLD_ARM=$HOLD_ARM"
 	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE --setenv=LO_SELECT=$LO_SELECT"
+	[ -z "$HOLD_5V" ] || CMD="$CMD --setenv=HOLD_5V=$HOLD_5V"
+	[ -z "$AMP" ] || CMD="$CMD --setenv=AMP=$AMP"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -581,6 +644,10 @@ jrn "abort watcher armed, pid $WATCH_PID"
 ctl_set "$OTHER_MIXER" 0 || { jrn "$OTHER_MIXER would not go off -- nothing armed"; exit 2; }
 ctl_set "$MIXER" 1 || { jrn "$MIXER would not go on -- nothing armed"; exit 2; }
 jrn "front-end mixer enabled: $MIXER (and $OTHER_MIXER off)"
+if [ -n "$HOLD_5V" ]; then
+	ctl_set "$I2S_MIXER" 1 || { jrn "$I2S_MIXER would not go on -- nothing armed"; exit 2; }
+	jrn "HOLD_5V=i2s: $I2S_MIXER ON too -- the 5 V rail rides the I2S back end for each stream"
+fi
 
 RC=0
 n=1
@@ -596,6 +663,7 @@ pins_all_off
 # r189: an I2S run leaves its route off, so later playback cannot start the
 # MI2S back end by inheritance
 [ "$OUTPUT" != "i2s" ] || { ctl_set "$MIXER" 0 && jrn "$MIXER off at the end"; }
+[ -z "$HOLD_5V" ] || { ctl_set "$I2S_MIXER" 0 && jrn "HOLD_5V: $I2S_MIXER off at the end"; }
 # r185/r187: every volume back to its boot value
 if vol_restore; then
 	jrn "volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15"
@@ -608,6 +676,7 @@ fi
 OPOST=$(cat "$PGD/out_state" 2>/dev/null)
 RPOST=$(cat "$PGD/hphr_state" 2>/dev/null)
 IPOST=$(i2s_state); VPOST=$(vreg_5v); MPOST=$(mi2s_mux)
+APOST=$(visa_state)
 
 D_POST=$(cat "$PGD/dapm_state" 2>/dev/null)
 POST=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
@@ -705,6 +774,11 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 			elif [ "$OUTPUT" = "lo" ]; then
 				_sel=$(printf '%02x' "$LO_SELECT")
 				check "s$c line-out PAs live = select (0x1ca)" "$(rv "$_o" locnp_0x1ca)" "$_sel"
+				if [ -n "$HOLD_5V" ]; then
+					eval "_v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
+					check "s$c HOLD_5V: the 5 V rail enabled live" "$(printf '%s' "$_v" | cut -d' ' -f1)" "enabled"
+					check "s$c HOLD_5V: the 5 V rail disabled after" "$(printf '%s' "$_va" | cut -d' ' -f1)" "disabled"
+				fi
 				_lf=$(dapm_spec_field "${_hv:-0}")
 				for _g in logain_0x1cd logain_0x1d1 logain_0x1d5 logain_0x1d9; do
 					_x=$(rv "$_o" "$_g")
@@ -721,6 +795,11 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				check "s$c class-H LO off after" "$(rv "$_oa" clsh_lo)" "0"
 			else
 				check "s$c earpiece live (0x1bc DAC1 + switch + PA)" "$(rv "$_o" ear_0x1bc)" "70"
+				if [ -n "$HOLD_5V" ]; then
+					eval "_v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
+					check "s$c HOLD_5V: the 5 V rail enabled live" "$(printf '%s' "$_v" | cut -d' ' -f1)" "enabled"
+					check "s$c HOLD_5V: the 5 V rail disabled after" "$(printf '%s' "$_va" | cut -d' ' -f1)" "disabled"
+				fi
 				check "s$c class-H in EAR mode" "$(rv "$_o" clsh_ear)" "1"
 				check "s$c earpiece off after" "$(rv "$_oa" ear_0x1bc)" "00"
 			fi
@@ -764,11 +843,35 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "no OCP fault" "$(rv "$POST" ocp_seen)" "0"
 	check "PA enables == disables" "$(rv "$POST" enables)" "$(rv "$POST" disables)"
 
+	# r191: the VISA amplifier, per stream and for the run
+	if [ -n "${APRE:-}" ]; then
+		say ""
+		say "-- the VISA amplifier --"
+		_ns=0; [ -n "$AMP" ] && _ns=$((n - 1))
+		c=1
+		while [ -n "$AMP" ] && [ "$c" -lt "$n" ]; do
+			eval "_von=\${S${c}_VISAON:-}; _vli=\${S${c}_VISALIVE:-}; _vof=\${S${c}_VISAOFF:-}; _vmm=\${S${c}_VISAMM:-?}"
+			check "s$c visa powered, GPIO20 high, before the stream" "$(rv "$_von" powered) $(rv "$_von" gpio)" "1 1"
+			check "s$c visa still powered live" "$(rv "$_vli" powered)" "1"
+			check "s$c visa standby and GPIO20 low after" "$(rv "$_vof" powered) $(rv "$_vof" gpio)" "0 0"
+			note "s$c visa read-back mismatches in the script" "$_vmm"
+			c=$((c + 1))
+		done
+		for _k in powers_on powers_off; do
+			_k1=$(rv "$APOST" "$_k"); _k0=$(rv "$APRE" "$_k")
+			check "visa $_k this run" "$(( ${_k1:-0} - ${_k0:-0} ))" "$_ns"
+		done
+		_e1=$(rv "$APOST" i2c_errors); _e0=$(rv "$APRE" i2c_errors)
+		check "visa I2C errors this run" "$(( ${_e1:-0} - ${_e0:-0} ))" "0"
+		check "visa off at the end (powered, GPIO20)" "$(rv "$APOST" powered) $(rv "$APOST" gpio)" "0 0"
+		say "visa at the end: $APOST"
+	fi
+
 	# r189: the amplifier's own accounting, and its idle state at the end
 	if [ -n "${IPRE:-}" ]; then
 		say ""
 		say "-- the I2S amplifier's accounting --"
-		_ns=0; [ "$OUTPUT" = "i2s" ] && _ns=$((n - 1))
+		_ns=0; { [ "$OUTPUT" = "i2s" ] || [ -n "$HOLD_5V" ]; } && _ns=$((n - 1))
 		for _k in enables disables bclk_sets bclk_clears; do
 			_k1=$(rv "$IPOST" "$_k"); _k0=$(rv "$IPRE" "$_k")
 			check "i2s $_k this run" "$(( ${_k1:-0} - ${_k0:-0} ))" "$_ns"

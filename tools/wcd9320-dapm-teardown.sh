@@ -73,6 +73,16 @@ else
 	note "no $PLAYER running"
 fi
 
+# r191: the VISA speaker amplifier to standby, GPIO20 low -- whatever ran
+for _vd in /sys/bus/i2c/drivers/lumia1520-visa/*-0040; do
+	[ -e "$_vd/visa_power" ] || continue
+	if echo 0 > "$_vd/visa_power" 2>/dev/null; then
+		note "visa amplifier: standby, GPIO20 low ($(cat "$_vd/visa_state" 2>/dev/null | cut -c1-40))"
+	else
+		note "VISA POWER-OFF WRITE FAILED on $_vd"
+	fi
+done
+
 # 3. the driver's C3 abort, whatever happened above
 sh "$DIR/wcd9320-hphl-pa-teardown.sh" "dapm-$REASON" >/dev/null 2>&1
 note "C3 abort issued"
