@@ -196,6 +196,7 @@ if [ -n "$(i2s_state_file)" ]; then
 		sleep 0.05; _pw=$((_pw + 1))
 	done
 	I1=$(i2s_state); V1=$(vreg_5v); M1=$(mi2s_mux); DI1=$(cat "$PGD/dapm_state" 2>/dev/null)
+	VA1=$(visa_state)	# r192: the amplifier must stay off with the pin OFF
 	LSP1=$(dapm_pin_value "$("$SETCTL" -D "$CTLDEV" --get "Loudspeaker Switch" 2>/dev/null)")
 	wait "$TPID"
 	TRCI=$?
@@ -308,6 +309,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 		      "$(rv "$I0" supply_on) $(rv "$I0" pins_active) $(rv "$I0" bclk_on)" "0 0 0"
 		check "i2s: the stream was RUNNING when sampled" "${PCMI:-?}" "RUNNING"
 		check "i2s: the back end started (bit clock on)" "$(rv "$I1" bclk_on)" "1"
+		[ -z "$VA1" ] || check "i2s: the VISA amplifier off during (powered, GPIO20)" "$(rv "$VA1" powered) $(rv "$VA1" gpio)" "0 0"
 		check "i2s: the amplifier unpowered during (supply, pins)" \
 		      "$(rv "$I1" supply_on) $(rv "$I1" pins_active)" "0 0"
 		check "i2s: the 5 V rail off during (regulator class)" "$(printf '%s' "$V1" | cut -d' ' -f1)" "disabled"

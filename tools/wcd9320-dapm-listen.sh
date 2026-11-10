@@ -115,8 +115,9 @@ HOLD_5V="${HOLD_5V:-}"
 # with it on.
 AMP="${AMP:-}"
 case "$AMP:$OUTPUT" in
-:*|visa:spk|visa:ear|visa:lo|visa:hph|visa:i2s) ;;
-*) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for spk, ear, lo, hph or i2s)"; exit 2 ;;
+:*|visa:spk|visa:ear|visa:lo|visa:hph) ;;
+# r192: on the I2S path the card's DAPM owns the amplifier; the runner must not
+*) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for spk, ear, lo or hph; i2s powers it through DAPM)"; exit 2 ;;
 esac
 case "$HOLD_5V:$OUTPUT" in
 :*|i2s:lo|i2s:ear) ;;
@@ -533,6 +534,9 @@ stream() {	# stream <n> <spec>
 	     [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad 5v=$_v"
 	     [ "$_m" = "sec_mi2s sec_mi2s sec_mi2s sec_mi2s" ] || _bad="$_bad mux=$_m"
 	     [ "$_su" = "0" ] || _bad="$_bad slim-up"
+	     # r192: the amplifier powered by DAPM with the path
+	     [ -z "$_vl" ] || [ "$(rv "$_vl" powered) $(rv "$_vl" dapm_held)" = "1 1" ] ||
+	         _bad="$_bad visa=$(rv "$_vl" powered)$(rv "$_vl" dapm_held)"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	esac
 	[ "$(rv "$_p" ocp_seen)" = "0" ] || _bad="$_bad ocp"
@@ -575,6 +579,7 @@ stream() {	# stream <n> <spec>
 
 	eval "S${_n}_OAFTER=\$(cat \"\$PGD/out_state\" 2>/dev/null)"
 	_ia=$(i2s_state); _va=$(vreg_5v); _ma=$(mi2s_mux)
+	_vaf=$(visa_state); eval "S${_n}_VISAAFTER=\$_vaf"
 	eval "S${_n}_I2SA=\$_ia; S${_n}_V5A=\$_va; S${_n}_MUXA=\$_ma"
 	[ "$OUTPUT" != "i2s" ] || jrn "i2s after: $_ia | 5V $_va | mux $_ma"
 	if all_pa_off &&
@@ -744,6 +749,14 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 			      "$(rv "$_ia" supply_on) $(rv "$_ia" pins_active) $(rv "$_ia" bclk_on)" "0 0 0"
 			check "s$c regulator class: s4 disabled after" "$(printf '%s' "$_va" | cut -d' ' -f1)" "disabled"
 			check "s$c pins 79-82 back to GPIO after" "$_ma" "gpio gpio gpio gpio"
+			# r192: the VISA amplifier, powered by DAPM with the path
+			eval "_vli=\${S${c}_VISALIVE:-}; _vaf=\${S${c}_VISAAFTER:-}"
+			if [ -n "$_vli" ]; then
+				check "s$c VISA powered by DAPM live (powered, dapm_held, GPIO20)" \
+				      "$(rv "$_vli" powered) $(rv "$_vli" dapm_held) $(rv "$_vli" gpio)" "1 1 1"
+				check "s$c VISA standby after (powered, dapm_held, GPIO20)" \
+				      "$(rv "$_vaf" powered) $(rv "$_vaf" dapm_held) $(rv "$_vaf" gpio)" "0 0 0"
+			fi
 			check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" held)" "$DAPM_HELD_NONE"
 			check "s$c pin OFF after" "$_pin" "0"
 			c=$((c + 1))
@@ -848,7 +861,7 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	if [ -n "${APRE:-}" ]; then
 		say ""
 		say "-- the VISA amplifier --"
-		_ns=0; [ -n "$AMP" ] && _ns=$((n - 1))
+		_ns=0; { [ -n "$AMP" ] || [ "$OUTPUT" = "i2s" ]; } && _ns=$((n - 1))
 		c=1
 		while [ -n "$AMP" ] && [ "$c" -lt "$n" ]; do
 			eval "_von=\${S${c}_VISAON:-}; _vli=\${S${c}_VISALIVE:-}; _vof=\${S${c}_VISAOFF:-}; _vmm=\${S${c}_VISAMM:-?}"
