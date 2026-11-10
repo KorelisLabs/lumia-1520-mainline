@@ -851,6 +851,8 @@
 	i2s_spk: audio-amplifier {
 		compatible = "nokia,lumia1520-i2s-spk";
 		vdd-supply = <&pm8941_5v>;
+		/* r192: the amplifier this port feeds; its DAPM supply powers it */
+		nokia,visa = <&visa_amp>;
 
 		pinctrl-names = "default", "active";
 		pinctrl-0 = <&sec_mi2s_sleep>;

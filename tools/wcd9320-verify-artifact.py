@@ -2642,7 +2642,7 @@ def main():
     check("the amplifier driver registers before the card",
           re.search(r"lumia_q6_drivers\[\]\s*=\s*\{\s*&lumia_i2s_spk_driver,\s*&lumia_q6_driver,\s*\}", card) is not None
           and "module_platform_driver(" not in card, "the card defers until the component exists")
-    check("the card is q6-card-rc9", 'MODULE_VERSION("q6-card-rc9");' in card, "r191")
+    check("the card is q6-card-rc10", 'MODULE_VERSION("q6-card-rc10");' in card, "r192")
 
     DTS = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
     dts = DTS.read_text(errors="replace") if DTS.exists() else ""
@@ -2697,7 +2697,7 @@ def main():
     cko = pathlib.Path(ko).with_name("snd-soc-lumia1520-q6.ko") if ko else None
     if cko is not None and cko.exists():
         cmi = modinfo(str(cko))
-        check("built card is q6-card-rc9", cmi.get("version") == "q6-card-rc9",
+        check("built card is q6-card-rc10", cmi.get("version") == "q6-card-rc10",
               "found %s" % cmi.get("version"))
         ce = Elf(str(cko))
         cs = ce.by_name.get(".modinfo")
@@ -2838,6 +2838,47 @@ def main():
     pd = pd[:pd.find("};")]
     check("DT: TLMM 25/26 on blsp_i2c5", 'pins = "gpio25", "gpio26";' in pd and 'function = "blsp_i2c5";' in pd,
           "the PEP's functions 4 and 5")
+
+    # ==================================================================
+    # 5p. r192: the VISA amplifier under DAPM, on the I2S path.
+    #
+    # r191 heard the loudspeaker with GPIO20 + Windows' script + the I2S
+    # stream together. The I2S component's supply now powers the amplifier:
+    #   up    rail -> pins -> VISA, and a refused VISA unwinds pins and rail
+    #   down  VISA standby -> pins -> rail
+    #   probe the "nokia,visa" phandle, deferred until the I2C driver binds
+    #   hand  visa_power refused while DAPM holds the amplifier
+    # ==================================================================
+    print()
+    print("=== 5p. the r192 VISA-under-DAPM fence ===")
+    sev2 = func_body("lumia_i2s_spk_supply_event", card)
+    up2 = sev2[sev2.find("case SND_SOC_DAPM_PRE_PMU:"):sev2.find("case SND_SOC_DAPM_POST_PMD:")]
+    dn2 = sev2[sev2.find("case SND_SOC_DAPM_POST_PMD:"):]
+    check("up: rail, then pins, then the amplifier",
+          0 <= up2.find("regulator_enable(spk->vdd)") < up2.find("pinctrl_select_state(spk->pins, spk->pins_active)")
+          < up2.find("visa_dapm_power(spk->visa, true)"), "configured only with its rail and inputs live")
+    vfail = up2[up2.find("visa_dapm_power(spk->visa, true)"):up2.find("spk->enables++;")]
+    check("up: a refused amplifier puts the pins to sleep and the rail off",
+          0 <= vfail.find("pinctrl_select_state(spk->pins, spk->pins_sleep)") < vfail.find("regulator_disable(spk->vdd)")
+          and "break;" in vfail, "nothing left half-up")
+    check("down: the amplifier to standby before the pins and the rail",
+          0 <= dn2.find("visa_dapm_power(spk->visa, false)") < dn2.find("pinctrl_select_state(spk->pins, spk->pins_sleep)")
+          < dn2.find("regulator_disable(spk->vdd)"), "standby before its inputs go")
+    sprb = func_body("lumia_i2s_spk_probe", card)
+    check("probe takes the amplifier from DT and defers until it is bound",
+          'of_parse_phandle(dev->of_node, "nokia,visa", 0)' in sprb
+          and "of_find_i2c_device_by_node(np)" in sprb and "spk->visa = i2c_get_clientdata(spk->visa_client);" in sprb
+          and sprb.count("-EPROBE_DEFER") == 2 and "devm_add_action_or_reset(dev, lumia_i2s_spk_put_visa," in sprb,
+          "the reference is released with the component")
+    vdp = func_body("visa_dapm_power", card)
+    check("visa_dapm_power: on under the lock, off only what DAPM powered",
+          "mutex_lock(&v->lock);" in vdp and "ret = visa_power_on_locked(v);" in vdp
+          and "} else if (v->dapm_held) {" in vdp and "visa_power_off_locked(v);" in vdp, "no double power")
+    vps = func_body("visa_power_store", card)
+    check("hand power refused while DAPM holds the amplifier",
+          "if (v->dapm_held)\n\t\tret = -EBUSY;" in vps, "one owner at a time")
+    check("DT: the I2S amplifier node points at VISA",
+          "nokia,visa = <&visa_amp>;" in dts5 and "visa_amp: speaker-amp@40 {" in dts5, "the phandle the probe follows")
 
     if args.expect_asoc:
         print()

@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-10 17:19:48.153421755 -0500
-@@ -0,0 +1,1089 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-10 18:38:53.639303083 -0500
+@@ -0,0 +1,1177 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -285,6 +285,19 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 + */
 +#define LUMIA_MI2S_BCLK_RATE	1536000	/* 48 kHz x 2 x 16 bit */
 +
++/*
++ * r192: THE AMPLIFIER UNDER DAPM. r191 proved the loudspeaker is the VISA
++ * amplifier (I2C5 @ 0x40, GPIO20) fed by this port's DATA1 -- it sounds only
++ * with GPIO20 high, Windows' script written, and the I2S stream running. So
++ * this component's supply now powers it too, last on the way up (rail, pins,
++ * VISA) and first on the way down (VISA standby, pins, rail): the amplifier
++ * is configured only while its rail and its inputs are live, and goes to
++ * standby before they are taken away. The VISA driver is further down; the
++ * DT links the two ("nokia,visa").
++ */
++struct visa;
++static int visa_dapm_power(struct visa *v, bool on);
++
 +struct lumia_i2s_spk {
 +	struct device *dev;
 +	struct regulator *vdd;
@@ -301,6 +314,8 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	unsigned int bclk_clears;
 +	unsigned int errors;
 +	int last_err;
++	struct i2c_client *visa_client;	/* r192: held for the component's life */
++	struct visa *visa;		/* NULL: no "nokia,visa" in DT (r189 behaviour) */
 +};
 +
 +static void lumia_i2s_spk_err(struct lumia_i2s_spk *spk, int ret)
@@ -338,11 +353,34 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +			break;
 +		}
 +		spk->pins_on = true;
++		/* r192: the amplifier last -- rail and inputs are live */
++		if (spk->visa) {
++			ret = visa_dapm_power(spk->visa, true);
++			if (ret) {
++				dev_err(spk->dev, "i2s-spk: the VISA amplifier would not power on: %d -- pins asleep, rail off\n", ret);
++				lumia_i2s_spk_err(spk, ret);
++				r = pinctrl_select_state(spk->pins, spk->pins_sleep);
++				if (r)
++					lumia_i2s_spk_err(spk, r);
++				else
++					spk->pins_on = false;
++				r = regulator_disable(spk->vdd);
++				if (r)
++					lumia_i2s_spk_err(spk, r);
++				else
++					spk->supply_on = false;
++				break;
++			}
++		}
 +		spk->enables++;
-+		dev_info(spk->dev, "i2s-spk: 5 V rail on (%d uV), sec_mi2s pins active\n",
-+			 regulator_get_voltage(spk->vdd));
++		dev_info(spk->dev, "i2s-spk: 5 V rail on (%d uV), sec_mi2s pins active%s\n",
++			 regulator_get_voltage(spk->vdd),
++			 spk->visa ? ", VISA amplifier powered" : "");
 +		break;
 +	case SND_SOC_DAPM_POST_PMD:
++		/* r192: the amplifier first -- standby before its inputs go */
++		if (spk->visa)
++			visa_dapm_power(spk->visa, false);
 +		if (spk->pins_on) {
 +			r = pinctrl_select_state(spk->pins, spk->pins_sleep);
 +			if (r) {
@@ -412,12 +450,12 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		return -ENODEV;
 +	mutex_lock(&spk->lock);
 +	n = sysfs_emit(buf,
-+		       "supply_on=%d pins_active=%d bclk_on=%d enables=%u disables=%u bclk_sets=%u bclk_clears=%u errors=%u last_err=%d vdd_enabled=%d vdd_uV=%d\n",
++		       "supply_on=%d pins_active=%d bclk_on=%d enables=%u disables=%u bclk_sets=%u bclk_clears=%u errors=%u last_err=%d vdd_enabled=%d vdd_uV=%d visa=%d\n",
 +		       spk->supply_on, spk->pins_on, spk->bclk_on,
 +		       spk->enables, spk->disables, spk->bclk_sets,
 +		       spk->bclk_clears, spk->errors, spk->last_err,
 +		       regulator_is_enabled(spk->vdd),
-+		       regulator_get_voltage(spk->vdd));
++		       regulator_get_voltage(spk->vdd), spk->visa != NULL);
 +	mutex_unlock(&spk->lock);
 +	return n;
 +}
@@ -429,10 +467,16 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +};
 +ATTRIBUTE_GROUPS(lumia_i2s_spk);
 +
++static void lumia_i2s_spk_put_visa(void *client)
++{
++	put_device(&((struct i2c_client *)client)->dev);
++}
++
 +static int lumia_i2s_spk_probe(struct platform_device *pdev)
 +{
 +	struct device *dev = &pdev->dev;
 +	struct lumia_i2s_spk *spk;
++	struct device_node *np;
 +	int ret;
 +
 +	spk = devm_kzalloc(dev, sizeof(*spk), GFP_KERNEL);
@@ -465,13 +509,35 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	if (regulator_is_enabled(spk->vdd) > 0)
 +		dev_warn(dev, "i2s-spk: the 5 V rail is already on at probe -- another consumer holds it\n");
 +
++	/*
++	 * r192: the VISA amplifier this port feeds. Deferred until its I2C
++	 * driver has bound; the reference is held for the component's life.
++	 */
++	np = of_parse_phandle(dev->of_node, "nokia,visa", 0);
++	if (np) {
++		spk->visa_client = of_find_i2c_device_by_node(np);
++		of_node_put(np);
++		if (!spk->visa_client)
++			return dev_err_probe(dev, -EPROBE_DEFER,
++					     "the VISA amplifier is not on I2C yet\n");
++		ret = devm_add_action_or_reset(dev, lumia_i2s_spk_put_visa,
++					       spk->visa_client);
++		if (ret)
++			return ret;
++		spk->visa = i2c_get_clientdata(spk->visa_client);
++		if (!spk->visa)
++			return dev_err_probe(dev, -EPROBE_DEFER,
++					     "the VISA amplifier driver has not bound yet\n");
++	}
++
 +	platform_set_drvdata(pdev, spk);
 +	ret = devm_snd_soc_register_component(dev, &lumia_i2s_spk_component,
 +					      &lumia_i2s_spk_dai, 1);
 +	if (ret)
 +		return dev_err_probe(dev, ret, "failed to register the component\n");
 +
-+	dev_info(dev, "i2s-spk: unknown control-less I2S amplifier on Secondary MI2S; pins asleep, 5 V rail under DAPM\n");
++	dev_info(dev, "i2s-spk: the loudspeaker path on Secondary MI2S; pins asleep, 5 V rail%s under DAPM\n",
++		 spk->visa ? " and the VISA amplifier" : "");
 +	return 0;
 +}
 +
@@ -866,6 +932,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	u8 dump[VISA_NREGS];
 +	bool dump_valid;
 +	unsigned int dump_errors;
++	bool dapm_held;		/* r192: powered by the I2S component's DAPM supply */
 +};
 +
 +static void visa_gpio(struct visa *v, int on)
@@ -992,6 +1059,24 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	return 0;
 +}
 +
++/* r192: the I2S component's DAPM supply drives the amplifier through this */
++static int visa_dapm_power(struct visa *v, bool on)
++{
++	int ret = 0;
++
++	mutex_lock(&v->lock);
++	if (on) {
++		ret = visa_power_on_locked(v);	/* -EBUSY if powered by hand */
++		if (!ret)
++			v->dapm_held = true;
++	} else if (v->dapm_held) {
++		visa_power_off_locked(v);
++		v->dapm_held = false;
++	}
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
 +static ssize_t visa_state_show(struct device *dev, struct device_attribute *attr, char *buf)
 +{
 +	struct visa *v = dev_get_drvdata(dev);
@@ -999,8 +1084,8 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +	mutex_lock(&v->lock);
 +	n = sysfs_emit(buf,
-+		       "gpio=%d powered=%d identifies=%u powers_on=%u powers_off=%u writes=%u i2c_errors=%u verify_mismatches=%u last_err=%d last_mismatch=%02x:%02x:%02x dump_valid=%d dump_errors=%u\n",
-+		       v->gpio_on, v->powered, v->identifies, v->powers_on, v->powers_off,
++		       "gpio=%d powered=%d dapm_held=%d identifies=%u powers_on=%u powers_off=%u writes=%u i2c_errors=%u verify_mismatches=%u last_err=%d last_mismatch=%02x:%02x:%02x dump_valid=%d dump_errors=%u\n",
++		       v->gpio_on, v->powered, v->dapm_held, v->identifies, v->powers_on, v->powers_off,
 +		       v->writes, v->i2c_errors, v->verify_mismatches, v->last_err,
 +		       v->mm_reg, v->mm_want, v->mm_got, v->dump_valid, v->dump_errors);
 +	mutex_unlock(&v->lock);
@@ -1053,7 +1138,9 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	if (ret)
 +		return ret;
 +	mutex_lock(&v->lock);
-+	if (on)
++	if (v->dapm_held)
++		ret = -EBUSY;	/* r192: DAPM owns it while the Loudspeaker path is up */
++	else if (on)
 +		ret = visa_power_on_locked(v);
 +	else
 +		visa_power_off_locked(v);
@@ -1102,6 +1189,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	mutex_lock(&v->lock);
 +	if (v->powered || v->gpio_on)
 +		visa_power_off_locked(v);
++	v->dapm_held = false;
 +	mutex_unlock(&v->lock);
 +}
 +
@@ -1162,4 +1250,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus, I2S loudspeaker on Secondary MI2S)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc9");
++MODULE_VERSION("q6-card-rc10");

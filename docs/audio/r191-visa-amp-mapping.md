@@ -248,3 +248,33 @@ power off is set. The part is still unidentified.
 - The earpiece: DATA0? the codec EAR? Windows' endpoint `0x4A` muxes DATA0
   alone.
 - Remove the r187 to r190 diagnostic paths that the speaker does not use.
+
+## 6. r192 (`spkamp-rc1`, card `q6-card-rc10`, pkgrel 192): the amplifier under DAPM, staged 2026-11-10
+
+**The I2S component** (`nokia,lumia1520-i2s-spk`) now owns the VISA amplifier
+through `nokia,visa = <&visa_amp>`:
+- **Probe:** it resolves the phandle and defers until the I2C driver has
+  bound, holding the device reference for the component's life.
+- **The `SPK 5V` supply, up:** rail → pins → **VISA power-on** (Windows'
+  script). A refused amplifier puts the pins to sleep and the rail off.
+- **Down:** **VISA standby** → pins → rail.
+- **Hand control:** `visa_power` is refused (`-EBUSY`) while DAPM holds the
+  amplifier. `visa_state` reports `dapm_held`.
+
+So playing to the `Loudspeaker` pin (`SEC_MI2S_RX Audio Mixer MultiMedia1`
+on, `Loudspeaker Switch` on) is all it takes. Nothing outside the kernel
+touches the amplifier.
+
+**The codec:** only the version string changed.
+
+**Checks:**
+- Fences 5p: 7 checks.
+- Pre-build: 646 pass, 2 expected failures.
+- Mutation: 4/4 caught.
+
+**Runners:**
+- `AMP=visa` is refused with `OUTPUT=i2s`.
+- i2s streams check `powered dapm_held gpio = 1 1 1` live and `0 0 0`
+  after, and the VISA powers equal the streams.
+- The digital gate's I2S tone (pin OFF) requires VISA off.
+- Selftest 105/0.
