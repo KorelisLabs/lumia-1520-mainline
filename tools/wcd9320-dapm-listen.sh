@@ -437,8 +437,13 @@ stream() {	# stream <n> <spec>
 		_w=$((_w + 1))
 	done
 	eval "S${_n}_UP_MS=$((_w * 100))"
+	# r189: the I2S amplifier and its two oracles, sampled ONCE, here, the
+	# moment the path is up -- the tone lasts ~1 s, and the first r189 stream's
+	# later re-sample read the pins after they had gone back to sleep.
+	_i=$(i2s_state); _v=$(vreg_5v); _m=$(mi2s_mux)
+	_su=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
 	jrn "path wait: ~$((_w * 100)) ms, $OUT_KEY=$(dapm_kv "$_l" "$OUT_KEY") slim_up=$_up"
-	[ "$OUTPUT" != "i2s" ] || jrn "i2s: $(i2s_state) | 5V $(vreg_5v) | mux $(mi2s_mux)"
+	[ "$OUTPUT" != "i2s" ] || jrn "i2s: $_i | 5V $_v | mux $_m"
 	flag_ok "path-wait-c$_n" || return 1
 	sleep 0.1
 	_l=$(cat "$PGD/dapm_state" 2>/dev/null)
@@ -450,9 +455,6 @@ stream() {	# stream <n> <spec>
 	_hs=$(hph_status)
 	_cs=$(cat "$PGD/clk_source_state" 2>/dev/null)
 	eval "S${_n}_LIVE=\$_l; S${_n}_PA=\$_p; S${_n}_HS=\$_hs; S${_n}_CS=\$_cs; S${_n}_R=\$_r; S${_n}_R1=\$_r1"
-	# r189: the I2S amplifier, and its two oracles, live
-	_i=$(i2s_state); _v=$(vreg_5v); _m=$(mi2s_mux)
-	_su=$(rv "$(cat "$PGD/slim_stream_state" 2>/dev/null)" up)
 	eval "S${_n}_I2S=\$_i; S${_n}_V5=\$_v; S${_n}_MUX=\$_m; S${_n}_SLIM=\$_su"
 	jrn "live: $_l | 0x1ab=$(rv "$_p" pa_0x1ab) ocp=$(rv "$_p" ocp_seen) | 0x1b1=$(rv "$_p" dac_0x1b1) 0x1b7=$(rv "$_r" rdac_0x1b7) | 0x1ae=$(rv "$_p" lgain_0x1ae) 0x1b4=$(rv "$_r" rgain_0x1b4) | mclk_users=$(rv "$_cs" mclk_users) on_mclk=$(rv "$_cs" on_mclk) | $_hs"
 	_bad=""

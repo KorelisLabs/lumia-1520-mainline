@@ -204,14 +204,21 @@ SLIM_MIXER="${SLIM_MIXER:-SLIMBUS_0_RX Audio Mixer MultiMedia1}"
 i2s_state_file() { ls /sys/bus/platform/drivers/lumia1520-i2s-spk/*/i2s_spk_state 2>/dev/null | head -n1; }
 i2s_state() { _isf=$(i2s_state_file); [ -n "$_isf" ] && cat "$_isf" 2>/dev/null; }
 # vreg_5v -> "<state> <num_users>" of the regulator named s4 at 5000000 uV
-vreg_5v() {
+# The directory is found ONCE, when this file is sourced: a scan of every
+# regulator is ~120 forks, and r189's first I2S stream ended (1 s) while the
+# live sample was still scanning -- it then read the pins already asleep.
+vreg_5v_find() {
 	for _vr in /sys/class/regulator/regulator.*; do
 		[ "$(cat "$_vr/name" 2>/dev/null)" = "s4" ] || continue
 		[ "$(cat "$_vr/microvolts" 2>/dev/null)" = "5000000" ] || continue
-		printf '%s %s' "$(cat "$_vr/state" 2>/dev/null)" "$(cat "$_vr/num_users" 2>/dev/null)"
+		printf '%s' "$_vr"
 		return 0
 	done
-	printf '? ?'
+}
+VREG5V_DIR="${VREG5V_DIR:-$(vreg_5v_find)}"
+vreg_5v() {
+	[ -n "$VREG5V_DIR" ] || { printf '? ?'; return; }
+	printf '%s %s' "$(cat "$VREG5V_DIR/state" 2>/dev/null)" "$(cat "$VREG5V_DIR/num_users" 2>/dev/null)"
 }
 # mi2s_mux -> the pinmux function of TLMM 79 80 81 82 ("?" when unclaimed)
 mi2s_mux_parse() {	# mi2s_mux_parse <pinmux-pins text>
