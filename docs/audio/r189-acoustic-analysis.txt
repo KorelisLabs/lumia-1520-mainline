@@ -1,0 +1,42 @@
+r189 (spk-i2s-rc1 / q6-card-rc8) acoustic probes, phone clock 2026-09-03, PC 2026-11-09/10
+Instrument: DGM20 USB mic on the PC, c3a-capture.py record/analyse (winmm, 48 kHz mono).
+Stimulus: 1 kHz, 250 ms tone / silence / tone / silence, both channels (side B).
+Recorder: stopped after the run's evidence was written (lgate.sh fixed in r188),
+so every tone below is inside its recording.
+
+Boot 1 (the built image, qcom,sd-lines = <1>, DATA1 / TLMM 82)
+  gates: zdet 34/0 (Zl 52.3, Zr 57.1 ohm, headset in), digital gate 81/0
+         (incl. the I2S-only tone, Loudspeaker pin OFF: bit clock ran, the
+         amplifier unpowered, rail off, pins GPIO), mclk-own 90/0, vm 57/0
+  HPH regression  004138Z  B:20:84 -40  PASS 86/0   analyser PASS, 22.1 dB contrast, 999.94 Hz
+  I2S             004319Z  B:0:84  -60  ABORTED      runner bug, not the path: the live sample's
+                                                    regulator scan (~120 forks) outlasted the 1 s
+                                                    tone and read the pins already asleep. The
+                                                    first sample, at path-up, had the amplifier
+                                                    1 1 1, 5 V enabled, mux sec_mi2s x4. Silent.
+                                                    Fixed: the regulator dir is found once, the
+                                                    sample is taken once at path-up.
+  I2S             004621Z  B:0:84  -50  PASS 68/0    analyser 0 events (floor -86.6); operator heard nothing
+  I2S             004822Z  B:0:84  -40  PASS 68/0    analyser 0 events (floor -87.1); operator heard nothing
+
+Boot 2 (the same image with ONE byte changed: qcom,sd-lines = <0>, DATA0 / TLMM 81;
+        the DTB patched in place with fdtput, cmp -l shows the single byte; the
+        live /sys/firmware/devicetree read back 00 00 00 00)
+  gates: digital gate 81/0
+  I2S             215829Z  B:0:84  -50  PASS 68/0    analyser 0 events (floor -84.3); operator heard nothing
+  I2S             220006Z  B:0:84  -40  PASS 68/0    analyser 0 events (floor -83.7); operator heard nothing
+
+On every I2S stream: supply_on/pins_active/bclk_on = 1 1 1 live, the regulator class
+s4 enabled (1 user), TLMM 79-82 = sec_mi2s, no errors, the codec holding nothing,
+no SLIMbus stream, no MCLK user; and after: 0 0 0, s4 disabled, pins GPIO.
+
+Verdict: Secondary MI2S, on either data line, with the 5 V rail up, does not
+sound the loudspeaker at -40 dBFS. The DSP accepts the port and the bit clock.
+
+What re-reading Windows' tables then showed (r190 mapping):
+  AUDD.PPNF maps Windows' audio endpoint ids to power components. Endpoints 0x45
+  and 0x43 switch components 0 (the codec) AND 1 (SMPS4, 5 V / 1.5 A) -- the 5 V
+  boost goes with the CODEC, not with the I2S pins (components 4 and 5 belong to
+  endpoints 0x46/0x51 and 0x4A). Downstream's WCD9320 driver has a VDD_SPKDRV
+  supply (regulator "cdc-vdd-spkdrv") on SPK DAC -- the class-D speaker driver's
+  own supply. r187 drove SPK_OUT live with that supply never enabled.

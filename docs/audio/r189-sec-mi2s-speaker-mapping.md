@@ -265,3 +265,40 @@ tools/build-wcd9320-kernel.sh --pkgrel 189 --version spk-i2s-rc1 \
     --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
     --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
 ```
+
+## 7. Hardware (phone clock 2026-09-03; PC 2026-11-09/10): silent on both data lines
+
+**Boot 1: DATA1, the built image.**
+- The gates all pass:
+  - zdet 34/0;
+  - the digital gate 81/0, including the I2S-only tone with the pin OFF;
+  - mclk-own 90/0;
+  - vm 57/0;
+  - HPH 86/0, analyser PASS.
+- The I2S path at -60, -50 and -40 dBFS was live every time:
+  - the amplifier `1 1 1`;
+  - s4 enabled;
+  - TLMM 79 to 82 on `sec_mi2s`;
+  - no errors.
+- It was silent to the operator and to the mic.
+
+**Boot 2: DATA0.** The same image with one DTB byte patched (`fdtput`,
+verified with `cmp -l` and the live devicetree). It was silent at -50 and -40
+dBFS.
+
+**Verdict:**
+- The loudspeaker is not behind Secondary MI2S. The DSP does accept the port
+  and its bit clock.
+- What the I2S port is for on this phone is unknown: Windows switches it for
+  endpoints 0x46/0x51 (DATA1 + clocks) and 0x4A (DATA0).
+- Details: `r189-acoustic-analysis.txt`, `r189-*.txt`.
+
+**The correction, from Windows' own tables:**
+- `AUDD.PPNF` maps endpoints to power components.
+- The 5 V boost (component 1) is switched together with the codec
+  (component 0), for endpoints 0x45 and 0x43, and never with the I2S pins.
+- Downstream's WCD9320 driver has `VDD_SPKDRV` (`cdc-vdd-spkdrv`), the
+  class-D speaker driver's supply, as a DAPM supply on `SPK DAC`.
+- r187 drove SPK_OUT with that supply never on.
+- **Next (r190):** map `VDD_SPKDRV` from downstream, give the codec that
+  supply (`pm8941_5v`), and re-probe SPK_OUT from minimum gain.
