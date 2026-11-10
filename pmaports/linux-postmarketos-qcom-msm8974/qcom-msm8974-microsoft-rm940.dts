@@ -688,6 +688,18 @@
 				reset-gpios = <&tlmm 63 GPIO_ACTIVE_LOW>;
 
 				/*
+				 * r190: VDD_SPKDRV, the class-D speaker driver's own
+				 * supply = the PM8941 5 V boost (SMPS4). The Windows
+				 * power framework votes it 5 V / 1.5 A together with
+				 * the codec (AUDD.PPNF endpoints 0x45/0x43 ->
+				 * components 0+1); downstream enables "cdc-vdd-spkdrv"
+				 * only from the VDD_SPKDRV supply of SPK DAC. On demand:
+				 * the driver enables it inside the SPK DAC stage and
+				 * nowhere else.
+				 */
+				vdd-spkdrv-supply = <&pm8941_5v>;
+
+				/*
 				 * The external MCLK, as an RPM consumer. RPM
 				 * owns the enable vote for DIV_CLK1; the
 				 * divide factor is a separate concern handled

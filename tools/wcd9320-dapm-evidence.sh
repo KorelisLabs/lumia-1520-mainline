@@ -156,6 +156,7 @@ while [ $_pw -lt 60 ]; do
 done
 D1=$(cat "$PGD/dapm_state" 2>/dev/null)
 R1=$(widgets_raw)	# r188: raw now, parsed after the tone
+VS1=$(vreg_5v)	# r190: the 5 V rail (VDD_SPKDRV) during, every pin OFF
 PA1=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 PIN1=$(pin)
 PO1=$(PINS_OTHER)
@@ -280,6 +281,7 @@ open_output "$OUTDIR/wcd9320-dapm-$STAMP.txt"
 	check "speaker, earpiece and line-out paths hold nothing during" \
 	      "$(dapm_kv "$D1" spk_held) $(dapm_kv "$D1" ear_held) $(dapm_kv "$D1" lo_held)" "00 00 00"
 	check "PA off during (0x1ab)" "$(rv "$PA1" pa_0x1ab)" "80"
+	check "the 5 V rail (VDD_SPKDRV) off during" "$(printf '%s' "$VS1" | cut -d' ' -f1)" "disabled"
 
 	say ""
 	say "-- after: nothing ran at all --"

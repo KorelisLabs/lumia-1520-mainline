@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-09 18:20:51.034479172 -0500
-@@ -0,0 +1,13381 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-10 16:23:54.675343789 -0500
+@@ -0,0 +1,13434 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1989,6 +1989,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 spk_gain_base;
 +	u8 spk_gain_field;		/* 0..8, 8 = minimum (the boot value) */
 +	unsigned int spk_pa_enables, spk_pa_disables;
++	/*
++	 * r190: VDD_SPKDRV, the class-D speaker driver's own supply -- on this
++	 * board the PM8941 5 V boost (docs/audio/wcd9320-r190-vdd-spkdrv-mapping.md).
++	 * NULL when the board has none (r187's behaviour).
++	 */
++	struct regulator *spkdrv;
++	bool spkdrv_on;
++	unsigned int spkdrv_enables, spkdrv_disables;
 +	bool ear_prep_on, ear_dac_on, ear_pa_on, ear_bias_held;
 +	u8 ear_gain_base;
 +	u8 ear_gain_field;		/* 0..7 (6 undefined), 7 = minimum (the boot value) */
@@ -9957,16 +9965,46 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			"spk: the DAC needs prep, RX7 and the prereq first\n");
 +		return -EAGAIN;
 +	}
-+	/* SPK DAC's supplies: RX_BIAS, then VDD_SPKDRV (no regulator here) */
++	/*
++	 * SPK DAC's supplies: RX_BIAS, then VDD_SPKDRV. r190: downstream's
++	 * taiko_codec_enable_vdd_spkr on Taiko 2.0 (spkr_drv_wrnd is -1 there)
++	 * is exactly regulator on here and off at teardown -- the PA, which
++	 * refuses without this DAC, only ever runs with the class-D powered.
++	 */
 +	ret = wcd9320_rx_bias(wcd, true);
 +	if (ret)
 +		return ret;
 +	wcd->spk_bias_held = true;
++	if (wcd->spkdrv) {
++		ret = regulator_enable(wcd->spkdrv);
++		if (ret) {
++			dev_err(&wcd->sdev->dev,
++				"spk: VDD_SPKDRV would not enable: %d -- RX bias released\n", ret);
++			wcd9320_rx_bias(wcd, false);
++			wcd->spk_bias_held = false;
++			return ret;
++		}
++		wcd->spkdrv_on = true;
++		wcd->spkdrv_enables++;
++	}
 +	wcd->spk_dac_on = true;
-+	dev_info(&wcd->sdev->dev, "spk: DAC up (RX bias held; VDD_SPKDRV has no regulator on this board)\n");
++	if (wcd->spkdrv)
++		dev_info(&wcd->sdev->dev, "spk: DAC up (RX bias held; VDD_SPKDRV on, %d uV)\n",
++			 regulator_get_voltage(wcd->spkdrv));
++	else
++		dev_info(&wcd->sdev->dev, "spk: DAC up (RX bias held; no VDD_SPKDRV regulator)\n");
 +	return 0;
 +
 +teardown:
++	if (wcd->spkdrv_on) {
++		ret = regulator_disable(wcd->spkdrv);
++		if (ret) {
++			dev_err(&wcd->sdev->dev, "spk: VDD_SPKDRV would not disable: %d\n", ret);
++		} else {
++			wcd->spkdrv_on = false;
++			wcd->spkdrv_disables++;
++		}
++	}
 +	if (wcd->spk_bias_held) {
 +		wcd9320_rx_bias(wcd, false);
 +		wcd->spk_bias_held = false;
@@ -10369,14 +10407,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_INTR_STATUS0 + 3, &st);
 +	len = sysfs_emit(buf,
-+			  "spk_prep=%u spk_dac=%u spk_pa=%u spk_enables=%u spk_disables=%u spk_field=%u\n"
++			  "spk_prep=%u spk_dac=%u spk_pa=%u spk_enables=%u spk_disables=%u spk_field=%u spkdrv_present=%u spkdrv=%u spkdrv_enables=%u spkdrv_disables=%u\n"
 +			  "ear_prep=%u ear_dac=%u ear_pa=%u ear_enables=%u ear_disables=%u ear_field=%u clsh_ear=%u\n"
 +			  "rx7_on=%u rx7_enables=%u rx7_disables=%u\n"
 +			  "spken_0x1df=%02x spkgain_0x1e0=%02x pwrstg_0x1e7=%02x ear_0x1bc=%02x eargain_0x1bd=%02x\n"
 +			  "mux_0x38e=%02x vol_0x2e7=%02x rxclk_0x30f=%02x clsh_0x320=%02x intr3_0x09b=%02x\n",
 +			  wcd->spk_prep_on, wcd->spk_dac_on, wcd->spk_pa_on,
 +			  wcd->spk_pa_enables, wcd->spk_pa_disables,
-+			  wcd->spk_gain_field,
++			  wcd->spk_gain_field, wcd->spkdrv != NULL, wcd->spkdrv_on,
++			  wcd->spkdrv_enables, wcd->spkdrv_disables,
 +			  wcd->ear_prep_on, wcd->ear_dac_on, wcd->ear_pa_on,
 +			  wcd->ear_pa_enables, wcd->ear_pa_disables,
 +			  wcd->ear_gain_field, wcd->clsh_ear,
@@ -13452,6 +13491,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return dev_err_probe(dev, ret, "failed to get supplies\n");
 +
 +	/*
++	 * r190: VDD_SPKDRV, on demand -- downstream's "cdc-vdd-spkdrv", listed
++	 * in qcom,cdc-on-demand-supplies on the boards that have it: never
++	 * enabled here, only by the SPK DAC stage. Optional: -ENODEV is a board
++	 * without one, and the speaker path then runs exactly as r187.
++	 */
++	wcd->spkdrv = devm_regulator_get_optional(dev, "vdd-spkdrv");
++	if (IS_ERR(wcd->spkdrv)) {
++		if (PTR_ERR(wcd->spkdrv) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(wcd->spkdrv),
++					     "failed to get vdd-spkdrv\n");
++		wcd->spkdrv = NULL;
++	}
++
++	/*
 +	 * GPIOD_ASIS on the adoption path: acquiring the descriptor must not
 +	 * drive the line. GPIOD_OUT_HIGH with GPIO_ACTIVE_LOW in DT means
 +	 * asserted, which is correct only when this driver is bringing the
@@ -13726,7 +13779,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("spk-i2s-rc1");
++MODULE_VERSION("spkdrv-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

@@ -2708,6 +2708,56 @@ def main():
     else:
         print("  ....  built card module not beside %s -- patch and DT fences only" % ko)
 
+    # ==================================================================
+    # 5n. r190: VDD_SPKDRV, the class-D speaker driver's own supply.
+    #
+    # docs/audio/wcd9320-r190-vdd-spkdrv-mapping.md. Downstream on Taiko 2.0:
+    # regulator on before SPK DAC, off after (spkr_drv_wrnd is -1). This pins:
+    #   1. the regulator is optional, on demand, never enabled at probe
+    #   2. inside the DAC stage: bias, then the rail, then dac_on; a refused
+    #      rail releases the bias; down: the rail before the bias
+    #   3. one enable and one disable site, both in the DAC stage
+    #   4. the DT gives codec@1,0 the 5 V boost
+    # ==================================================================
+    print()
+    print("=== 5n. the r190 VDD_SPKDRV fence ===")
+    sdac = func_body("wcd9320_spk_dac")
+    sprobe = func_body("wcd9320_probe")
+    check("wcd9320_spk_dac and wcd9320_probe found", len(sdac) > 0 and len(sprobe) > 0,
+          "%d / %d bytes" % (len(sdac), len(sprobe)))
+    check("vdd-spkdrv is optional: -ENODEV is no supply, anything else fails probe",
+          'wcd->spkdrv = devm_regulator_get_optional(dev, "vdd-spkdrv");' in sprobe
+          and "if (PTR_ERR(wcd->spkdrv) != -ENODEV)" in sprobe and "wcd->spkdrv = NULL;" in sprobe,
+          "a board without it runs as r187")
+    check("probe never enables it", "regulator_enable(wcd->spkdrv)" not in sprobe, "on demand")
+    up = sdac[:sdac.find("teardown:")]
+    down = sdac[sdac.find("teardown:"):]
+    check("up: the RX bias, then the rail, then the DAC is on",
+          0 <= up.find("wcd9320_rx_bias(wcd, true)") < up.find("regulator_enable(wcd->spkdrv)")
+          < up.find("wcd->spk_dac_on = true;"), "the PA needs the DAC, so it never runs unpowered")
+    en_fail = up[up.find("regulator_enable(wcd->spkdrv)"):up.find("wcd->spkdrv_on = true;")]
+    check("a refused rail releases the bias and fails the stage",
+          "wcd9320_rx_bias(wcd, false);" in en_fail and "return ret;" in en_fail, "no bias left held")
+    check("down: the rail before the bias",
+          0 <= down.find("regulator_disable(wcd->spkdrv)") < down.find("wcd9320_rx_bias(wcd, false)"),
+          "the reverse of up")
+    check("the rail is enabled and disabled only in the DAC stage",
+          ptext_all.count("regulator_enable(wcd->spkdrv)") == 1 and "regulator_enable(wcd->spkdrv)" in up
+          and ptext_all.count("regulator_disable(wcd->spkdrv)") == 1 and "regulator_disable(wcd->spkdrv)" in down,
+          "one site each")
+    check("spkdrv_on is counted both ways",
+          "wcd->spkdrv_enables++;" in up and "wcd->spkdrv_disables++;" in down, "out_state")
+    check("out_state reports the rail",
+          "spkdrv_present=%u spkdrv=%u spkdrv_enables=%u spkdrv_disables=%u" in ptext_all,
+          "the runners' state source")
+    DTS5 = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
+    dts5 = DTS5.read_text(errors="replace") if DTS5.exists() else ""
+    ci = dts5.find("wcd9320: codec@1,0 {")
+    cn = dts5[ci:dts5.find("\n\t\t\t};", ci)] if ci >= 0 else ""
+    check("DT: codec@1,0 takes VDD_SPKDRV from the 5 V boost",
+          "vdd-spkdrv-supply = <&pm8941_5v>;" in cn and dts5.count("vdd-spkdrv-supply") == 1,
+          "pm8941_5v = PM8941 SMPS4")
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")

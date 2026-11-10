@@ -462,7 +462,12 @@ stream() {	# stream <n> <spec>
 	case "$OUTPUT" in
 	hph) [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "$DAPM_PA_LIVE" ] || _bad="$_bad pa=$(rv "$_p" pa_0x1ab)" ;;
 	spk) [ "$(rv "$_o" spk_pa)" = "1" ] || _bad="$_bad spk_pa=$(rv "$_o" spk_pa)"
-	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
+	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)"
+	     # r190: the class-D powered -- the driver's view and the regulator class
+	     if [ "$(rv "$_o" spkdrv_present)" = "1" ]; then
+		[ "$(rv "$_o" spkdrv)" = "1" ] || _bad="$_bad spkdrv=$(rv "$_o" spkdrv)"
+		[ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad 5v=$_v"
+	     fi ;;
 	ear) [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	lo)  [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
@@ -690,6 +695,13 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				check "s$c RX7 interpolator on" "$(printf '%02x' $(( 0x$(rv "$_o" rxclk_0x30f) & 0x40 )))" "40"
 				check "s$c no speaker clip" "$(printf '%02x' $(( 0x$(rv "$_o" intr3_0x09b) & 0x08 )))" "00"
 				check "s$c speaker PA off after" "$(printf '%02x' $(( 0x$(rv "$_oa" spken_0x1df) & 0x80 )))" "00"
+				# r190: VDD_SPKDRV, live and after
+				eval "_v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
+				check "s$c VDD_SPKDRV present (vdd-spkdrv)" "$(rv "$_o" spkdrv_present)" "1"
+				check "s$c VDD_SPKDRV on live (driver)" "$(rv "$_o" spkdrv)" "1"
+				check "s$c the 5 V rail enabled live (regulator class)" "$(printf '%s' "$_v" | cut -d' ' -f1)" "enabled"
+				check "s$c VDD_SPKDRV off after (driver)" "$(rv "$_oa" spkdrv)" "0"
+				check "s$c the 5 V rail disabled after (regulator class)" "$(printf '%s' "$_va" | cut -d' ' -f1)" "disabled"
 			elif [ "$OUTPUT" = "lo" ]; then
 				_sel=$(printf '%02x' "$LO_SELECT")
 				check "s$c line-out PAs live = select (0x1ca)" "$(rv "$_o" locnp_0x1ca)" "$_sel"
@@ -803,6 +815,13 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "volumes back to boot values" \
 	      "$(rv "$RPOST" gain_field_r) $(rv "$POST" gain_field) $(rv "$RPOST" vol_0x2bf)" "14 14 00"
 	if [ -n "${OPOST:-}" ]; then
+		# r190: VDD_SPKDRV once per speaker stream, never for anything else
+		_ns=0; [ "$OUTPUT" = "spk" ] && _ns=$((n - 1))
+		for _k in spkdrv_enables spkdrv_disables; do
+			_k1=$(rv "$OPOST" "$_k"); _k0=$(rv "$OPRE" "$_k")
+			check "$_k this run" "$(( ${_k1:-0} - ${_k0:-0} ))" "$_ns"
+		done
+		check "VDD_SPKDRV off at the end" "$(rv "$OPOST" spkdrv)" "0"
 		check "speaker and earpiece at their minimum, PAs off" \
 		      "$(rv "$OPOST" spk_field) $(rv "$OPOST" ear_field) $(rv "$OPOST" spk_pa) $(rv "$OPOST" ear_pa)" "8 7 0 0"
 		check "speaker gain restored" "$(rv "$OPOST" spkgain_0x1e0)" "$(rv "$OPRE" spkgain_0x1e0)"
