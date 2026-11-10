@@ -190,3 +190,61 @@ The compiled DT resolves the GPIO to the PM8941 `gpio@c000` controller, pin
 1. identify (read-only);
 2. then `AMP=visa` with LINEOUT, then SPK_OUT, then EAR;
 3. minimum gain, -50 dBFS first.
+
+## 5. Hardware (phone clock 2026-09-03/04; PC 2026-11-10): THE LOUDSPEAKER PLAYS
+
+**Gates:**
+- I2C5 came up as `i2c-7` (`f9927000`); `7-0040` bound with GPIO20 low.
+- Digital gate 82/0, mclk-own 90/0, vm 57/0.
+
+**Identify** (read-only): 34 of 34 registers read, with no I2C errors and
+GPIO20 back low.
+```
+00:00 01:22 02:ef 03:80 04:00 05:00 06:00 07:c0 08:10 09:00 0a:00 0b:8f 0c:80
+0d:be 0e:08 0f:04 10:00 11:01 12:00 13:40 14:00 15:00 16:08 17..21:00
+```
+Reg `0x01` boots `0x22`: the standby bit (`0x02`) that Visa.sys sets to
+power off is set. The part is still unidentified.
+
+**Power on** (`AMP=visa`), on every stream:
+- 24 writes, no I2C errors.
+- Exactly one read-back mismatch, the script's last write: reg `0x00` ←
+  `0x00` reads back `0x20`. That looks like a status bit, consistent across
+  runs.
+- Standby and GPIO20 low after.
+
+**The streams** (headset out, heater off, mic at the grille):
+
+| run | path | dBFS | phone | mic | operator |
+|---|---|---|---|---|---|
+| 000026Z | LINEOUT ×4, vol 0, VISA on | -50 | 91/0 | 0 events | nothing |
+| 000155Z s1 | LINEOUT ×4, vol 0, VISA on | -40 | 120/0 | 0 events | nothing |
+| 000155Z s2 | LINEOUT ×4, vol 20, VISA on | -40 | (same run) | 0 events | nothing |
+| **000827Z** | **Secondary MI2S DATA1 + VISA on** | **-50** | **78/0** | **PASS: 999.98 Hz, tone -49.2 / silence -89.6 dBFS, 40.5 dB contrast** | **HEARD** |
+
+**Verdict:**
+- **The loudspeaker is a digital-input (I2S) amplifier.** It is ACPI
+  `VISA`: I2C5 @ `0x40` for control, PM8941 GPIO20 to enable it, and audio
+  on the SoC's Secondary MI2S, data line 1 (TLMM 82).
+- It needs all three at once:
+  - GPIO20 high;
+  - Windows' power-on script;
+  - an I2S stream (1.536 MHz BCLK, 48 kHz, 16-bit, the CPU as clock
+    master).
+- r189 had the port right and the amplifier held off; r187 to r190 probed
+  the codec, which is not on this path.
+- Level: -50 dBFS digital gives -49 dBFS at the mic on the grille. The
+  headphones at -40 dBFS gave about -54 dBFS at the earcup, so this is a
+  loud output.
+
+**Open, in order:**
+- Integrate the amplifier into DAPM on the I2S path: power with the
+  `Loudspeaker` pin and the stream, not from the runner.
+- Is the 5 V rail needed? The I2S component held it up during the heard
+  stream.
+- Mono or stereo, and which slot.
+- Volume: the amplifier's gain (reg `0x12`? `DefaultFixedGain`) versus
+  digital.
+- The earpiece: DATA0? the codec EAR? Windows' endpoint `0x4A` muxes DATA0
+  alone.
+- Remove the r187 to r190 diagnostic paths that the speaker does not use.

@@ -1,0 +1,14 @@
+00:00 01:22 02:ef 03:80 04:00 05:00 06:00 07:c0 08:10 09:00 0a:00 0b:8f 0c:80 0d:be 0e:08 0f:04 10:00 11:01 12:00 13:40 14:00 15:00 16:08 17:00 18:00 19:00 1a:00 1b:00 1c:00 1d:00 1e:00 1f:00 20:00 21:00
+[  242.115470] lumia1520-visa 7-0040: visa: identify: 34 of 34 registers read, GPIO20 back low
+[  322.130077] lumia1520-visa 7-0040: visa: reg 00 wrote 00, reads back 20
+[  322.135496] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 1 read-back mismatch(es))
+[  328.663496] lumia1520-visa 7-0040: visa: standby, GPIO20 low
+[  433.620207] lumia1520-visa 7-0040: visa: reg 00 wrote 00, reads back 20
+[  433.629266] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 1 read-back mismatch(es))
+[  439.435298] lumia1520-visa 7-0040: visa: standby, GPIO20 low
+[  468.940161] lumia1520-visa 7-0040: visa: reg 00 wrote 00, reads back 20
+[  468.944742] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 1 read-back mismatch(es))
+[  474.734394] lumia1520-visa 7-0040: visa: standby, GPIO20 low
+[  825.690268] lumia1520-visa 7-0040: visa: reg 00 wrote 00, reads back 20
+[  825.699322] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 1 read-back mismatch(es))
+[  827.405788] lumia1520-visa 7-0040: visa: standby, GPIO20 low
