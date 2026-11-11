@@ -371,3 +371,77 @@ It drops the right one.
 - the speaker back end at 1 channel;
 - the DSP matrix mixes (L+R) into it, or the AFE's mono mode, whichever
   the mapping supports.
+
+## 10. Step 3: the amplifier is a TI TAS2552, and its volume is reg 0x12 (2026-11-11)
+
+**The identity.** In r191's read-only dump, every power-on value equals
+mainline's `tas2552_reg_defs`:
+
+| register | name | value |
+|---|---|---|
+| `0x01` | CFG_1 | `22` |
+| `0x02` | CFG_2 | `ef` |
+| `0x03` | CFG_3 | `80` |
+| `0x07` | OUTPUT_DATA | `c0` |
+| `0x08` | PLL_CTRL_1 | `10` |
+| `0x0b` | BTIP | `8f` |
+| `0x0c` | BTS_CTRL | `80` |
+| `0x0d` | — | `be` |
+| `0x0e` | LIMIT_RATE_HYS | `08` |
+| `0x0f` | LIMIT_RELEASE | `04` |
+| `0x11` | PDM_CFG | `01` |
+| `0x13` | EDGE_RATE | `40` |
+
+Its address is `0x40`, and `0x16` (VER_NUM) reads `08`. **The part is a TI
+TAS2552**, a mono class-D speaker amplifier with I2S input and an
+integrated boost. Mainline has `sound/soc/codecs/tas2552.c` (`ti,tas2552`),
+but it is not enabled in our config.
+
+**Windows' script, decoded** with mainline's `tas2552.h`:
+
+| step | write | meaning |
+|---|---|---|
+| 1 | `01 ← 12` | CFG_1: SWS (software shutdown) held |
+| 2 | `03 ← 00`, then `03 ← 4d` | CFG_3: I2S_OUT_SEL, **DIN_SRC_SEL = LEFT** (bits 4:3 = 01), WCLK 44.1/48 kHz |
+| 3 | `05 ← 00` | SER_CTRL_1: I2S, 16-bit, the chip as slave |
+| 4 | `07 ← c1`, `08 ← 20` | OUTPUT_DATA, PLL_CTRL_1 |
+| 5 | `0b ← 8a`, `0c ← d0`, `0d ← a9`, `0e ← 38`, `0f ← 08`, `14 ← 0c` | **Nokia's tuning** of the boost (BTIP, BTS, BOOST_APT) and the limiter (rate/hysteresis, release) |
+| 6 | `12 ← 16` | **PGA gain +15 dB** |
+| 7 | `21 ← 02, 01, 04, 07, 00`; `20 ← 06` … `20 ← 00` | test-page accesses (undocumented) |
+| 8 | `01 ← 10` | SWS released |
+| 9 | `02 ← 78`, then 50 ms, then `02 ← fe` | BOOST_EN + APT_EN + PLL_ENABLE first, the PLL settles, then CLASSD_EN |
+| 10 | `00 ← 00` | the end of the script |
+
+**Explained by the decode:**
+- **Step 2 (no 5 V):** the TAS2552 makes its own boost.
+- **Step 4 (left only):** Windows selects DIN = LEFT.
+- **r191's `0x00` read-back** (`0x20` without clocks): DEVICE_STATUS, a status
+  register.
+
+**Volume** [Visa.sys]:
+- Get (`0x403dec`) = `(reg 0x12 & 0x1f) - 7`; set (`0x403eec`) writes
+  `reg 0x12 = gain + 7`.
+- Mainline's `tas2552.c` agrees: "Speaker Driver Playback Volume" on
+  `PGA_GAIN`, 5 bits, `DECLARE_TLV_DB_SCALE(-700, 100)`.
+- That is **−7 to +24 dB in 1 dB steps**; Windows runs **+15 dB**.
+
+**The choice: our driver plus additions, not mainline `tas2552` (for now).**
+- Mainline's init enables boost and APT with its own defaults.
+- It does not write Nokia's boost or limiter tuning, or the test-page
+  writes. Those are this speaker's protection, and nothing verifies that
+  they are optional.
+- Keep replaying Windows' sequence exactly. Revisit mainline once each
+  tuning register is understood.
+
+**r193 adds:**
+1. **No 5 V:** drop `vdd-supply` from the I2S node; the regulator becomes
+   optional (step 2).
+2. **Mono:** CFG_3 `0x4d` → **`0x5d`** (DIN_SRC_SEL = AVG_L_R, an (L+R)/2
+   mix in the amplifier) instead of LEFT. This is a documented deviation
+   from Windows that changes only the channel mix (step 4).
+3. **Volume:** a "Loudspeaker Volume" control on PGA_GAIN, TLV −7..+**15**
+   dB.
+   - Capped at Windows' own +15 until the limiter tuning is understood, and
+     defaulting to +15.
+   - Applied after the script at every power-on, and written live (read
+     back) while the amplifier is powered.
