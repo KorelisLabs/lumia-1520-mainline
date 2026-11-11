@@ -313,3 +313,36 @@ touches the amplifier.
 MultiMedia1 to `SEC_MI2S_RX`, turn the `Loudspeaker` pin on, play.
 
 **Next:** the 5 V question, volume, channels, the earpiece, and cleanup.
+
+## 8. Step 2: the loudspeaker does not need the PM8941 5 V rail (phone clock 2026-09-04; PC 2026-11-11)
+
+**The variant image:**
+- The r192 image with **one byte** changed: the I2S component's
+  `vdd-supply` goes `0x93` (`pm8941_5v`) → `0x00`, patched in place with
+  `fdtput`.
+- `cmp -l` shows the single byte.
+- The live devicetree reads `00000000`.
+- The regulator core gave the component its **dummy** ("supply vdd not
+  found, using dummy regulator"; `vdd_uV=-22`).
+- The real 5 V regulator (PM8941 s4) stayed **disabled, 0 users** at boot,
+  during the stream and after.
+
+**Results:**
+- Digital gate 83/0.
+- Stream `235214Z`, `OUTPUT=i2s RAIL5V=off B:0:84 -50 dBFS`: **77/0**.
+  - VISA was DAPM-powered `1 1 1` live and `0 0 0` after.
+  - The runner required the rail disabled live.
+- **Analyser PASS:** 999.97 Hz, tone -49.8 / silence -87.6 dBFS, 37.7 dB
+  contrast.
+
+For comparison, with the rail (r192) it was tone -49.0 / 36.3 dB contrast:
+the same within the measurement.
+
+**Verdict:**
+- The speaker amplifier does not run from the 5 V boost. It is presumably
+  on VBAT/VPH; it is not in the PEP.
+- The 5 V supply on the I2S path was r189's guess, and it only costs power.
+- **Next build:** drop `vdd-supply` from the I2S node and make the
+  component's regulator optional.
+- Windows' PPNF ties the boost to codec endpoints `0x45`/`0x43`; what those
+  endpoints are remains open.

@@ -108,6 +108,16 @@ dapm_out "$OUTPUT" || { echo "INVALID SETUP: OUTPUT=$OUTPUT (hph, spk, ear, lo o
 # "is the loudspeaker an analog amp on a codec output, powered from the boost?"
 # without a rebuild. The I2S side carries the same tone to TLMM 79-82.
 HOLD_5V="${HOLD_5V:-}"
+# Step 2 (after r192): RAIL5V=off asks "does the loudspeaker need the 5 V
+# rail?". It is for an image whose I2S component has no real vdd (vdd-supply
+# patched to phandle 0 -> the regulator core's dummy), so the PM8941 5 V boost
+# must stay DISABLED through the whole stream; everything else as r192.
+RAIL5V="${RAIL5V:-on}"
+case "$RAIL5V:$OUTPUT" in
+on:*|off:i2s) ;;
+*) echo "INVALID SETUP: RAIL5V=$RAIL5V with OUTPUT=$OUTPUT (RAIL5V=off is for i2s)"; exit 2 ;;
+esac
+RAIL_LIVE=enabled; [ "$RAIL5V" = "off" ] && RAIL_LIVE=disabled
 # r191: AMP=visa powers the VISA speaker amplifier (Windows' power-on script)
 # around each stream of a codec output, and standby + GPIO20 low after it;
 # every abort and teardown powers it off too. The amplifier's input is
@@ -409,7 +419,7 @@ stream() {	# stream <n> <spec>
 	spk:*) jrn "stream $_n: SPEAKER, Speaker Volume $_hv -- the mic at its fixed spot over the grille" ;;
 	ear:*) jrn "stream $_n: EARPIECE, Earpiece Volume $_hv -- the mic at its fixed spot over the earpiece slot" ;;
 	lo:*)  jrn "stream $_n: LINE OUTS (select $LO_SELECT), Lineout Volume $_hv -- the mic at its fixed spot" ;;
-	i2s:*) jrn "stream $_n: LOUDSPEAKER on Secondary MI2S, $DBFS dBFS, side $_side -- the mic at the grille" ;;
+	i2s:*) jrn "stream $_n: LOUDSPEAKER on Secondary MI2S, $DBFS dBFS, side $_side, 5 V rail $RAIL5V -- the mic at the grille" ;;
 	esac
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
@@ -531,7 +541,7 @@ stream() {	# stream <n> <spec>
 	i2s) [ "$(rv "$_i" supply_on) $(rv "$_i" pins_active) $(rv "$_i" bclk_on)" = "1 1 1" ] ||
 	         _bad="$_bad i2s=$(rv "$_i" supply_on)$(rv "$_i" pins_active)$(rv "$_i" bclk_on)"
 	     [ "$(rv "$_i" errors)" = "$(rv "$IPRE" errors)" ] || _bad="$_bad i2s-errors=$(rv "$_i" errors)"
-	     [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad 5v=$_v"
+	     [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "$RAIL_LIVE" ] || _bad="$_bad 5v=$_v(want $RAIL_LIVE)"
 	     [ "$_m" = "sec_mi2s sec_mi2s sec_mi2s sec_mi2s" ] || _bad="$_bad mux=$_m"
 	     [ "$_su" = "0" ] || _bad="$_bad slim-up"
 	     # r192: the amplifier powered by DAPM with the path
@@ -607,6 +617,7 @@ launch)
 	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE --setenv=LO_SELECT=$LO_SELECT"
 	[ -z "$HOLD_5V" ] || CMD="$CMD --setenv=HOLD_5V=$HOLD_5V"
 	[ -z "$AMP" ] || CMD="$CMD --setenv=AMP=$AMP"
+	[ "$RAIL5V" = "on" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -742,8 +753,13 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 			check "s$c tone played" "$_t" "0"
 			check "s$c amplifier live: 5 V, pins, bit clock" \
 			      "$(rv "$_i" supply_on) $(rv "$_i" pins_active) $(rv "$_i" bclk_on)" "1 1 1"
-			check "s$c the component reads the rail at 5 V" "$(rv "$_i" vdd_enabled) $(rv "$_i" vdd_uV)" "1 5000000"
-			check "s$c regulator class: s4 enabled live" "$(printf '%s' "$_v" | cut -d' ' -f1)" "enabled"
+			if [ "$RAIL5V" = "off" ]; then
+				check "s$c the component's vdd is NOT the 5 V rail (dummy)" \
+				      "$([ "$(rv "$_i" vdd_uV)" = "5000000" ] && echo 5V || echo dummy)" "dummy"
+			else
+				check "s$c the component reads the rail at 5 V" "$(rv "$_i" vdd_enabled) $(rv "$_i" vdd_uV)" "1 5000000"
+			fi
+			check "s$c regulator class: s4 $RAIL_LIVE live" "$(printf '%s' "$_v" | cut -d' ' -f1)" "$RAIL_LIVE"
 			check "s$c pins 79-82 muxed sec_mi2s live" "$_m" "sec_mi2s sec_mi2s sec_mi2s sec_mi2s"
 			check "s$c amplifier off after: 5 V, pins, bit clock" \
 			      "$(rv "$_ia" supply_on) $(rv "$_ia" pins_active) $(rv "$_ia" bclk_on)" "0 0 0"
