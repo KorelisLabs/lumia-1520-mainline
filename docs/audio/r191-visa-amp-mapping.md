@@ -346,3 +346,28 @@ the same within the measurement.
   component's regulator optional.
 - Windows' PPNF ties the boost to codec endpoints `0x45`/`0x43`; what those
   endpoints are remains open.
+
+## 9. Step 4: the amplifier is mono, on the LEFT I2S slot (phone clock 2026-09-05; PC 2026-11-11)
+
+**The run:** the no-rail variant boot, `OUTPUT=i2s RAIL5V=off SPECS=L:0:84,R:0:84 DBFS=-50`.
+
+| stream | the VISA amplifier | 1 kHz at the grille | neighbours | verdict |
+|---|---|---|---|---|
+| L only | DAPM-powered (`1 1 1`) | **-49.2 dBFS** | -92.6 dBFS | **plays**, 43 dB tonal |
+| R only | DAPM-powered, 973.12 → 974.10 s in dmesg (the full stream, BCLK on 973.03 → off 974.09) | -66.9 dBFS at best | -71.5 dBFS | **silent**: a broadband blip; the window's 1 kHz median is -92.2 |
+
+**The R stream's abort** (`visa=00`) was the runner, not the path:
+- the amplifier sample sat after the slower reads, and landed after the 1 s
+  tone had ended;
+- the amplifier's own counters (2 powers on, 2 off) and dmesg show it was
+  powered through the whole R stream.
+
+Fixed: the amplifier is now sampled in the early path-up snapshot.
+
+**Verdict:** the loudspeaker amplifier plays the left slot of the I2S frame.
+It drops the right one.
+
+**Next build:** downmix to mono instead of sending only the left channel:
+- the speaker back end at 1 channel;
+- the DSP matrix mixes (L+R) into it, or the AFE's mono mode, whichever
+  the mapping supports.

@@ -1,0 +1,14 @@
+[  237.507355] lumia1520-i2s-spk audio-amplifier: i2s-spk: sec_mi2s pins asleep, 5 V rail off
+[  942.629358] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[  942.720049] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 0 read-back mismatch(es))
+[  942.720458] lumia1520-i2s-spk audio-amplifier: i2s-spk: 5 V rail on (-22 uV), sec_mi2s pins active, VISA amplifier powered
+[  943.678569] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  943.688688] lumia1520-visa 7-0040: visa: standby, GPIO20 low
+[  943.689029] lumia1520-i2s-spk audio-amplifier: i2s-spk: sec_mi2s pins asleep, 5 V rail off
+[  973.026424] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[  973.120050] lumia1520-visa 7-0040: visa: POWERED ON (Windows' script, 0 read-back mismatch(es))
+[  973.120173] lumia1520-i2s-spk audio-amplifier: i2s-spk: 5 V rail on (-22 uV), sec_mi2s pins active, VISA amplifier powered
+[  974.089669] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  974.103373] lumia1520-visa 7-0040: visa: standby, GPIO20 low
+[  974.103921] lumia1520-i2s-spk audio-amplifier: i2s-spk: sec_mi2s pins asleep, 5 V rail off
+[  974.870664] lumia1520-visa 7-0040: visa: standby, GPIO20 low

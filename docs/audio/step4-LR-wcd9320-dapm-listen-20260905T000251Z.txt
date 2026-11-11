@@ -1,0 +1,327 @@
+
+=== what this run can and cannot establish ===
+That plain stereo playback, with the Headphones pin on, powers the
+proven path on both channels through DAPM in the mapped order, at the
+volumes the controls set, and takes it down when the stream stops.
+WHETHER EACH SIDE WAS HEARD, and how loud, is decided by
+tools/c3a-capture.py on the PC recording and by the operator.
+
+=== the run ===
+aborted     : 1 live-state
+streams run : 1 of 2
+stimulus    : -50 dBFS, 1 kHz, tone/silence/tone/silence
+output      : i2s (pin Loudspeaker Switch)
+plan        : L:0:84 R:0:84
+stream 1 [L:0:84]: held pin-on 000 live 000 (~0 ms up) after 000 (~0 ms down) | hph 1b3=04 1b9=04
+
+=== checks ===
+  PASS  module version                   spkamp-rc1
+  PASS  card module version              q6-card-rc10
+  FAIL  the run was not aborted          got=1 want=0
+  FAIL  streams completed                got=1 want=2
+
+-- stream 1 [L:0:84] --
+  PASS  s1 pin alone powers nothing      000
+  PASS  s1 DAPM holds the whole path live 000
+  PASS  s1 the pin alone powers no amplifier 0
+  PASS  s1 the codec untouched live      000
+  PASS  s1 no HPH PA live                00
+  PASS  s1 no SLIMbus stream             0
+  PASS  s1 no MCLK user (the codec is not on this path) 0
+  PASS  s1 tone played                   0
+  PASS  s1 amplifier live: 5 V, pins, bit clock 1 1 1
+  PASS  s1 the component's vdd is NOT the 5 V rail (dummy) dummy
+  PASS  s1 regulator class: s4 disabled live disabled
+  PASS  s1 pins 79-82 muxed sec_mi2s live sec_mi2s sec_mi2s sec_mi2s sec_mi2s
+  PASS  s1 amplifier off after: 5 V, pins, bit clock 0 0 0
+  PASS  s1 regulator class: s4 disabled after disabled
+  PASS  s1 pins 79-82 back to GPIO after gpio gpio gpio gpio
+  PASS  s1 VISA powered by DAPM live (powered, dapm_held, GPIO20) 1 1 1
+  PASS  s1 VISA standby after (powered, dapm_held, GPIO20) 0 0 0
+  PASS  s1 DAPM holds nothing after      000
+  PASS  s1 pin OFF after                 0
+
+-- DAPM's own accounting --
+  PASS  DAPM ups this run                0
+  PASS  DAPM downs this run              0
+  PASS  DAPM refusals this run           0
+  PASS  DAPM failures this run           0
+  PASS  DAPM holds nothing at the end    000 00 00 00
+  PASS  nobody holds MCLK at the end     0
+  PASS  codec back on RCO                0
+  PASS  guard never tripped              0
+  PASS  no OCP fault                     0
+  PASS  PA enables == disables           0
+
+-- the VISA amplifier --
+  FAIL  visa powers_on this run          got=2 want=1
+  FAIL  visa powers_off this run         got=2 want=1
+  PASS  visa I2C errors this run         0
+  PASS  visa off at the end (powered, GPIO20) 0 0
+visa at the end: gpio=0 powered=0 dapm_held=0 identifies=0 powers_on=3 powers_off=3 writes=72 i2c_errors=0 verify_mismatches=0 last_err=0 last_mismatch=00:00:00 dump_valid=0 dump_errors=0
+
+-- the I2S amplifier's accounting --
+  FAIL  i2s enables this run             got=2 want=1
+  FAIL  i2s disables this run            got=2 want=1
+  FAIL  i2s bclk_sets this run           got=2 want=1
+  FAIL  i2s bclk_clears this run         got=2 want=1
+  PASS  i2s errors this run              0
+  PASS  i2s idle at the end: 5 V, pins, bit clock 0 0 0
+  PASS  the 5 V rail off at the end (regulator class) disabled
+  PASS  pins 79-82 GPIO at the end       gpio gpio gpio gpio
+
+-- the forced writes, per stream (0 for i2s) --
+  FAIL  forced operations this run       got=1 want=0
+
+-- the teardown restored what it found --
+  PASS  gain restored                    00
+  PASS  wg ctl restored                  da
+  PASS  wg time restored                 15
+  PASS  wg ocp restored                  2a
+  PASS  chopper restored                 a4
+  PASS  DAC off                          00
+  PASS  DSM mux cleared                  00
+  PASS  RX bias released                 0
+  PASS  HPHR gain restored               00
+  PASS  HPHR DAC off                     00
+  PASS  HPHR PA off, enables == disables 0 0
+  PASS  RX2 chain off                    00
+  PASS  RDAC clocks clear (0x30d bits 1-2) 00
+  PASS  volumes back to boot values      14 14 00
+  PASS  spkdrv_enables this run          0
+  PASS  spkdrv_disables this run         0
+  PASS  VDD_SPKDRV off at the end        0
+  PASS  speaker and earpiece at their minimum, PAs off 8 7 0 0
+  PASS  speaker gain restored            00
+  PASS  earpiece gain restored           02
+  PASS  earpiece fully off               00
+  PASS  RX7 off                          0
+  PASS  line outs at the minimum, all selected, PAs off 20 f 0 00
+  PASS  logain_0x1cd restored            00
+  PASS  logain_0x1d1 restored            00
+  PASS  logain_0x1d5 restored            00
+  PASS  logain_0x1d9 restored            00
+  PASS  misc_0x3b1 restored              01
+  PASS  the line outs never powered this run (lo_enables delta) 0
+  PASS  class-H LO restore mismatches    0
+  PASS  RX3 and RX5 off                  0 0
+
+=== dapm events (dmesg) ===
+
+=== run identity ===
+mode              : wcd9320-dapm-listen
+date              : 2026-09-05T00:05:04Z (UTC)
+module version    : spkamp-rc1   (expected spkamp-rc1)
+expect_version_source : environment
+expect_sha_source     : environment
+artifact_manifest     : /home/user/wcd9320-tools/wcd9320-artifact.manifest
+uname -r          : 6.16.12
+uname -v          : #193-postmarketos-qcom-msm8974 SMP PREEMPT Tue Nov 10 23:47:59 U
+uptime            : 979.64 s
+control function  : 217:a0:1:0
+interface function: 217:a0:0:0
+dmesg wcd9320     : 135 lines (full history)
+
+=== PGD identity ===
+major 0x0102 minor 0x0001 version 0x00 laddr 0xcb up 1 down 0
+
+=== PGD bringup ===
+function=pgd path=fresh online=1 adopted=0 power_owned=1 reset_transitions=2 supply_enables=1 supply_disables=0 identity_reads=1 identity_failures=0 stale_bus_state=0
+
+=== PGD rco_wake ===
+core_ready=1 core_adopted=0 init_calls=1 init_runs=1
+state=idle attempts=0 failed_step=0 last_error=0
+sentinel_range=0x200-0x3bf count=448
+nonzero_before=0 nonzero_after_bringup=94 nonzero_after=95 nonzero_teardown=0
+have_before=1 have_after_bringup=1 have_after=1 have_teardown=0
+
+=== PGD irq_observe ===
+irq=84 trigger=0x1 requested=1 raw_at_setup=0 raw_last=0
+snap_mode=00 snap_status=00 00 00 00 snap_mask=ff ff 3f 3f snap_level=01 00 00
+mask_readback=ff ff 3f 7f last_status=00 00 00 00
+irq_count=0 irq_spurious=0 irq_acked=0
+samples=45/45 running=0 pad_high_samples=0 pending_samples=0
+
+=== IFD identity ===
+interface function: no chip id (laddr 0xca up 1 down 0)
+
+=== IFD bringup ===
+function=ifd path=fresh online=1 adopted=0 power_owned=0 reset_transitions=0 supply_enables=0 supply_disables=0 identity_reads=0 identity_failures=0 stale_bus_state=0
+
+=== sentinel snapshot: before (as found) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+
+=== sentinel snapshot: after (post-RCO) ===
+0000000000000000000000000000000000000000000000000000000000000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000048030000000000004803000000
+0000004803000000000000480300000000000000000000000000000000000000
+0000000000000000000000000000000000000000000000000000000000000000
+001b000000000000001b00000000000000000008788000000000000878800000
+0000000878800000000000087880000000000008788000000000000878800000
+00000008788000001a000004e001402a86701818030100640100000000000000
+0000000000000303000000000000000000010000000000000000000000000000
+e4000000120c182300a4d7056009000000000000000000000000000000000000
+0000000000000000400000000000000000000000000000004000000000000000
+000000000000000030b528377f00030330b528377f00030330b528377f000303
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000000000000000000000000000010100000000000000000000000000
+
+=== sentinel snapshot: teardown ===
+not captured
+
+=== dmesg (wcd9320) ===
+[   45.643041] wcd9320 217:a0:0:0: IFD probe #1: sdev=866a1c2d dev=866a1c2d name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   45.643641] wcd9320 217:a0:0:0: IFD probe #1: driver=55d96799 name=wcd9320 task=(udev-worker) pid=434
+[   45.647394] wcd9320 217:a0:0:0: IFD probe #1: before: ifd_instance=00000000 drvdata=00000000 this_wcd=5ffeaeeb
+[   45.648294] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   45.648401] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   45.648484] wcd9320 217:a0:0:0: IFD probe #1: after:  ifd_instance=5ffeaeeb drvdata=5ffeaeeb replaced=0
+[   45.648578] wcd9320 217:a0:0:0: IFD probe #1: exit after 5 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   45.648691] wcd9320 217:a0:0:0: IFD probe #1: returning 0 (bound)
+[   45.689366] wcd9320 217:a0:0:0: Failed to get logical address
+[   45.689666] wcd9320 217:a0:1:0: CTL probe #1: sdev=faa3041d dev=faa3041d name=217:a0:1:0 laddr=0x00 laddr_valid=0 status=0
+[   45.689774] wcd9320 217:a0:1:0: CTL probe #1: driver=55d96799 name=wcd9320 task=(udev-worker) pid=434 drvdata_before=00000000
+[   45.707096] wcd9320 217:a0:1:0: ASoC component registered: wcd9320-codec, 1 DAI(s): wcd9320-slim-rx1
+[   45.799275] wcd9320 217:a0:1:0: fresh bring-up: 7 supplies enabled, reset released
+[   45.799418] wcd9320 217:a0:1:0: fresh bring-up: waiting for enumeration
+[   45.799494] wcd9320 217:a0:1:0: CTL probe #1: exit after 109 ms: laddr=0x00 laddr_valid=0 status=0 path=fresh -- slim_get_logical_addr() decides next
+[   45.800990] wcd9320 217:a0:1:0: id_major 0x0102 id_minor 0x0001 version 0x00 (raw 01 00 02 01 00)
+[   45.810539] wcd9320 217:a0:0:0: IFD probe #2: sdev=866a1c2d dev=866a1c2d name=217:a0:0:0 laddr=0x00 laddr_valid=0 status=0
+[   45.810646] wcd9320 217:a0:0:0: IFD probe #2: driver=55d96799 name=wcd9320 task=kworker/u16:3 pid=41
+[   45.810736] wcd9320 217:a0:0:0: IFD probe #2: before: ifd_instance=00000000 drvdata=00000000 this_wcd=5580e951
+[   45.810901] wcd9320 217:a0:0:0: interface function: no power or reset taken, waiting for enumeration
+[   45.810989] wcd9320 217:a0:0:0: interface regmap: own config, max_register 0x1b0, uncached
+[   45.811070] wcd9320 217:a0:0:0: IFD probe #2: after:  ifd_instance=5580e951 drvdata=5580e951 replaced=0
+[   45.811161] wcd9320 217:a0:0:0: IFD probe #2: exit after 0 ms: laddr=0x00 laddr_valid=0 status=0 path=ifd -- slim_get_logical_addr() decides next
+[   45.811274] wcd9320 217:a0:0:0: IFD probe #2: returning 0 (bound)
+[   45.816558] wcd9320 217:a0:0:0: interface function UP (#1), logical address 0xca
+[   45.818413] wcd9320 217:a0:1:0: irq snapshot: raw_level=0 mode=00 status=00 00 00 00 mask=ff ff 3f 3f level=01 00 00
+[   45.828218] wcd9320 217:a0:1:0: masks written ff ff 3f 7f, read back ff ff 3f 7f
+[   45.869550] wcd9320 217:a0:1:0: nested irq chip registered: 29 sources, all masked, domain on parent irq 84
+[   45.869660] wcd9320 217:a0:1:0: parent irq 84 requested, kernel reports trigger type 0x1 (edge rising)
+[   45.869754] wcd9320 217:a0:1:0: bounded sampling started: 45 samples over ~30 s, then stop
+[   46.186240] wcd9320 217:a0:1:0: sample 1/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   46.443753] wcd9320 217:a0:1:0: core init: 0/448 non-zero -- initialising
+[   46.444575] wcd9320 217:a0:1:0: bring-up step  1/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=04 -> read=04  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x04]
+[   46.452010] wcd9320 217:a0:1:0: bring-up step  2/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=00 -> read=00  delay=5000us  unverifiable  [bring_up: CDC_CTL = 0 (assert digital-core reset), 5 ms]
+[   46.453179] wcd9320 217:a0:1:0: bring-up step  3/4: reg 0x080 (VE 0x0880) old=00 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: CDC_CTL = 3 (release digital core)]
+[   46.454305] wcd9320 217:a0:1:0: bring-up step  4/4: reg 0x088 (VE 0x0888) old=04 mask=ff want=03 -> read=03  delay=0us  unverifiable  [bring_up: LEAKAGE_CTL = 0x03]
+[   46.454450] wcd9320 217:a0:1:0: bring-up: all 4 steps applied cleanly
+[   46.990523] wcd9320 217:a0:1:0: core init: after release, 94/448 non-zero
+[   47.372598] wcd9320 217:a0:1:0: rco-wake step  1/15: reg 0x101 (VE 0x0901) old=50 mask=80 want=80 -> read=d0  delay=0us  OK  [BG: slow mode on]
+[   47.379738] wcd9320 217:a0:1:0: rco-wake step  2/15: reg 0x101 (VE 0x0901) old=d0 mask=04 want=04 -> read=d4  delay=0us  OK  [BG: precharge]
+[   47.386727] wcd9320 217:a0:1:0: rco-wake step  3/15: reg 0x101 (VE 0x0901) old=d4 mask=01 want=01 -> read=d5  delay=1000us  OK  [BG: enable, then 1 ms settle]
+[   47.387408] wcd9320 217:a0:1:0: rco-wake step  4/15: reg 0x101 (VE 0x0901) old=d5 mask=80 want=00 -> read=55  delay=0us  OK  [BG: slow mode off]
+[   47.389507] wcd9320 217:a0:1:0: rco-wake step  5/15: reg 0x1fa (VE 0x09fa) old=46 mask=10 want=00 -> read=46  delay=0us  OK  [RC_OSC_FREQ: clear bit 4]
+[   47.396668] wcd9320 217:a0:1:0: rco-wake step  6/15: reg 0x105 (VE 0x0905) old=16 mask=ff want=17 -> read=17  delay=5us  OK  [BIAS_OSC_BG_CTL = 0x17 (inherited magic: 'bandgap mode to fast')]
+[   47.402251] wcd9320 217:a0:1:0: rco-wake step  7/15: reg 0x1fa (VE 0x09fa) old=46 mask=80 want=80 -> read=c6  delay=0us  OK  [RC_OSC_FREQ: enable the RC oscillator]
+[   47.429243] wcd9320 217:a0:1:0: rco-wake step  8/15: reg 0x1fb (VE 0x09fb) old=0a mask=80 want=80 -> read=8a  delay=10us  OK  [RC_OSC_TEST: start pulse, rising]
+[   47.445192] wcd9320 217:a0:1:0: rco-wake step  9/15: reg 0x1fb (VE 0x09fb) old=8a mask=80 want=00 -> read=0a  delay=10000us  OK  [RC_OSC_TEST: start pulse, falling, then 10 ms settle]
+[   47.459211] wcd9320 217:a0:1:0: rco-wake step 10/15: reg 0x108 (VE 0x0908) old=04 mask=08 want=08 -> read=0c  delay=0us  OK  [CLK_BUFF_EN1: select RCO as the buffer source]
+[   47.470673] wcd9320 217:a0:1:0: rco-wake step 11/15: reg 0x109 (VE 0x0909) old=02 mask=ff want=02 -> read=02  delay=1000us  OK  [CLK_BUFF_EN2 = 0x02]
+[   47.480935] wcd9320 217:a0:1:0: rco-wake step 12/15: reg 0x108 (VE 0x0908) old=0c mask=01 want=01 -> read=0d  delay=1200us  OK  [CLK_BUFF_EN1: enable clock buffer (hardware-required delay)]
+[   47.499212] wcd9320 217:a0:1:0: rco-wake step 13/15: reg 0x109 (VE 0x0909) old=02 mask=02 want=00 -> read=00  delay=0us  OK  [CLK_BUFF_EN2: clear bit 1]
+[   47.509315] wcd9320 217:a0:1:0: rco-wake step 14/15: reg 0x109 (VE 0x0909) old=00 mask=04 want=04 -> read=04  delay=0us  OK  [CLK_BUFF_EN2: clock on]
+[   47.529492] wcd9320 217:a0:1:0: rco-wake step 15/15: reg 0x311 (VE 0x0b11) old=00 mask=01 want=01 -> read=01  delay=50us  unverifiable  [CDC_CLK_MCLK_CTL: gate the clock into the CDC block (unverifiable)]
+[   47.529516] wcd9320 217:a0:1:0: rco-wake: all 15 steps applied cleanly
+[   48.209804] wcd9320 217:a0:1:0: core verify: 95/448 non-zero (min 48), canary 0x320 = e4 (want e4)
+[   48.209827] wcd9320 217:a0:1:0: core init: complete, core_ready (0 -> 94 -> 95 non-zero)
+[   48.209842] wcd9320 217:a0:1:0: control function UP (#1), logical address 0xcb
+[   49.760095] wcd9320-lumia-q6 sound: front end: MultiMedia1 Playback (id 0), trigger POST
+[   49.760114] wcd9320-lumia-q6 sound: back end: SLIM Playback (id 2)
+[   49.760126] wcd9320-lumia-q6 sound: back end: SEC_MI2S Playback (id 18)
+[   50.019646] wcd9320-lumia-q6 sound: Headphones, Speaker, Earpiece, Lineout and Loudspeaker pins OFF at init -- nothing on the codec or the I2S amplifier powers until the jack or a pin switch turns one on
+[   50.020052] wcd9320 217:a0:1:0: insert-detect write 1: reg 0x14a mask=01 old=00 want=00 -> read=00  OK
+[   50.029285] wcd9320 217:a0:1:0: insert-detect write 2: reg 0x14a mask=ff old=00 want=6e -> read=6e  OK
+[   50.029736] wcd9320 217:a0:1:0: insert-detect write 3: reg 0x14a mask=01 old=6e want=6f -> read=6f  OK
+[   50.029753] wcd9320 217:a0:1:0: insert-detect: ENABLED, variant default(0x6c), 3 writes to 0x14a, no other register touched
+[   50.115721] wcd9320 217:a0:1:0: jack: detection ON, JACK_SWITCH on virq 89, 0x14b = 04, armed for insertion
+[   50.115749] wcd9320 217:a0:1:0: jack: reported REMOVED -- the Headphones pin follows it off
+[   50.115764] wcd9320-lumia-q6 sound: Headphone Jack -> 217:a0:1:0: the jack drives the pin
+[   50.392391] wcd9320-lumia-q6 sound: QDSP6 card registered: 3 link(s)
+[   54.659820] wcd9320 217:a0:1:0: sample 21/45: raw_level=0 status=00 00 00 00 pending=no irqs=0
+[   80.332727] wcd9320 217:a0:1:0: sampling complete: 45 samples, pad high in 0, live source in 0, parent irqs 0 (spurious 0, acked 0)
+[   84.507697] wcd9320 217:a0:1:0: c3a: HPHL gain field set to 14 for the next prep (minimum)
+[   84.596417] wcd9320 217:a0:1:0: slim-stream: ASoC startup (dai wcd9320-slim-rx1) -> 0
+[   84.598105] wcd9320-lumia-q6 sound: BE hw_params: cpu=SLIMBUS_0_RX codec=wcd9320-slim-rx1 rate=48000 ch=2 ch_map=2 ch from 144 (reported by the codec)
+[   84.598243] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_params (dai wcd9320-slim-rx1, rate 48000, ch 2, fmt 2)
+[   84.634121] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 03 -> read 03
+[   84.634874] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 05 -> read 05
+[   84.666267] wcd9320 217:a0:1:0: rx-port 16: PROGRAMMED, 2 write(s) total
+[   84.698179] wcd9320 217:a0:1:0: rx-port 17: multi-channel 0x184 want 03 -> read 03
+[   84.698904] wcd9320 217:a0:1:0: rx-port 17: config 0x041 want 05 -> read 05
+[   84.731622] wcd9320 217:a0:1:0: rx-port 17: PROGRAMMED, 4 write(s) total
+[   84.731963] wcd9320 217:a0:1:0: slim-stream: config port 16 (mask 0x30000) channel 144 x2 rate 48000 bps 16
+[   84.754372] wcd9320 217:a0:1:0: slim-stream: ASoC trigger START (dai wcd9320-slim-rx1)
+[   84.755541] wcd9320 217:a0:1:0: slim-stream: prepare -> 0 (CONNECT_SINK to the manager)
+[   84.768267] wcd9320 217:a0:1:0: slim-stream: enable -> 0 (SLIM_USR_MC_DEF_ACT_CHAN)
+[   84.768652] wcd9320 217:a0:1:0: slim-stream: UP port 16 channel 144
+[   85.705550] wcd9320 217:a0:1:0: slim-stream: ASoC trigger STOP (dai wcd9320-slim-rx1)
+[   85.706975] wcd9320 217:a0:1:0: slim-stream: disable -> 0 (no-op here: the NGD drops every reconfiguration message)
+[   85.708373] wcd9320 217:a0:1:0: slim-stream: unprepare -> 0 (DISCONNECT_PORT -- the real teardown)
+[   85.708477] wcd9320 217:a0:1:0: slim-stream: DOWN port 16
+[   85.709221] wcd9320 217:a0:1:0: RX path invocation: ASoC hw_free (dai wcd9320-slim-rx1)
+[   85.719550] wcd9320 217:a0:1:0: rx-port 17: config 0x041 want 00 -> read 00
+[   85.720068] wcd9320 217:a0:1:0: rx-port 17: multi-channel 0x184 want 00 -> read 00
+[   85.757622] wcd9320 217:a0:1:0: rx-port 17: TORN DOWN, 6 write(s) total
+[   85.758372] wcd9320 217:a0:1:0: rx-port 16: config 0x040 want 00 -> read 00
+[   85.759122] wcd9320 217:a0:1:0: rx-port 16: multi-channel 0x180 want 00 -> read 00
+[   85.803661] wcd9320 217:a0:1:0: rx-port 16: TORN DOWN, 8 write(s) total
+[   85.804006] wcd9320 217:a0:1:0: slim-stream: ASoC shutdown (dai wcd9320-slim-rx1)
+[   90.656607] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[   91.613752] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  236.452460] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[  237.496708] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  239.066555] wcd9320 217:a0:1:0: c2b: 0x2e7 mask ff want fa -> chip fa  [RX7 Digital Volume (ALSA)]
+[  942.629358] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[  943.678569] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  973.026424] wcd9320-lumia-q6 sound: sec_mi2s: bit clock 1536000 Hz on
+[  974.089669] wcd9320-lumia-q6 sound: sec_mi2s: bit clock off
+[  975.103015] wcd9320 217:a0:1:0: c3a: C3 ABORT: full mapped teardown, attempt 1 -- every step is attempted regardless of failures
+[  975.103930] wcd9320 217:a0:1:0: c2b: 0x1df mask 80 want 00 -> chip 6f  [SPEAKER PA disable (bit 7)]
+[  975.104719] wcd9320 217:a0:1:0: c2b: 0x1bc mask 10 want 00 -> chip 00  [EAR PA disable (bit 4)]
+[  975.110639] wcd9320 217:a0:1:0: c2b: 0x1ca mask 0f want 00 -> chip 00  [LINEOUT PA disable (all four)]
+[  975.111468] wcd9320 217:a0:1:0: c2b: 0x1cd mask 40 want 00 -> chip 00  [LINEOUT gain bit 6 clear (PA POST_PMD)]
+[  975.112258] wcd9320 217:a0:1:0: c2b: 0x1d1 mask 40 want 00 -> chip 00  [LINEOUT gain bit 6 clear (PA POST_PMD)]
+[  975.113051] wcd9320 217:a0:1:0: c2b: 0x1d5 mask 40 want 00 -> chip 00  [LINEOUT gain bit 6 clear (PA POST_PMD)]
+[  975.113860] wcd9320 217:a0:1:0: c2b: 0x1d9 mask 40 want 00 -> chip 00  [LINEOUT gain bit 6 clear (PA POST_PMD)]
+[  975.114679] wcd9320 217:a0:1:0: c2b: 0x1ab mask 20 want 00 -> chip 80  [HPHL PA disable (bit 5)]
+[  975.146772] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 80 want 00 -> chip 00  [HPHL DAC power off]
+[  975.147695] wcd9320 217:a0:1:0: c2b: 0x1b1 mask 40 want 00 -> chip 00  [HPHL DAC input switch off]
+[  975.149938] wcd9320 217:a0:1:0: forced: 0x30d mask 02 <- 00  WRITE ISSUED; resulting register state not directly observable by readback (chip reads 00) [HPHL RDAC clock off (mandatory)]
+[  975.151055] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 00 -> chip 00  [ZOH mux cleared]
+[  975.151807] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 00 -> chip 00  [CLASS_H_DSM MUX = ZERO]
+[  975.153008] wcd9320 217:a0:1:0: c2b: 0x1bc mask 40 want 00 -> chip 00  [DAC1 power off]
+[  975.153761] wcd9320 217:a0:1:0: c2b: 0x1bc mask 20 want 00 -> chip 00  [DAC1 switch off]
+[  975.154298] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 0c want 00 -> chip 00  [ZOH mux cleared]
+[  975.155141] wcd9320 217:a0:1:0: c2b: 0x3b0 mask 30 want 00 -> chip 00  [CLASS_H_DSM MUX = ZERO]
+[  975.155933] wcd9320 217:a0:1:0: c2b: 0x1cf mask 80 want 00 -> chip 00  [LINEOUT DAC power off]
+[  975.156466] wcd9320 217:a0:1:0: c2b: 0x1cf mask 40 want 00 -> chip 00  [LINEOUT DAC switch off]
+[  975.157567] wcd9320 217:a0:1:0: c2b: 0x1d3 mask 80 want 00 -> chip 00  [LINEOUT DAC power off]
+[  975.158346] wcd9320 217:a0:1:0: c2b: 0x1d3 mask 40 want 00 -> chip 00  [LINEOUT DAC switch off]
+[  975.158869] wcd9320 217:a0:1:0: c2b: 0x1d7 mask 80 want 00 -> chip 00  [LINEOUT DAC power off]
+[  975.159810] wcd9320 217:a0:1:0: c2b: 0x1d7 mask 40 want 00 -> chip 00  [LINEOUT DAC switch off]
+[  975.160347] wcd9320 217:a0:1:0: c2b: 0x1db mask 80 want 00 -> chip 00  [LINEOUT DAC power off]
+[  975.162641] wcd9320 217:a0:1:0: c2b: 0x1db mask 40 want 00 -> chip 00  [LINEOUT DAC switch off]
+[  975.163002] wcd9320 217:a0:1:0: clk-prereq: not applied, nothing to restore
+[  975.163719] wcd9320 217:a0:1:0: c3a: C3 ABORT complete -- pa_on=0 dac_on=0 prereq=0 prep=0 guard_tripped=0
+
+=== verdict ===
+mode   : wcd9320-dapm-listen
+checks : 68 passed, 9 failed
+VERDICT: FAIL (wcd9320-dapm-listen)
+REPORT_COMPLETE
