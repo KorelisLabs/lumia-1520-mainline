@@ -120,6 +120,10 @@ esac
 RAIL_LIVE=enabled; [ "$RAIL5V" = "off" ] && RAIL_LIVE=disabled
 # r193: the speaker gain the I2S streams expect (the Loudspeaker Volume default)
 SPK_GAIN_RAW="${SPK_GAIN_RAW:-22}"
+case "$SPK_GAIN_RAW" in
+''|*[!0-9]*) echo "INVALID SETUP: SPK_GAIN_RAW=$SPK_GAIN_RAW (0..22)"; exit 2 ;;
+esac
+[ "$SPK_GAIN_RAW" -le 22 ] || { echo "INVALID SETUP: SPK_GAIN_RAW=$SPK_GAIN_RAW above 22 (+15 dB)"; exit 2; }
 # r191: AMP=visa powers the VISA speaker amplifier (Windows' power-on script)
 # around each stream of a codec output, and standby + GPIO20 low after it;
 # every abort and teardown powers it off too. The amplifier's input is
@@ -226,7 +230,8 @@ vol_set() {
 	ear) ctl_set "Earpiece Volume" "$1" && ctl_set "RX1 Digital Volume" "$2" ;;
 	lo)  ctl_set "Lineout Volume" "$1" && ctl_set "RX3 Digital Volume" "$2" &&
 	     ctl_set "RX5 Digital Volume" "$2" && ctl_set "Lineout Select" "$LO_SELECT" ;;
-	i2s) return 0 ;;	# r189: no gain control on this path
+	# r193: the Loudspeaker Volume control (TAS2552 PGA_GAIN), 0..22 = -7..+15 dB
+	i2s) ctl_set "Loudspeaker Volume" "$SPK_GAIN_RAW" ;;
 	esac
 }
 # r189: the output's whole path is up (the wait) / down (after the stream)
@@ -420,7 +425,7 @@ stream() {	# stream <n> <spec>
 	spk) jrn "volumes: Speaker Volume $_hv (field $((8 - _hv))), RX7 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	ear) jrn "volumes: Earpiece Volume $_hv, RX1 digital $_dv (0x$(dapm_spec_dig "$_dv"))" ;;
 	lo)  jrn "volumes: Lineout Volume $_hv (field $(dapm_spec_field "$_hv")), RX3/RX5 digital $_dv (0x$(dapm_spec_dig "$_dv")), Lineout Select $LO_SELECT" ;;
-	i2s) jrn "volumes: none -- the I2S amplifier has no gain control; the level is the tone's $DBFS dBFS" ;;
+	i2s) jrn "volumes: Loudspeaker Volume $SPK_GAIN_RAW ($((SPK_GAIN_RAW - 7)) dB), tone $DBFS dBFS" ;;
 	esac
 	case "$OUTPUT:$_side" in
 	hph:L) jrn "stream $_n: tone on the LEFT only -- the mic on the LEFT earcup" ;;
@@ -631,6 +636,7 @@ launch)
 	[ -z "$HOLD_5V" ] || CMD="$CMD --setenv=HOLD_5V=$HOLD_5V"
 	[ -z "$AMP" ] || CMD="$CMD --setenv=AMP=$AMP"
 	[ "$RAIL5V" = "auto" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
+	[ "$SPK_GAIN_RAW" = "22" ] || CMD="$CMD --setenv=SPK_GAIN_RAW=$SPK_GAIN_RAW"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -695,6 +701,12 @@ pins_all_off
 [ "$OUTPUT" != "i2s" ] || { ctl_set "$MIXER" 0 && jrn "$MIXER off at the end"; }
 [ -z "$HOLD_5V" ] || { ctl_set "$I2S_MIXER" 0 && jrn "HOLD_5V: $I2S_MIXER off at the end"; }
 # r185/r187: every volume back to its boot value
+# r193: the speaker volume back to its default (+15 dB) -- separate, so an
+# older card without the control does not fail the codec restore
+if [ "$OUTPUT" = "i2s" ]; then
+	ctl_set "Loudspeaker Volume" 22 && jrn "Loudspeaker Volume restored to 22 (+15 dB)" ||
+		jrn "LOUDSPEAKER VOLUME DID NOT RESTORE"
+fi
 if vol_restore; then
 	jrn "volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15"
 else

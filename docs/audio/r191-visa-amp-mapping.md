@@ -484,3 +484,39 @@ but it is not enabled in our config.
   default 22).
 - **Card** `rc11`.
 - **Selftest:** 105/0.
+
+## 12. r193 on hardware (phone clock 2026-09-05; PC 2026-11-11)
+
+**At boot:**
+- Digital gate 83/0, mclk-own 90/0, vm 57/0.
+- The I2S component reports `vdd_present=0`, with no dummy-regulator
+  warning.
+- `Loudspeaker Volume` reads 22 (+15 dB); VISA `gain_raw=22`.
+
+| run | stream | VISA at power-on | phone | mic at the grille |
+|---|---|---|---|---|
+| 005157Z | **R only**, volume 22, -50 dBFS | `mono L+R, gain +15 dB`, 0 mismatches | 78/0 | **PASS -55.1 dBFS**, 29 dB contrast |
+| 005319Z | both, **volume 12**, -50 dBFS | `mono L+R, gain +5 dB`, `gain_raw=12` live | 78/0 | **PASS -59.5 dBFS**, 24.8 dB contrast |
+
+**The mono mix works.** The right channel, silent on r192 (left only),
+plays. It sits 6 dB below a both-channels tone (-49.0), which is (L+R)/2
+for a one-sided signal.
+
+**The volume works.** Volume 12 against 22 is a 10.5 dB drop for a 10 dB
+step. The control was set back to 22 after the run.
+
+**No 5 V.** The rail stayed off throughout (`RAIL5V` auto from
+`vdd_present=0`).
+
+**Tools:** the listen runner sets `Loudspeaker Volume` to `SPK_GAIN_RAW`
+(0..22, default 22) for I2S streams, refuses anything above 22, and
+restores 22 after the run.
+
+**Steps 1 to 4 are done.**
+
+**Open:**
+- the earpiece (DATA0?);
+- removing the diagnostic paths (r187 to r190);
+- the stale "5 V rail" wording in the component's probe log;
+- revisiting mainline `tas2552` once Nokia's tuning is understood;
+- raising the +15 dB cap only after that.
