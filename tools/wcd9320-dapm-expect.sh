@@ -61,7 +61,7 @@ dapm_widget() {
 # THE CARD MUST BE r184's. With an older card the codec's HEADPHONE output has
 # no pin behind it and is a DAPM endpoint by itself, so any stream would power
 # the whole path, PA included. Every gate checks this BEFORE anything plays.
-DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc10}"
+DAPM_CARD_VERSION="${DAPM_CARD_VERSION:-q6-card-rc11}"
 DAPM_CARD_VERSION_PATH="${DAPM_CARD_VERSION_PATH:-/sys/module/snd_soc_lumia1520_q6/version}"
 
 # dapm_card_ok <card version> <pin value> -> OK, or REFUSE:<why>

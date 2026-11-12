@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-10 18:38:53.639303083 -0500
-@@ -0,0 +1,1177 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-11 18:58:10.795627577 -0500
+@@ -0,0 +1,1291 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -153,6 +153,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +#include <sound/pcm_params.h>
 +#include <sound/jack.h>
 +#include <sound/soc.h>
++#include <sound/tlv.h>
 +
 +#include <dt-bindings/sound/qcom,q6afe.h>
 +
@@ -334,7 +335,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	mutex_lock(&spk->lock);
 +	switch (event) {
 +	case SND_SOC_DAPM_PRE_PMU:
-+		ret = regulator_enable(spk->vdd);
++		ret = spk->vdd ? regulator_enable(spk->vdd) : 0;
 +		if (ret) {
 +			dev_err(spk->dev, "i2s-spk: the 5 V rail would not enable: %d\n", ret);
 +			lumia_i2s_spk_err(spk, ret);
@@ -345,7 +346,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		if (ret) {
 +			dev_err(spk->dev, "i2s-spk: sec_mi2s pins would not go active: %d -- rail off again\n", ret);
 +			lumia_i2s_spk_err(spk, ret);
-+			r = regulator_disable(spk->vdd);
++			r = spk->vdd ? regulator_disable(spk->vdd) : 0;
 +			if (r)
 +				lumia_i2s_spk_err(spk, r);
 +			else
@@ -364,7 +365,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +					lumia_i2s_spk_err(spk, r);
 +				else
 +					spk->pins_on = false;
-+				r = regulator_disable(spk->vdd);
++				r = spk->vdd ? regulator_disable(spk->vdd) : 0;
 +				if (r)
 +					lumia_i2s_spk_err(spk, r);
 +				else
@@ -374,7 +375,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		}
 +		spk->enables++;
 +		dev_info(spk->dev, "i2s-spk: 5 V rail on (%d uV), sec_mi2s pins active%s\n",
-+			 regulator_get_voltage(spk->vdd),
++			 spk->vdd ? regulator_get_voltage(spk->vdd) : 0,
 +			 spk->visa ? ", VISA amplifier powered" : "");
 +		break;
 +	case SND_SOC_DAPM_POST_PMD:
@@ -392,7 +393,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +			}
 +		}
 +		if (spk->supply_on) {
-+			r = regulator_disable(spk->vdd);
++			r = spk->vdd ? regulator_disable(spk->vdd) : 0;
 +			if (r) {
 +				dev_err(spk->dev, "i2s-spk: the 5 V rail would not disable: %d\n", r);
 +				lumia_i2s_spk_err(spk, r);
@@ -421,7 +422,52 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	{ "I2S_SPK_OUT", NULL, "SPK 5V" },
 +};
 +
++/*
++ * r193: "Loudspeaker Volume" -- the TAS2552's PGA_GAIN (reg 0x12, gain + 7 dB).
++ * Raw 0..22 = -7..+15 dB in 1 dB steps; +15 dB is Windows' own setting and,
++ * until Nokia's limiter tuning is understood, the ceiling.
++ */
++static int visa_gain_get(struct visa *v);
++static int visa_gain_set(struct visa *v, unsigned int raw);
++static const DECLARE_TLV_DB_SCALE(lumia_spk_vol_tlv, -700, 100, 0);
++#define LUMIA_SPK_VOL_MAX	22	/* +15 dB, Windows' PGA_GAIN 0x16 */
++
++static int lumia_spk_vol_get(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc)
++{
++	struct snd_soc_component *c = snd_kcontrol_chip(kc);
++	struct lumia_i2s_spk *spk = snd_soc_component_get_drvdata(c);
++
++	if (!spk->visa)
++		return -ENODEV;
++	uc->value.integer.value[0] = visa_gain_get(spk->visa);
++	return 0;
++}
++
++static int lumia_spk_vol_put(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc)
++{
++	struct snd_soc_component *c = snd_kcontrol_chip(kc);
++	struct lumia_i2s_spk *spk = snd_soc_component_get_drvdata(c);
++	long raw = uc->value.integer.value[0];
++	int ret;
++
++	if (!spk->visa)
++		return -ENODEV;
++	if (raw < 0 || raw > LUMIA_SPK_VOL_MAX)
++		return -EINVAL;
++	if (raw == visa_gain_get(spk->visa))
++		return 0;
++	ret = visa_gain_set(spk->visa, raw);
++	return ret ? ret : 1;
++}
++
++static const struct snd_kcontrol_new lumia_i2s_spk_controls[] = {
++	SOC_SINGLE_EXT_TLV("Loudspeaker Volume", SND_SOC_NOPM, 0, LUMIA_SPK_VOL_MAX, 0,
++			   lumia_spk_vol_get, lumia_spk_vol_put, lumia_spk_vol_tlv),
++};
++
 +static const struct snd_soc_component_driver lumia_i2s_spk_component = {
++	.controls		= lumia_i2s_spk_controls,
++	.num_controls		= ARRAY_SIZE(lumia_i2s_spk_controls),
 +	.dapm_widgets		= lumia_i2s_spk_widgets,
 +	.num_dapm_widgets	= ARRAY_SIZE(lumia_i2s_spk_widgets),
 +	.dapm_routes		= lumia_i2s_spk_routes,
@@ -450,12 +496,13 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +		return -ENODEV;
 +	mutex_lock(&spk->lock);
 +	n = sysfs_emit(buf,
-+		       "supply_on=%d pins_active=%d bclk_on=%d enables=%u disables=%u bclk_sets=%u bclk_clears=%u errors=%u last_err=%d vdd_enabled=%d vdd_uV=%d visa=%d\n",
++		       "supply_on=%d pins_active=%d bclk_on=%d enables=%u disables=%u bclk_sets=%u bclk_clears=%u errors=%u last_err=%d vdd_present=%d vdd_enabled=%d vdd_uV=%d visa=%d\n",
 +		       spk->supply_on, spk->pins_on, spk->bclk_on,
 +		       spk->enables, spk->disables, spk->bclk_sets,
 +		       spk->bclk_clears, spk->errors, spk->last_err,
-+		       regulator_is_enabled(spk->vdd),
-+		       regulator_get_voltage(spk->vdd), spk->visa != NULL);
++		       spk->vdd != NULL,
++		       spk->vdd ? regulator_is_enabled(spk->vdd) : 0,
++		       spk->vdd ? regulator_get_voltage(spk->vdd) : 0, spk->visa != NULL);
 +	mutex_unlock(&spk->lock);
 +	return n;
 +}
@@ -487,9 +534,17 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	if (ret)
 +		return ret;
 +
-+	spk->vdd = devm_regulator_get(dev, "vdd");
-+	if (IS_ERR(spk->vdd))
-+		return dev_err_probe(dev, PTR_ERR(spk->vdd), "no vdd (the 5 V rail)\n");
++	/*
++	 * r193: optional. Step 2 played the loudspeaker with this rail held off
++	 * -- the TAS2552 makes its own boost -- so the DT no longer gives one.
++	 * -ENODEV is no rail; the supply event then runs pins and amplifier only.
++	 */
++	spk->vdd = devm_regulator_get_optional(dev, "vdd");
++	if (IS_ERR(spk->vdd)) {
++		if (PTR_ERR(spk->vdd) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(spk->vdd), "vdd\n");
++		spk->vdd = NULL;
++	}
 +
 +	spk->pins = devm_pinctrl_get(dev);
 +	if (IS_ERR(spk->pins))
@@ -506,7 +561,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	if (ret)
 +		return dev_err_probe(dev, ret, "sec_mi2s pins would not sleep\n");
 +
-+	if (regulator_is_enabled(spk->vdd) > 0)
++	if (spk->vdd && regulator_is_enabled(spk->vdd) > 0)
 +		dev_warn(dev, "i2s-spk: the 5 V rail is already on at probe -- another consumer holds it\n");
 +
 +	/*
@@ -933,7 +988,16 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	bool dump_valid;
 +	unsigned int dump_errors;
 +	bool dapm_held;		/* r192: powered by the I2S component's DAPM supply */
++	u8 gain_raw;		/* r193: PGA_GAIN 0..22 (-7..+15 dB), applied at power-on */
 +};
++
++/* r193: TAS2552 registers this driver touches beyond Windows' script */
++#define VISA_REG_CFG3		0x03
++#define VISA_CFG3_DIN_SRC	0x18	/* DIN_SRC_SEL, bits 4:3 */
++#define VISA_CFG3_DIN_AVG_LR	0x18	/* (L+R)/2; Windows' script selects LEFT (0x08) */
++#define VISA_REG_PGA_GAIN	0x12
++#define VISA_PGA_FIELD		0x1f	/* gain + 7 dB */
++#define VISA_GAIN_DEFAULT	0x16	/* +15 dB, Windows' value */
 +
 +static void visa_gpio(struct visa *v, int on)
 +{
@@ -967,6 +1031,19 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +			 reg, val, rb);
 +	}
 +	return 0;
++}
++
++/* r193: read-modify-write through visa_write (so it is read back too) */
++static int visa_update(struct visa *v, u8 reg, u8 mask, u8 val)
++{
++	int c = i2c_smbus_read_byte_data(v->client, reg);
++
++	if (c < 0) {
++		v->i2c_errors++;
++		v->last_err = c;
++		return c;
++	}
++	return visa_write(v, reg, (c & ~mask) | (val & mask));
 +}
 +
 +/* Windows' power-off: standby bit, then GPIO20 low -- GPIO low whatever the bus says */
@@ -1023,11 +1100,47 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +			return -EINVAL;
 +		}
 +	}
++	/*
++	 * r193: after Windows' script, unchanged: the mono mix and the gain.
++	 * CFG_3 DIN_SRC_SEL from LEFT to AVG_L_R (step 4: the amplifier dropped
++	 * the right slot), then PGA_GAIN from the Loudspeaker Volume control.
++	 */
++	ret = visa_update(v, VISA_REG_CFG3, VISA_CFG3_DIN_SRC, VISA_CFG3_DIN_AVG_LR);
++	if (!ret)
++		ret = visa_update(v, VISA_REG_PGA_GAIN, VISA_PGA_FIELD, v->gain_raw);
++	if (ret) {
++		dev_err(&v->client->dev, "visa: post-script write failed: %d -- standby\n", ret);
++		visa_power_off_locked(v);
++		return ret;
++	}
 +	v->powered = true;
 +	v->powers_on++;
-+	dev_info(&v->client->dev, "visa: POWERED ON (Windows' script, %u read-back mismatch(es))\n",
-+		 v->verify_mismatches - mm0);
++	dev_info(&v->client->dev, "visa: POWERED ON (Windows' script, %u read-back mismatch(es); mono L+R, gain %+d dB)\n",
++		 v->verify_mismatches - mm0, (int)v->gain_raw - 7);
 +	return 0;
++}
++
++static int visa_gain_get(struct visa *v)
++{
++	int g;
++
++	mutex_lock(&v->lock);
++	g = v->gain_raw;
++	mutex_unlock(&v->lock);
++	return g;
++}
++
++/* Stored for the next power-on; written now (read back) if powered. */
++static int visa_gain_set(struct visa *v, unsigned int raw)
++{
++	int ret = 0;
++
++	mutex_lock(&v->lock);
++	v->gain_raw = raw;
++	if (v->powered)
++		ret = visa_update(v, VISA_REG_PGA_GAIN, VISA_PGA_FIELD, raw);
++	mutex_unlock(&v->lock);
++	return ret;
 +}
 +
 +/* Read-only on the chip: GPIO20 high, read 0x00..0x21, GPIO20 low. */
@@ -1084,8 +1197,8 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +	mutex_lock(&v->lock);
 +	n = sysfs_emit(buf,
-+		       "gpio=%d powered=%d dapm_held=%d identifies=%u powers_on=%u powers_off=%u writes=%u i2c_errors=%u verify_mismatches=%u last_err=%d last_mismatch=%02x:%02x:%02x dump_valid=%d dump_errors=%u\n",
-+		       v->gpio_on, v->powered, v->dapm_held, v->identifies, v->powers_on, v->powers_off,
++		       "gpio=%d powered=%d dapm_held=%d gain_raw=%u identifies=%u powers_on=%u powers_off=%u writes=%u i2c_errors=%u verify_mismatches=%u last_err=%d last_mismatch=%02x:%02x:%02x dump_valid=%d dump_errors=%u\n",
++		       v->gpio_on, v->powered, v->dapm_held, v->gain_raw, v->identifies, v->powers_on, v->powers_off,
 +		       v->writes, v->i2c_errors, v->verify_mismatches, v->last_err,
 +		       v->mm_reg, v->mm_want, v->mm_got, v->dump_valid, v->dump_errors);
 +	mutex_unlock(&v->lock);
@@ -1172,6 +1285,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	if (ret)
 +		return ret;
 +	/* low at probe: the amplifier stays off until identify or power */
++	v->gain_raw = VISA_GAIN_DEFAULT;
 +	v->enable = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
 +	if (IS_ERR(v->enable))
 +		return dev_err_probe(dev, PTR_ERR(v->enable), "no enable GPIO (PM8941 GPIO20)\n");
@@ -1250,4 +1364,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus, I2S loudspeaker on Secondary MI2S)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc10");
++MODULE_VERSION("q6-card-rc11");

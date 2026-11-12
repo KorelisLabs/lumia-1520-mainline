@@ -850,7 +850,11 @@
 	 */
 	i2s_spk: audio-amplifier {
 		compatible = "nokia,lumia1520-i2s-spk";
-		vdd-supply = <&pm8941_5v>;
+		/*
+		 * r193: no vdd-supply. Step 2 played the loudspeaker with the
+		 * PM8941 5 V boost held off: the amplifier is a TI TAS2552 with
+		 * its own boost (the Windows script sets CFG_2 BOOST_EN).
+		 */
 		/* r192: the amplifier this port feeds; its DAPM supply powers it */
 		nokia,visa = <&visa_amp>;
 

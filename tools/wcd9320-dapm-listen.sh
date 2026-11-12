@@ -112,12 +112,14 @@ HOLD_5V="${HOLD_5V:-}"
 # rail?". It is for an image whose I2S component has no real vdd (vdd-supply
 # patched to phandle 0 -> the regulator core's dummy), so the PM8941 5 V boost
 # must stay DISABLED through the whole stream; everything else as r192.
-RAIL5V="${RAIL5V:-on}"
+RAIL5V="${RAIL5V:-auto}"	# r193: auto = from the component's vdd_present
 case "$RAIL5V:$OUTPUT" in
-on:*|off:i2s) ;;
+on:*|auto:*|off:i2s) ;;
 *) echo "INVALID SETUP: RAIL5V=$RAIL5V with OUTPUT=$OUTPUT (RAIL5V=off is for i2s)"; exit 2 ;;
 esac
 RAIL_LIVE=enabled; [ "$RAIL5V" = "off" ] && RAIL_LIVE=disabled
+# r193: the speaker gain the I2S streams expect (the Loudspeaker Volume default)
+SPK_GAIN_RAW="${SPK_GAIN_RAW:-22}"
 # r191: AMP=visa powers the VISA speaker amplifier (Windows' power-on script)
 # around each stream of a codec output, and standby + GPIO20 low after it;
 # every abort and teardown powers it off too. The amplifier's input is
@@ -368,6 +370,14 @@ preflight() {
 	[ -z "$APRE" ] || [ "$(rv "$APRE" powered) $(rv "$APRE" gpio)" = "0 0" ] || _bad="$_bad visa-on"
 	# r189: the I2S amplifier idle -- whatever this run's output is
 	IPRE=$(i2s_state)
+	# r193: no vdd in DT (vdd_present=0) means the rail must stay off
+	if [ "$RAIL5V" = "auto" ]; then
+		if [ -n "$IPRE" ] && [ "$(rv "$IPRE" vdd_present)" = "0" ]; then
+			RAIL5V=off; RAIL_LIVE=disabled
+		else
+			RAIL5V=on; RAIL_LIVE=enabled
+		fi
+	fi
 	VPRE=$(vreg_5v)
 	MPRE=$(mi2s_mux)
 	if [ -n "$IPRE" ]; then
@@ -620,7 +630,7 @@ launch)
 	CMD="$CMD --setenv=OUTPUT=$OUTPUT --setenv=ESCALATE=$ESCALATE --setenv=LO_SELECT=$LO_SELECT"
 	[ -z "$HOLD_5V" ] || CMD="$CMD --setenv=HOLD_5V=$HOLD_5V"
 	[ -z "$AMP" ] || CMD="$CMD --setenv=AMP=$AMP"
-	[ "$RAIL5V" = "on" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
+	[ "$RAIL5V" = "auto" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -771,6 +781,7 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 			# r192: the VISA amplifier, powered by DAPM with the path
 			eval "_vli=\${S${c}_VISALIVE:-}; _vaf=\${S${c}_VISAAFTER:-}"
 			if [ -n "$_vli" ]; then
+				check "s$c speaker gain at the expected Loudspeaker Volume (gain_raw)" "$(rv "$_vli" gain_raw)" "$SPK_GAIN_RAW"
 				check "s$c VISA powered by DAPM live (powered, dapm_held, GPIO20)" \
 				      "$(rv "$_vli" powered) $(rv "$_vli" dapm_held) $(rv "$_vli" gpio)" "1 1 1"
 				check "s$c VISA standby after (powered, dapm_held, GPIO20)" \

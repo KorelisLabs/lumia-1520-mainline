@@ -445,3 +445,42 @@ but it is not enabled in our config.
      defaulting to +15.
    - Applied after the script at every power-on, and written live (read
      back) while the amplifier is powered.
+
+## 11. r193 (`spkvol-rc1`, card `q6-card-rc11`, pkgrel 193): no 5 V, a mono mix, the volume (staged 2026-11-11)
+
+**What changed:**
+- **DT:** the I2S node has no `vdd-supply`. The codec's `vdd-spkdrv` is
+  unchanged.
+- **The I2S component:** `devm_regulator_get_optional("vdd")`; `-ENODEV` is
+  no rail. Every regulator call is guarded. `i2s_spk_state` adds
+  `vdd_present`.
+- **VISA:** Windows' script is unchanged, and 5o still pins it byte for
+  byte. After it:
+  1. CFG_3 DIN_SRC_SEL → AVG_L_R (`0x18` in bits 4:3; Windows' LEFT is
+     `0x08`);
+  2. PGA_GAIN ← the control's value.
+
+  Both are read-modify-writes through `visa_write`, so they are read back.
+  A failure goes to standby before "powered".
+- **"Loudspeaker Volume"** on the I2S component:
+  - raw 0..22 = **-7..+15 dB** (TLV -700/100, mainline tas2552's own
+    scale);
+  - default +15 dB, Windows' value;
+  - capped at +15 dB until Nokia's limiter tuning is understood;
+  - stored when the amplifier is off, written live (read back) when it is
+    on.
+- **The codec:** only the version string changed.
+
+**Checks:**
+- Verifier 5q: 15 checks.
+- 5m follows the optional rail, `rc11` and the absent DT supply.
+- Pre-build, against r192's modules: 661 pass, 2 expected failures.
+- Mutation: 6/6 caught.
+
+**Runners:**
+- **`RAIL5V=auto`** (the default): a component with `vdd_present=0`
+  expects the rail off, with no flag.
+- **I2S streams** check `gain_raw` at the expected volume (`SPK_GAIN_RAW`,
+  default 22).
+- **Card** `rc11`.
+- **Selftest:** 105/0.

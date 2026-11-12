@@ -2612,7 +2612,7 @@ def main():
           and ".formats\t= SNDRV_PCM_FMTBIT_S16_LE" in card and ".channels_max\t= 2" in card,
           "Windows' speaker profile (ACDB 15)")
     check("probe takes vdd and both pin states, and puts the pins to sleep before registering",
-          'devm_regulator_get(dev, "vdd")' in sprobe
+          'devm_regulator_get_optional(dev, "vdd")' in sprobe
           and "pinctrl_lookup_state(spk->pins, PINCTRL_STATE_DEFAULT)" in sprobe
           and 'pinctrl_lookup_state(spk->pins, "active")' in sprobe
           and 0 <= sprobe.find("pinctrl_select_state(spk->pins, spk->pins_sleep)") < sprobe.find("devm_snd_soc_register_component("),
@@ -2642,7 +2642,7 @@ def main():
     check("the amplifier driver registers before the card",
           re.search(r"lumia_q6_drivers\[\]\s*=\s*\{\s*&lumia_i2s_spk_driver,\s*&lumia_q6_driver,\s*\}", card) is not None
           and "module_platform_driver(" not in card, "the card defers until the component exists")
-    check("the card is q6-card-rc10", 'MODULE_VERSION("q6-card-rc10");' in card, "r192")
+    check("the card is q6-card-rc11", 'MODULE_VERSION("q6-card-rc11");' in card, "r193")
 
     DTS = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
     dts = DTS.read_text(errors="replace") if DTS.exists() else ""
@@ -2683,8 +2683,8 @@ def main():
           "Windows' off state")
     check("pin 78 (the port MCLK) is left alone", '"gpio78"' not in dts, "Windows never muxes it")
     amp = dt_node("i2s_spk: audio-amplifier {")
-    check("the amplifier node: compatible, the 5 V supply, sleep as default",
-          'compatible = "nokia,lumia1520-i2s-spk";' in amp and "vdd-supply = <&pm8941_5v>;" in amp
+    check("the amplifier node: compatible, NO 5 V supply (r193), sleep as default",
+          'compatible = "nokia,lumia1520-i2s-spk";' in amp and "vdd-supply" not in amp.replace("no vdd-supply", "")
           and 'pinctrl-names = "default", "active";' in amp and "pinctrl-0 = <&sec_mi2s_sleep>;" in amp
           and "pinctrl-1 = <&sec_mi2s_active>;" in amp and "#sound-dai-cells = <0>;" in amp,
           "pm8941_5v = PM8941 SMPS4, 5 V")
@@ -2697,7 +2697,7 @@ def main():
     cko = pathlib.Path(ko).with_name("snd-soc-lumia1520-q6.ko") if ko else None
     if cko is not None and cko.exists():
         cmi = modinfo(str(cko))
-        check("built card is q6-card-rc10", cmi.get("version") == "q6-card-rc10",
+        check("built card is q6-card-rc11", cmi.get("version") == "q6-card-rc11",
               "found %s" % cmi.get("version"))
         ce = Elf(str(cko))
         cs = ce.by_name.get(".modinfo")
@@ -2879,6 +2879,56 @@ def main():
           "if (v->dapm_held)\n\t\tret = -EBUSY;" in vps, "one owner at a time")
     check("DT: the I2S amplifier node points at VISA",
           "nokia,visa = <&visa_amp>;" in dts5 and "visa_amp: speaker-amp@40 {" in dts5, "the phandle the probe follows")
+
+    # ==================================================================
+    # 5q. r193: the TAS2552 -- the 5 V rail gone, a mono mix, the volume.
+    #
+    #   1. the I2S component's rail is optional, and every use is guarded
+    #   2. after Windows' script (5o keeps it byte for byte): CFG_3 DIN_SRC to
+    #      AVG_L_R, then PGA_GAIN from the control, both read back; a failure
+    #      goes to standby; only then "powered"
+    #   3. "Loudspeaker Volume": raw 0..22 = -7..+15 dB (Windows' +15 is the
+    #      ceiling), default +15, written live only while powered
+    # ==================================================================
+    print()
+    print("=== 5q. the r193 TAS2552 mono / volume fence ===")
+    for sym, want in (("VISA_REG_CFG3", "0x03"), ("VISA_CFG3_DIN_SRC", "0x18"), ("VISA_CFG3_DIN_AVG_LR", "0x18"),
+                      ("VISA_REG_PGA_GAIN", "0x12"), ("VISA_PGA_FIELD", "0x1f"), ("VISA_GAIN_DEFAULT", "0x16")):
+        found = re.findall(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym), card, re.M)
+        check("%s is %s" % (sym, want), found == [want], "found %s" % (found or "no definition"))
+    check("LUMIA_SPK_VOL_MAX is 22 (+15 dB)",
+          re.search(r"^#define\s+LUMIA_SPK_VOL_MAX\s+22\b", card, re.M) is not None, "Windows' PGA_GAIN 0x16")
+    sev3 = func_body("lumia_i2s_spk_supply_event", card)
+    check("the rail is optional and every use guarded",
+          card.count("spk->vdd ? regulator_enable(spk->vdd) : 0") == 1
+          and card.count("regulator_disable(spk->vdd)") == card.count("spk->vdd ? regulator_disable(spk->vdd) : 0") == 3
+          and "if (spk->vdd && regulator_is_enabled(spk->vdd) > 0)" in card, "no rail is the r193 board")
+    von3 = func_body("visa_power_on_locked", card)
+    lp = von3.find("for (s = visa_power_on_script;")
+    check("after the script: the mono mix, then the gain, then powered",
+          0 <= lp < von3.find("visa_update(v, VISA_REG_CFG3, VISA_CFG3_DIN_SRC, VISA_CFG3_DIN_AVG_LR)")
+          < von3.find("visa_update(v, VISA_REG_PGA_GAIN, VISA_PGA_FIELD, v->gain_raw)")
+          < von3.find("v->powered = true;"), "Windows' script untouched (5o)")
+    post = von3[von3.find("VISA_CFG3_DIN_AVG_LR)"):von3.find("v->powered = true;")]
+    check("a failed post-script write goes to standby", "visa_power_off_locked(v);\n\t\treturn ret;" in post,
+          "never powered half-configured")
+    vup = func_body("visa_update", card)
+    check("visa_update reads, then writes through visa_write (read back)",
+          0 <= vup.find("i2c_smbus_read_byte_data(v->client, reg)") < vup.find("visa_write(v, reg, (c & ~mask) | (val & mask))"),
+          "one write path")
+    vgs = func_body("visa_gain_set", card)
+    check("the gain is stored, and written only while powered",
+          "v->gain_raw = raw;" in vgs and "if (v->powered)\n\t\tret = visa_update(v, VISA_REG_PGA_GAIN, VISA_PGA_FIELD, raw);" in vgs
+          and "mutex_lock(&v->lock);" in vgs, "applied at the next power-on otherwise")
+    vput = func_body("lumia_spk_vol_put", card)
+    check("the control refuses above +15 dB",
+          "if (raw < 0 || raw > LUMIA_SPK_VOL_MAX)\n\t\treturn -EINVAL;" in vput, "Windows' ceiling")
+    check("Loudspeaker Volume: TLV -7 dB in 1 dB steps, 0..22",
+          'SOC_SINGLE_EXT_TLV("Loudspeaker Volume", SND_SOC_NOPM, 0, LUMIA_SPK_VOL_MAX, 0,' in card
+          and "DECLARE_TLV_DB_SCALE(lumia_spk_vol_tlv, -700, 100, 0)" in card
+          and ".controls\t\t= lumia_i2s_spk_controls," in card, "mainline tas2552's own TLV")
+    check("the gain defaults to +15 dB at probe",
+          "v->gain_raw = VISA_GAIN_DEFAULT;" in func_body("visa_probe", card), "Windows parity")
 
     if args.expect_asoc:
         print()
