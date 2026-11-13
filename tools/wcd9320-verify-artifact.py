@@ -167,7 +167,11 @@ EXPECT = {
     #            wcd9320_clsh_lo (the snapshot and the restore readback) and
     #            1 in wcd9320_lo_pa. Measured +10 in the compile-check tree
     #            (123 -> 133); the build is the arbiter.
-    "read_bypassed_calls": 139,
+    # r189-r193: 139, unchanged.
+    # r194: 142 = 139 + 3, the earpiece's RX_EAR_CMBUFF: 1 in wcd9320_ear_dac
+    #            (the 0x1be baseline before the clear) and 2 in out_state_show
+    #            (0x1be and EAR_STATUS 0x1c5). Measured 142 on the r194 build.
+    "read_bypassed_calls": 142,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
