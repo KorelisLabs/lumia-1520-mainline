@@ -135,6 +135,18 @@ case "$AMP:$OUTPUT" in
 # r192: on the I2S path the card's DAPM owns the amplifier; the runner must not
 *) echo "INVALID SETUP: AMP=$AMP with OUTPUT=$OUTPUT (AMP=visa is for spk, ear, lo or hph; i2s powers it through DAPM)"; exit 2 ;;
 esac
+# r194: EAR_CMBUFF=clear|keep[,...] -- RX_EAR_CMBUFF bit 0 per earpiece
+# stream, written through the codec's ear_cmbuff before each stream: clear is
+# Windows' ADIE (bit 0 cleared at DAC1 on), keep is r187 (never written). One
+# value for every stream, or one per stream with the last repeating. Unset:
+# the driver's mode is used and only recorded.
+EAR_CMBUFF="${EAR_CMBUFF:-}"
+case "$EAR_CMBUFF:$OUTPUT" in
+:*) ;;
+*:ear) ear_cmbuff_list_ok "$EAR_CMBUFF" ||
+	{ echo "INVALID SETUP: EAR_CMBUFF=$EAR_CMBUFF (clear or keep, comma-separated per stream)"; exit 2; } ;;
+*) echo "INVALID SETUP: EAR_CMBUFF=$EAR_CMBUFF with OUTPUT=$OUTPUT (it is for ear)"; exit 2 ;;
+esac
 case "$HOLD_5V:$OUTPUT" in
 :*|i2s:lo|i2s:ear) ;;
 *) echo "INVALID SETUP: HOLD_5V=$HOLD_5V with OUTPUT=$OUTPUT (HOLD_5V=i2s is for lo or ear)"; exit 2 ;;
@@ -363,6 +375,10 @@ preflight() {
 		[ "$(rv "$OPRE" spk_pa)" = "0" ] || _bad="$_bad spk-pa-on"
 		[ "$(rv "$OPRE" ear_pa)" = "0" ] || _bad="$_bad ear-pa-on"
 		[ "$(rv "$OPRE" ear_0x1bc)" = "00" ] || _bad="$_bad ear-dirty"
+		# r194: no CMBUFF inverse owed, and the switch present when asked for
+		[ "$(rv "$OPRE" ear_cmbuff_cleared)" != "1" ] || _bad="$_bad ear-cmbuff-owed"
+		CMPRE=$(rv "$(cat "$PGD/ear_cmbuff" 2>/dev/null)" mode)
+		[ -z "$EAR_CMBUFF" ] || [ -n "$CMPRE" ] || _bad="$_bad no-ear_cmbuff"
 		[ $(( 0x$(rv "$OPRE" spken_0x1df) & 0x80 )) -eq 0 ] || _bad="$_bad spk-en-set"
 		[ "$(rv "$OPRE" lo_pa)" = "0" ] || _bad="$_bad lo-pa-on"
 		[ "$(rv "$OPRE" locnp_0x1ca)" = "00" ] || _bad="$_bad lo-cnp-set"
@@ -436,6 +452,28 @@ stream() {	# stream <n> <spec>
 	lo:*)  jrn "stream $_n: LINE OUTS (select $LO_SELECT), Lineout Volume $_hv -- the mic at its fixed spot" ;;
 	i2s:*) jrn "stream $_n: LOUDSPEAKER on Secondary MI2S, $DBFS dBFS, side $_side, 5 V rail $RAIL5V -- the mic at the grille" ;;
 	esac
+
+	# r194: this stream's RX_EAR_CMBUFF mode, written while the path is down
+	_cm=""
+	if [ "$OUTPUT" = "ear" ]; then
+		if [ -n "$EAR_CMBUFF" ]; then
+			_cm=$(ear_cmbuff_for "$EAR_CMBUFF" "$_n")
+			echo "$_cm" > "$PGD/ear_cmbuff" 2>/dev/null
+		fi
+		_cmr=$(rv "$(cat "$PGD/ear_cmbuff" 2>/dev/null)" mode)
+		if [ -n "$_cm" ] && [ "$_cmr" != "$_cm" ]; then
+			jrn "RX_EAR_CMBUFF mode did not read back $_cm (got '$_cmr') -- abort"
+			dl_abort "ear-cmbuff-c$_n"
+			return 1
+		fi
+		_cm=$_cmr
+		eval "S${_n}_CMB=\$_cm"
+		case "$_cm" in
+		clear) jrn "RX_EAR_CMBUFF: clear (Windows: bit 0 cleared at DAC1 on, restored after)" ;;
+		keep)  jrn "RX_EAR_CMBUFF: keep (r187: never written)" ;;
+		*)     jrn "RX_EAR_CMBUFF: no switch on this module" ;;
+		esac
+	fi
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
 	pa_chat_wait "$APPROVE_DIR" "dapm-c$_n" "$HOLD_GO" "$FLAG" >/dev/null
@@ -551,6 +589,13 @@ stream() {	# stream <n> <spec>
 	     fi ;;
 	ear) [ -z "$HOLD_5V" ] || [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad held-5v=$_v"
 	     [ "$(rv "$_o" ear_pa)" = "1" ] || _bad="$_bad ear_pa=$(rv "$_o" ear_pa)"
+	     # r194: CMBUFF as this stream asked -- cleared live, or untouched
+	     _cb=$(rv "$_o" cmbuff_0x1be)
+	     jrn "ear live: mode ${_cm:-?} cmbuff_0x1be=${_cb:-?} cleared=$(rv "$_o" ear_cmbuff_cleared) earstat_0x1c5=$(rv "$_o" earstat_0x1c5)"
+	     case "$_cm" in
+	     clear) [ "$(( 0x${_cb:-ff} & 1 )) $(rv "$_o" ear_cmbuff_cleared)" = "0 1" ] || _bad="$_bad cmbuff=$_cb" ;;
+	     keep)  [ "$_cb $(rv "$_o" ear_cmbuff_cleared)" = "$(rv "$OPRE" cmbuff_0x1be) 0" ] || _bad="$_bad cmbuff=$_cb" ;;
+	     esac
 	     [ "$(pa_masked "$(rv "$_p" pa_0x1ab)")" = "00" ] || _bad="$_bad hph-pa=$(rv "$_p" pa_0x1ab)" ;;
 	lo)  [ -z "$HOLD_5V" ] || [ "$(printf '%s' "$_v" | cut -d' ' -f1)" = "enabled" ] || _bad="$_bad held-5v=$_v"
 	     [ "$(rv "$_o" lo_pa)" = "1" ] || _bad="$_bad lo_pa=$(rv "$_o" lo_pa)"
@@ -637,6 +682,7 @@ launch)
 	[ -z "$AMP" ] || CMD="$CMD --setenv=AMP=$AMP"
 	[ "$RAIL5V" = "auto" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
 	[ "$SPK_GAIN_RAW" = "22" ] || CMD="$CMD --setenv=SPK_GAIN_RAW=$SPK_GAIN_RAW"
+	[ -z "$EAR_CMBUFF" ] || CMD="$CMD --setenv=EAR_CMBUFF=$EAR_CMBUFF"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -711,6 +757,12 @@ if vol_restore; then
 	jrn "volumes restored: HPH, speaker, earpiece, line outs at their minimum; RX1/RX2/RX3/RX5 0 dB, RX7 -6 dB; Lineout Select 15"
 else
 	jrn "THE VOLUMES DID NOT RESTORE -- check HPHL/HPHR Volume by hand"
+fi
+# r194: the RX_EAR_CMBUFF mode back to what the run found
+if [ -n "$EAR_CMBUFF" ] && [ -n "${CMPRE:-}" ]; then
+	echo "$CMPRE" > "$PGD/ear_cmbuff" 2>/dev/null
+	[ "$(rv "$(cat "$PGD/ear_cmbuff" 2>/dev/null)" mode)" = "$CMPRE" ] &&
+		jrn "RX_EAR_CMBUFF mode restored to $CMPRE" || jrn "RX_EAR_CMBUFF MODE DID NOT RESTORE"
 fi
 # r187: read AFTER the restore -- the "at their minimum" check is about the
 # state the run leaves behind, and a run whose last stream was at full gain
@@ -858,6 +910,20 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				fi
 				check "s$c class-H in EAR mode" "$(rv "$_o" clsh_ear)" "1"
 				check "s$c earpiece off after" "$(rv "$_oa" ear_0x1bc)" "00"
+				# r194: the CMBUFF mode, live and after
+				eval "_cm=\${S${c}_CMB:-}"
+				_cb=$(rv "$_o" cmbuff_0x1be)
+				case "$_cm" in
+				clear) check "s$c RX_EAR_CMBUFF bit 0 clear live (Windows)" \
+				             "$(( 0x${_cb:-ff} & 1 )) $(rv "$_o" ear_cmbuff_cleared)" "0 1" ;;
+				keep)  check "s$c RX_EAR_CMBUFF untouched live (r187)" \
+				             "$_cb $(rv "$_o" ear_cmbuff_cleared)" "$(rv "$OPRE" cmbuff_0x1be) 0" ;;
+				esac
+				if [ -n "$_cm" ]; then
+					check "s$c RX_EAR_CMBUFF restored after" \
+					      "$(rv "$_oa" cmbuff_0x1be) $(rv "$_oa" ear_cmbuff_cleared)" "$(rv "$OPRE" cmbuff_0x1be) 0"
+					say "        s$c EAR_STATUS 0x1c5 live $(rv "$_o" earstat_0x1c5), after $(rv "$_oa" earstat_0x1c5)"
+				fi
 			fi
 			check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" "$OUT_KEY")" "$OUT_NONE"
 			check "s$c pin OFF after" "$_pin" "0"
@@ -986,6 +1052,23 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		check "speaker gain restored" "$(rv "$OPOST" spkgain_0x1e0)" "$(rv "$OPRE" spkgain_0x1e0)"
 		check "earpiece gain restored" "$(rv "$OPOST" eargain_0x1bd)" "$(rv "$OPRE" eargain_0x1bd)"
 		check "earpiece fully off" "$(rv "$OPOST" ear_0x1bc)" "00"
+		# r194: one CMBUFF clear per clear stream, each restored; the
+		# register and the mode as the run found them
+		if [ -n "$(rv "$OPRE" ear_cmbuff_mode)" ]; then
+			_nc=0; c=1
+			while [ "$c" -lt "$n" ]; do
+				eval "_cm=\${S${c}_CMB:-}"
+				[ "$_cm" = "clear" ] && _nc=$((_nc + 1))
+				c=$((c + 1))
+			done
+			for _k in ear_cmbuff_clears ear_cmbuff_restores; do
+				_k1=$(rv "$OPOST" "$_k"); _k0=$(rv "$OPRE" "$_k")
+				check "$_k this run" "$(( ${_k1:-0} - ${_k0:-0} ))" "$_nc"
+			done
+			check "RX_EAR_CMBUFF as found, nothing owed" \
+			      "$(rv "$OPOST" cmbuff_0x1be) $(rv "$OPOST" ear_cmbuff_cleared) $(rv "$OPOST" ear_cmbuff_mode)" \
+			      "$(rv "$OPRE" cmbuff_0x1be) 0 $(rv "$OPRE" ear_cmbuff_mode)"
+		fi
 		check "RX7 off" "$(rv "$OPOST" rx7_on)" "0"
 		# r188: the line outs, and class-H LO's no-trace restore
 		check "line outs at the minimum, all selected, PAs off" \

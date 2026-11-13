@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-11 18:58:23.855674135 -0500
-@@ -0,0 +1,13434 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 08:25:39.900230496 -0500
+@@ -0,0 +1,13542 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2002,6 +2002,16 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	u8 ear_gain_field;		/* 0..7 (6 undefined), 7 = minimum (the boot value) */
 +	unsigned int ear_pa_enables, ear_pa_disables;
 +	bool clsh_ear;			/* class-H is in EAR mode */
++	/*
++	 * r194: RX_EAR_CMBUFF bit 0. Windows' ADIE clears it when DAC1 powers
++	 * up and never sets it again; this chip idles at 0x05, and downstream
++	 * leaves it set (docs/audio/wcd9320-r194-earpiece-mapping.md).
++	 * ear_cmbuff_clear selects Windows (true, the default) or r187 (false);
++	 * ear_cmbuff_cleared means a clear was ISSUED, so the inverse is owed.
++	 */
++	bool ear_cmbuff_clear, ear_cmbuff_cleared;
++	u8 ear_cmbuff_base;
++	unsigned int ear_cmbuff_clears, ear_cmbuff_restores;
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -5566,6 +5576,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_A_RX_HPH_R_DAC_CTL		0x1b7	/* the HPHR DAC (r185), and the zdet */
 +#define WCD9320_A_RX_EAR_EN			0x1bc	/* the earpiece (r187) */
 +#define WCD9320_A_RX_EAR_GAIN			0x1bd	/* r187: [7:5], an enum */
++#define WCD9320_A_RX_EAR_CMBUFF			0x1be	/* r194: bit 0, Windows clears it */
++#define WCD9320_A_RX_EAR_STATUS			0x1c5	/* r194: read for evidence only */
++#define WCD9320_EAR_CMBUFF_BIT0			0x01
 +#define WCD9320_A_RX_LINE_1_DAC_CTL		0x1cf	/* off limits */
 +#define WCD9320_A_SPKR_DRV_EN			0x1df	/* the speaker PA (r187) */
 +#define WCD9320_A_SPKR_DRV_GAIN			0x1e0	/* r187: [6:3] field, bit 2 source */
@@ -10125,10 +10138,38 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +					"DAC1 power (bit 6)");
 +	if (ret)
 +		goto teardown;
++	/*
++	 * r194: Windows' third DAC1 write, RX_EAR_CMBUFF bit 0 <- 0, after the
++	 * switch and the power. The baseline is measured first; the flag is
++	 * set BEFORE the write, so the inverse is owed whatever the write did.
++	 */
++	if (wcd->ear_cmbuff_clear) {
++		unsigned int cur;
++
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_CMBUFF, &cur);
++		if (ret)
++			goto teardown;
++		wcd->ear_cmbuff_base = cur & 0xff;
++		wcd->ear_cmbuff_cleared = true;
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_CMBUFF,
++					WCD9320_EAR_CMBUFF_BIT0, 0,
++					"RX_EAR_CMBUFF bit 0 clear (Windows ADIE, r194)");
++		if (ret)
++			goto teardown;
++		wcd->ear_cmbuff_clears++;
++	}
 +	wcd->ear_dac_on = true;
 +	return 0;
 +
 +teardown:
++	/* r194: the CMBUFF inverse first -- the reverse of up */
++	if (wcd->ear_cmbuff_cleared) {
++		if (!wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_CMBUFF, 0xff,
++				       wcd->ear_cmbuff_base,
++				       "RX_EAR_CMBUFF restored to its measured baseline"))
++			wcd->ear_cmbuff_restores++;
++		wcd->ear_cmbuff_cleared = false;
++	}
 +	wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_EN, WCD9320_EAR_DAC_PWR, 0,
 +			  "DAC1 power off");
 +	wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_EN, WCD9320_EAR_DAC_SWITCH, 0,
@@ -10380,7 +10421,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	struct wcd9320 *wcd = dev_get_drvdata(dev);
 +	unsigned int en = 0, gain = 0, pwr = 0, ear = 0, eg = 0, mux = 0;
-+	unsigned int vol = 0, clk = 0, b1 = 0, st = 0;
++	unsigned int vol = 0, clk = 0, b1 = 0, st = 0, cmb = 0, est = 0;
 +	unsigned int cnp = 0, lg[4] = { 0 }, ld[4] = { 0 }, misc = 0, bk[5] = { 0 };
 +	unsigned int n;
 +	int len;
@@ -10406,6 +10447,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read_bypassed(wcd->regmap, WCD9320_CDC_CLK_RX_B1_CTL, &clk);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_INTR_STATUS0 + 3, &st);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_CMBUFF, &cmb);
++	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_STATUS, &est);
 +	len = sysfs_emit(buf,
 +			  "spk_prep=%u spk_dac=%u spk_pa=%u spk_enables=%u spk_disables=%u spk_field=%u spkdrv_present=%u spkdrv=%u spkdrv_enables=%u spkdrv_disables=%u\n"
 +			  "ear_prep=%u ear_dac=%u ear_pa=%u ear_enables=%u ear_disables=%u ear_field=%u clsh_ear=%u\n"
@@ -10436,6 +10479,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			     ld[3] & 0xff, misc & 0xff,
 +			     bk[0] & 0xff, bk[1] & 0xff, bk[2] & 0xff, bk[3] & 0xff,
 +			     bk[4] & 0xff);
++	len += sysfs_emit_at(buf, len,
++			     "ear_cmbuff_mode=%s ear_cmbuff_cleared=%u ear_cmbuff_clears=%u ear_cmbuff_restores=%u ear_cmbuff_base=%02x cmbuff_0x1be=%02x earstat_0x1c5=%02x\n",
++			     wcd->ear_cmbuff_clear ? "clear" : "keep",
++			     wcd->ear_cmbuff_cleared, wcd->ear_cmbuff_clears,
++			     wcd->ear_cmbuff_restores, wcd->ear_cmbuff_base,
++			     cmb & 0xff, est & 0xff);
 +	return len;
 +}
 +static DEVICE_ATTR_RO(out_state);
@@ -10668,6 +10717,62 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret ? ret : len;
 +}
 +static DEVICE_ATTR_RW(hphl_pa_gain);
++
++/*
++ * r194: which RX_EAR_CMBUFF behaviour the next EAR DAC stage uses.
++ *
++ *   cat ear_cmbuff            mode and counters
++ *   echo clear > ear_cmbuff   Windows: bit 0 cleared at DAC1 on (default)
++ *   echo keep  > ear_cmbuff   r187: the register is never written
++ *
++ * Refused while any earpiece stage is up, so a stream never changes mode
++ * under itself and the inverse owed always matches the clear issued.
++ */
++static ssize_t ear_cmbuff_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf, "mode=%s cleared=%u clears=%u restores=%u base=%02x\n",
++			  wcd->ear_cmbuff_clear ? "clear" : "keep",
++			  wcd->ear_cmbuff_cleared, wcd->ear_cmbuff_clears,
++			  wcd->ear_cmbuff_restores, wcd->ear_cmbuff_base);
++}
++
++static ssize_t ear_cmbuff_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	bool clear;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "clear"))
++		clear = true;
++	else if (sysfs_streq(buf, "keep"))
++		clear = false;
++	else
++		return -EINVAL;
++
++	mutex_lock(&wcd->c3_lock);
++	if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on ||
++	    wcd->ear_cmbuff_cleared) {
++		ret = -EBUSY;
++	} else {
++		wcd->ear_cmbuff_clear = clear;
++		dev_info(dev, "ear: RX_EAR_CMBUFF mode %s for the next DAC stage\n",
++			 clear ? "clear (Windows)" : "keep (r187)");
++		ret = 0;
++	}
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(ear_cmbuff);
 +
 +/* ------------------------------- r178: the on-chip HPHL voltmeter -- */
 +
@@ -12702,6 +12807,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_hphr_state.attr,
 +	&dev_attr_jack_detect.attr,
 +	&dev_attr_out_state.attr,
++	&dev_attr_ear_cmbuff.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -13307,6 +13413,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* r187: the speaker and earpiece at their minimum, too */
 +	wcd->spk_gain_field = WCD9320_SPKR_GAIN_STEPS;
 +	wcd->ear_gain_field = wcd9320_ear_gain_steps[0];
++	/* r194: Windows' RX_EAR_CMBUFF behaviour by default */
++	wcd->ear_cmbuff_clear = true;
 +	/* r188: the line outs at their minimum, all four selected */
 +	wcd->lo_gain_field = WCD9320_LINE_GAIN_MIN;
 +	wcd->lo_select = WCD9320_LINE_ALL;
@@ -13779,7 +13887,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("spkvol-rc1");
++MODULE_VERSION("earcm-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

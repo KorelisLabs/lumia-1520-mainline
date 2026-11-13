@@ -236,3 +236,21 @@ mi2s_mux_parse() {	# mi2s_mux_parse <pinmux-pins text>
 mi2s_mux() {
 	mi2s_mux_parse "$(cat "$(ls /sys/kernel/debug/pinctrl/*fd510000*/pinmux-pins 2>/dev/null | head -n1)" 2>/dev/null)"
 }
+# r194: EAR_CMBUFF -- a comma list of clear|keep, one per earpiece stream,
+# the last repeating (docs/audio/wcd9320-r194-earpiece-mapping.md)
+ear_cmbuff_list_ok() {	# ear_cmbuff_list_ok <list> -> 0 when every element is clear|keep
+	[ -n "$1" ] || return 1
+	for _ec in $(printf '%s' "$1" | tr ',' ' '); do
+		case "$_ec" in clear|keep) ;; *) return 1 ;; esac
+	done
+	case "$1" in ,*|*,|*,,*) return 1 ;; esac
+	return 0
+}
+ear_cmbuff_for() {	# ear_cmbuff_for <list> <stream n, from 1> -> its mode
+	_ecl=""; _eci=0
+	for _ec in $(printf '%s' "$1" | tr ',' ' '); do
+		_eci=$((_eci + 1)); _ecl=$_ec
+		[ "$_eci" -lt "$2" ] || break
+	done
+	printf '%s' "$_ecl"
+}

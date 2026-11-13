@@ -145,3 +145,43 @@ Escalation follows the r187 rules: -30 and -20 only with "declared".
 **If `clear` is also silent:** the next candidate is ordering (DAC1 before
 class-H, as Windows does it). After that, sample `RX_EAR_STATUS` and the
 EAR PA startup interrupt during the stream.
+
+## 6. r194 (`earcm-rc1`, pkgrel 194): staged 2026-11-13
+
+**Codec driver** (`wcd9320_ear_dac`):
+- **The clear:** after DAC1's switch and power, the driver measures the 0x1be baseline and sets the owed flag. Then it clears bit 0 through `c2b_write`, which reads the chip back.
+- **The restore:** teardown writes the measured baseline back *before* DAC1 power goes off. The inverse is owed whatever the clear did.
+- **Failure:** a failed baseline read or clear tears the stage down.
+- **The mode switch:** sysfs `ear_cmbuff` (`clear` default = Windows, `keep` = r187, which writes nothing). It is refused under `c3_lock` while any earpiece stage is up or a restore is owed.
+- **`out_state`** gains a line: `ear_cmbuff_mode`, `ear_cmbuff_cleared`, the clears and restores counters, `ear_cmbuff_base`, `cmbuff_0x1be` and `earstat_0x1c5`.
+
+The card module is unchanged (`q6-card-rc11`), and so is the DT.
+
+**Verifier 5r:**
+- 13 checks;
+- the mutation test catches 8 of 8.
+
+The source fences pass; the only FAIL is the old build's version string.
+
+**Runner:**
+- **The variable:** `EAR_CMBUFF=clear|keep[,...]` sets one mode per earpiece stream, and the last value repeats. Each stream's mode is written and read back while the path is down.
+- **Live checks** (an abort if wrong): `clear` needs bit 0 = 0 and the flag set. `keep` needs 0x1be as found and nothing owed. `EAR_STATUS` is journalled.
+- **Report:** the mode live, then the restore after. Per run, clears = restores = the number of `clear` streams, and 0x1be, the flag and the mode end as they were found.
+
+**Selftest:** 115/0, which adds 10 cases for the per-stream plan.
+
+**Build:**
+```
+tools/build-wcd9320-kernel.sh --pkgrel 194 --version earcm-rc1 \
+    --expect-asoc --expect-dais 1 --stage ~/r194 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+```
+
+**Probe plan (after the gates):**
+- `OUTPUT=ear EAR_CMBUFF=clear,keep SPECS=B:0:84,B:0:84 DBFS=-40`;
+- the mic at the earpiece slot;
+- one chat "go" per stream: s1 is Windows, s2 is the r187 control.
+
+-30 and -20 dBFS only with "declared".

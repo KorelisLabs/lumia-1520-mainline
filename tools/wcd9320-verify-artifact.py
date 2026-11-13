@@ -2930,6 +2930,67 @@ def main():
     check("the gain defaults to +15 dB at probe",
           "v->gain_raw = VISA_GAIN_DEFAULT;" in func_body("visa_probe", card), "Windows parity")
 
+    # ==================================================================
+    # 5r. r194: the earpiece -- Windows' RX_EAR_CMBUFF bit 0 clear.
+    #
+    # docs/audio/wcd9320-r194-earpiece-mapping.md. Windows' ADIE clears
+    # 0x1be bit 0 after DAC1's switch and power; this chip idles at 0x05.
+    #   1. the register and the bit, by address
+    #   2. in the EAR DAC stage: after DAC1 power, baseline measured first,
+    #      the owed flag set BEFORE the write, chip-verified through c2b
+    #   3. down: the inverse (the measured baseline) BEFORE DAC1 power off,
+    #      owed whatever the clear did; one clear site, one restore site
+    #   4. keep (r187) writes nothing; the default is clear (Windows)
+    #   5. the switch refuses while any earpiece stage is up or owed
+    #   6. out_state reports the mode, the register and EAR_STATUS
+    # ==================================================================
+    print()
+    print("=== 5r. the r194 RX_EAR_CMBUFF fence ===")
+    for sym, want in (("WCD9320_A_RX_EAR_CMBUFF", "0x1be"), ("WCD9320_A_RX_EAR_STATUS", "0x1c5"),
+                      ("WCD9320_EAR_CMBUFF_BIT0", "0x01")):
+        found = re.findall(r"^#define\s+%s\s+(0x[0-9a-fA-F]+)" % re.escape(sym), ptext_all, re.M)
+        check("%s is %s" % (sym, want), found == [want], "found %s" % (found or "no definition"))
+    edac = func_body("wcd9320_ear_dac")
+    check("wcd9320_ear_dac found", len(edac) > 0, "%d bytes" % len(edac))
+    eup = edac[:edac.find("teardown:")]
+    edn = edac[edac.find("teardown:"):]
+    clr = ("ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_CMBUFF,\n\t\t\t\t\tWCD9320_EAR_CMBUFF_BIT0, 0,")
+    check("up: DAC1 power, then the baseline, the owed flag, the clear, then dac_on",
+          0 <= eup.find('"DAC1 power (bit 6)"') < eup.find("if (wcd->ear_cmbuff_clear) {")
+          < eup.find("regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_CMBUFF, &cur);")
+          < eup.find("wcd->ear_cmbuff_base = cur & 0xff;") < eup.find("wcd->ear_cmbuff_cleared = true;")
+          < eup.find(clr) < eup.find("wcd->ear_cmbuff_clears++;") < eup.find("wcd->ear_dac_on = true;"),
+          "Windows' third DAC1 write")
+    blk = eup[eup.find("if (wcd->ear_cmbuff_clear) {"):eup.find("wcd->ear_dac_on = true;")]
+    check("a failed baseline read or clear tears the stage down",
+          blk.count("goto teardown;") == 2, "%d exits" % blk.count("goto teardown;"))
+    rst = ("if (!wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_CMBUFF, 0xff,\n\t\t\t\t       wcd->ear_cmbuff_base,")
+    check("down: the measured baseline restored, owed flag cleared, BEFORE DAC1 power off",
+          0 <= edn.find("if (wcd->ear_cmbuff_cleared) {") < edn.find(rst)
+          < edn.find("wcd->ear_cmbuff_restores++;") < edn.find("wcd->ear_cmbuff_cleared = false;")
+          < edn.find('"DAC1 power off"'), "the reverse of up")
+    check("one clear site and one restore site in the whole driver",
+          ptext_all.count("WCD9320_A_RX_EAR_CMBUFF,") == 4 and ptext_all.count(clr) == 1 and ptext_all.count(rst) == 1,
+          "the read, the clear, the restore, and out_state's read")
+    check("keep writes nothing: the clear is only inside the mode test",
+          eup.count("WCD9320_A_RX_EAR_CMBUFF") == 2 and blk.count("WCD9320_A_RX_EAR_CMBUFF") == 2,
+          "r187 behaviour is reachable")
+    check("the default is clear (Windows), set at probe",
+          "wcd->ear_cmbuff_clear = true;" in func_body("wcd9320_probe"), "Windows parity")
+    est = func_body("ear_cmbuff_store")
+    check("the switch: clear|keep only, under c3_lock, refused while up or owed",
+          'sysfs_streq(buf, "clear")' in est and 'sysfs_streq(buf, "keep")' in est and "return -EINVAL;" in est
+          and 0 <= est.find("mutex_lock(&wcd->c3_lock);") < est.find(
+              "if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on ||\n\t    wcd->ear_cmbuff_cleared) {")
+          < est.find("wcd->ear_cmbuff_clear = clear;") < est.find("mutex_unlock(&wcd->c3_lock);"),
+          "a stream never changes mode under itself")
+    check("the switch is in the attribute group",
+          "&dev_attr_ear_cmbuff.attr," in ptext_all and "static DEVICE_ATTR_RW(ear_cmbuff);" in ptext_all, "sysfs")
+    check("out_state reports the mode, the counters, 0x1be and 0x1c5",
+          "ear_cmbuff_mode=%s ear_cmbuff_cleared=%u ear_cmbuff_clears=%u ear_cmbuff_restores=%u ear_cmbuff_base=%02x cmbuff_0x1be=%02x earstat_0x1c5=%02x" in ptext_all
+          and "regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_STATUS, &est);" in func_body("out_state_show"),
+          "the runners' state source")
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")
