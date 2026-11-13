@@ -105,10 +105,72 @@ That fits MICBIAS1/3/4 being the ones this board uses.
 `CDC_CLK_DMIC_B1/B2` (0x304/0x305) were found. They are probably written
 through a computed address, which needs the element 0x1008 handler.
 
-## 6. Still to map
+## 6. The board values, decoded (second pass)
 
-1. **The element handlers 0x100d (mic bias), 0x1008 (DMIC) and 0x1005 (decimator):** the exact register writes and values, including the DMIC clock divider and the mic bias voltage.
-2. **Downstream:** `taiko_codec_enable_dmic`, the mic bias and CFILT sequencing, the decimator enable and its "TX path HPF/volume" settle, the TX SLIMbus ports and the codec's capture DAI (AIF1 CAP).
-3. **Our SLIMbus side:** TX ports and channels. Our stream code covers RX only.
-4. **QDSP6:** the AFE `SLIMBUS_0_TX` port and ASM capture, and the card's capture link.
-5. **The headset mic,** device 0x08, in the headset batch.
+Downstream takes the mic bias and DMIC values from board data
+(`taiko_handle_pdata`). Windows has to set the same registers, so its
+values give the Lumia's.
+
+**LDO_H.** Windows' init writes `LDO_H_MODE_1` [3:2] = 3, which is
+`WCD9XXX_LDOH_3P0_V`. With that LDO, the CFILT range is 260–2875 mV.
+
+**CFILT voltage.** Downstream's `wcd9xxx_resmgr_get_k_val` gives
+mV = 2875 × (k + 4) / 44. Windows writes `MICB_CFILT_2_VAL` = 0x60, so
+k = 24 and **1.8 V**.
+
+**ACDB element 0x100d is the mic bias, decoded:**
+- action 1 is the mic bias number;
+- action 2 is the CFILT number;
+- action 5 is the CFILT index (k + 4).
+
+| paths | mic bias | CFILT | index | voltage |
+|---|---|---|---|---|
+| DMIC_1, DMIC_2 | MICBIAS1 | CFILT1 | 28 | **1.8 V** |
+| DMIC_3, DMIC_4 | MICBIAS3 | CFILT1 | 28 | **1.8 V** |
+| ADC_1 | MICBIAS1 | CFILT1 | 40 | 2.6 V |
+| ADC_2 (presumably the headset mic) | MICBIAS2 | CFILT2 | 42 | 2.7 V |
+
+So the DMICs run on a 1.8 V mic bias, the usual DMIC supply.
+
+**DMIC clock (likely).** The DMIC element's `3:1008=2` matches downstream's
+`TAIKO_DMIC_SAMPLE_RATE_DIV_4` = 2. With the 9.6 MHz MCLK that is a
+**2.4 MHz DMIC clock**. Downstream programs that code into
+`CDC_TXn_DMIC_CTL` [2:0] for every decimator and into the
+`CDC_CLK_DMIC_B1/B2` divider fields. The DMIC clock enables are B1 bit 0
+(DMIC1/2), B1 bit 4 (DMIC3/4) and B2 bit 0 (DMIC5/6), each refcounted
+(`taiko_codec_enable_dmic`).
+
+**Open:**
+- Windows' init also sets bit 0 of `MICB_1/3/4_CTL`, which downstream never writes.
+- Windows' functions 0x442e58 and 0x443c10 set `MICB_1/2/4_INT_RBIAS` bits; downstream's "Internal" bias variants do the same for ECMs.
+- Function 0x421a74 runs a per-bias sequence on `MICB_n_CTL` bit 0 and `0x12d + 6(n−1)` bits 7 and 4, with a delay. It looks MBHC-related.
+
+None of these is needed for an external-bias DMIC. They are recorded for
+the headset batch.
+
+## 7. The capture chain, from downstream
+
+For one microphone (DMIC1, the call mic), in DAPM order:
+1. **The mic bias:** `MICB_1_CTL` bit 7 (the "External" widget), after `cfilt_get`. Then a **20 ms settle**.
+2. **The DMIC clock:** `CDC_CLK_DMIC_B1_CTL` bit 0, refcounted with DMIC2.
+3. **The decimator input:** `CDC_CONN_TX_B1` [1:0] = 1 selects DMIC1 for decimator 1 (choices ZERO, DMIC1, ADC6). Then `CDC_TX1_MUX_CTL` bit 0 = 1 selects DMIC rather than ADC.
+4. **The decimator** (`taiko_codec_enable_dec`):
+   - PRE_PMU: TX digital mute on (`TX1_VOL_CTL_CFG` bit 0), a reset pulse on `CDC_CLK_TX_RESET_B1` bit n, the HPF cut-off forced to 150 Hz (`TX1_MUX_CTL` [5:4] = 1) and the HPF enabled (bit 3 = 0);
+   - the TX clock, `CDC_CLK_TX_CLK_EN_B1` bit n;
+   - POST_PMU: mute off, the HPF cut-off restored after 300 ms, and the digital gain (`TXn_VOL_CTL_GAIN`) rewritten.
+5. **The SLIMbus TX port:** `CDC_CONN_TX_SB_B1` = 8 routes DEC1 to SLIM TX1. Windows writes the same mux values 1–8 and 1–0x11.
+6. **The capture interface:** AIF1 CAP, on codec TX ports 0–15. `taiko_tx_chs` maps TX port n to channel n; the RX ports start at 16.
+
+## 8. Still to map
+
+1. **Our SLIMbus side:** TX ports and channels. The stream code covers RX only; TX port 0 to the ADSP's SLIMBUS_0_TX is the first target.
+2. **QDSP6:** the AFE `SLIMBUS_0_TX` port, ASM capture, and the card's capture link and routing.
+3. **The decimator details still worth checking:** the `TXn_VOL_CTL_GAIN` default, the TX path HPF settle, and whether 24-bit needs anything codec-side (the SLIMbus word length).
+4. **The headset mic,** device 0x08, in the headset batch.
+
+## 9. Proposed build order (not started)
+
+- **C1 (codec):** MICBIAS1 at 1.8 V, the DMIC1 clock at 2.4 MHz, decimator 1 from DMIC1, and SLIM TX1 from DEC1. These go in as DAPM stages under the same verified-write discipline as the outputs, with a `capture_state` sysfs attribute.
+- **C2 (SLIMbus):** TX port 0 on the slave and its channel, mirroring the RX stream code.
+- **C3 (card and Q6):** a capture DAI link (SLIMBUS_0_TX to AIF1 CAP), with the MultiMedia1 capture route.
+- **Test:** the PC plays a 1 kHz tone at a fixed level near the phone while it records 48 kHz audio; the analyser checks the tone's level and the noise floor. A silent capture first gives the floor. Approval gates as for playback; capture itself drives nothing audible.
