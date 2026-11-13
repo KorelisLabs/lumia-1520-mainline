@@ -72,13 +72,13 @@ The ADIE register helper takes `(reg, mask, shift, value)`. Decoded:
 **DAC1 on:**
 1. `0x1bc` bit 5 = 1 (DAC1 switch)
 2. `0x1bc` bit 6 = 1 (DAC1 power)
-3. **`0x1be` bit 0 = 0** (RX_EAR_CMBUFF)
+3. **`0x1be` bit 0 = 1** (RX_EAR_CMBUFF). *Corrected 2026-11-13, section 11: this was first misread as 0. The chip idles with the bit set, so Windows leaves it as found.*
 
 **Class-H, EAR mode, from idle:**
 1. `0x320` bit 4 = 1 (B1 compute EAR)
 2. `0x185` bit 1 = 1
 3. `0x184` = 0x3f
-4. buck mode bits in `0x181` / `0x183`
+4. buck mode bits in `0x181` / `0x183` (*`0x184` above is right for the EAR-from-idle path; see section 11*)
 5. `0x181` bit 7 = 1 (buck on), then 1 ms
 6. `0x194` bit 4 = 0, `[3:0]` = 8 (NCP fclk 8), bit 5 = 1
 7. `0x192` bit 0 = 1 (NCP on), then 1 ms
@@ -347,3 +347,51 @@ shown equal. That covers CMBUFF, the order, the live registers on the shared
 path, and the whole Windows EAR write set. The remaining possibilities are:
 1. **The earpiece itself or its wiring.** This needs a hardware answer: does the earpiece work on this unit under Windows, does it measure as a receiver across EAR_P/EAR_M (about 32 Ω), and is there a part between the codec and the earpiece?
 2. **An OCP trip that only an unmasked source can show.** A diagnostic build could unmask bits 2 and 5 for the duration of an earpiece stream, observation only, which would answer whether the PA starts up or faults.
+
+## 11. The Windows EAR class-H sequence, fully decoded (2026-11-13)
+
+This decode is from `qcauddev8974.sys`. The helper is
+`0x41bf4c(0, reg, mask, shift, value)`, with the value passed on the stack.
+`value = 1` with a one-bit mask sets that bit, which is how the DAC1 switch
+and power writes turn those stages on.
+
+**Correction: Windows SETS `0x1be` bit 0.** Both copies of the DAC1-on
+sequence write `0x1bc` b5 = 1, `0x1bc` b6 = 1 and then `0x1be` b0 = 1, all
+with the same `r4 = 1`. The DAC1-on routine is at 0x445464, and the inline
+copy is in the EAR state routine at 0x4462a0. Section 3 had recorded this as 0.
+
+The chip idles with the bit set (0x05), so **Windows leaves CMBUFF as
+found.** In r194 terms, `keep` is Windows parity and `clear` is not, and
+r194's hypothesis is void. `keep` was silent in r194 too, so nothing
+measured changes. But the driver default (`clear`) is anti-Windows, and r196
+must return it to `keep`.
+
+**The EAR state routine** (0x4462a0) has three paths, selected by a state
+flag. One is DAC1 + CMBUFF + `0x320` b4 + PA when class-H is already up;
+another is the same through the DAC1-on routine. **From idle**, the path is:
+
+| step | Windows | ours live (r195) |
+|---|---|---|
+| DAC1 | `0x1bc` b5, b6 = 1; `0x1be` b0 = 1 | b5, b6 = 1; `0x1be` b0 cleared by our `clear` default |
+| compute EAR | `0x320` b4 = 1 | 1 (0x320 = 0x37) |
+| buck mode | `0x185` b1 = 1; **`0x184` = 0x3f**; `0x181` b2 = 1, b3 = 0; `0x183` b3 = 0, b2 = 0 | **`0x184` = 0xff**; the rest match |
+| buck on | `0x181` b7 = 1, then a delay | b7 = 1 (0x181 = a5) |
+| NCP | `0x194` b4 = 0, [3:0] = 8, b5 = 1; `0x192` b0 = 1, then a delay | fclk 8; 0x192 b0 = 1 |
+| PA | `0x1bc` b4 = 1, then a delay | b4 = 1 |
+| post-PA | `0x185` b1 = 0, `0x194` b5 = 0, `0x183` b2 = 1, b3 = 1 | 0x185 = 00; 0x194 = 08; 0x183 = ce (b3, b2 = 1, 1) |
+
+**The headphone routine** (0x445e48) uses the **same `0x184` = 0x3f** and
+fclk 8, and also sets `0x320` b3 and b2 through 0x4453d8. The **line-out
+routine** (0x4466d8) uses 0xe6 (1.8 V), then 0x3f. The run-time values
+(`r7`/`r8`) belong to the transitions between combined states.
+
+**What remains different from Windows on the EAR path:**
+1. **The buck reference:** `0x184` is 0x3f in Windows and 0xff in ours, for both EAR and HPH. HPH plays at 0xff, so this alone is unlikely to make EAR silent, but it is a real difference.
+2. **CMBUFF:** Windows keeps bit 0 set; our default clears it. r194's `keep` streams cover this, and they were silent.
+3. **`0x320` bits 3 and 2:** Windows' EAR path never touches them, and its HPH path sets both. Ours reads b2 = 1, b3 = 0 during EAR (POR 0xe4 left in place) and both 0 during HPH. Windows' value at EAR time is not known, since it depends on whatever ran before.
+
+**Implications for r196:**
+- `ear_cmbuff` returns to `keep` by default.
+- An `ear_buck_vref` switch (0xff, or Windows' 0x3f) A/Bs the buck reference.
+- Optionally, a switch for `0x320` b3/b2 during EAR.
+- These go in alongside the unmasked EAR OCP and start-up observation, and the wider snapshot.
