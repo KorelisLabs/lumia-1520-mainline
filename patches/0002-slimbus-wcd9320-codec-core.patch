@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 14:14:46.121643472 -0500
-@@ -0,0 +1,14014 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 15:54:40.659742097 -0500
+@@ -0,0 +1,14680 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -1666,6 +1666,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +#define WCD9320_IFD_RX_CH(port)		(WCD9320_IFD_RX_CH_BASE + 4 * (port))
 +#define WCD9320_IFD_RX_CFG(port)	(WCD9320_IFD_RX_CFG_BASE + (port))
++/*
++ * r197: the TX side of the same PGD layout (mainline wcd9335.h): port config
++ * at 0x50 + port, the channel bitmap at 0x100 + 4 * port (and the second
++ * byte, for TX ports 8 and 9, at 0x101 + 4 * port).
++ */
++#define WCD9320_IFD_TX_CFG(port)	(0x050 + (port))
++#define WCD9320_IFD_TX_CH0(port)	(0x100 + 4 * (port))
++#define WCD9320_IFD_TX_CH1(port)	(0x101 + 4 * (port))
 +
 +/*
 + * The multi-channel register takes a BITMAP of the channels bound to the port,
@@ -2046,6 +2054,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool ear_irq_on, ear_irq_storm;
 +	int ear_virq_ocp, ear_virq_startup;
 +	unsigned int ear_irq_ocp, ear_irq_startup;
++	/*
++	 * r197: CAPTURE (docs/audio/wcd9320-mic-mapping.md). dapm_held_cap is
++	 * the capture path's DAPM stages; cap_base[stage][i] is the measured
++	 * value of the i-th field that stage writes, restored in reverse.
++	 */
++	unsigned int dapm_held_cap;
++	unsigned int cap_ups, cap_downs, cap_refusals, cap_failures;
++	u8 cap_base[6][12];
++	u8 cap_done[6];
++	bool tx_port_on, tx_stream_up;
++	struct slim_stream_runtime *tx_sruntime;
++	struct slim_stream_config tx_sconfig;
++	unsigned int tx_chs[1];
++	unsigned int tx_port_writes, tx_stream_ups, tx_stream_downs;
++	int tx_rc_prepare, tx_rc_enable, tx_rc_disable, tx_rc_unprepare;
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -4644,6 +4667,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_SLIM_RX1_CH		144
 +#define WCD9320_SLIM_RATE		48000
 +#define WCD9320_SLIM_BPS		16
++/* r197: capture -- TX port 0 carries SLIM TX1 on channel 128 (TX starts at 128) */
++#define WCD9320_TX_PORT_DMIC		0
++#define WCD9320_SLIM_TX1_CH		128
++#define WCD9320_SLIM_TX_STREAM_NAME	"WCD9320-SLIM-TX"
 +
 +/*
 + * The SLIMbus stream, decomposed into the steps the ASoC lifecycle needs.
@@ -12551,6 +12578,346 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/*
++ * r197: THE CAPTURE PATH -- DMIC1 (the call mic) through DEC1 to SLIM TX1.
++ * docs/audio/wcd9320-mic-mapping.md, sections 6 and 7: MICBIAS1 at 1.8 V
++ * (LDO_H 3.0 V, CFILT1 k = 24), the DMIC clock at MCLK / 4 = 2.4 MHz, DEC1
++ * from DMIC1 with downstream's enable sequence, DEC1 on SLIM TX1.
++ *
++ * Its own six stages, held mask and event. Stage 0 needs an idle codec,
++ * exactly like an output's stage 0; holding MCLK and the prereq then makes
++ * every output's stage 0 refuse. One path at a time, capture included.
++ */
++#define WCD9320_A_MICB_1_CTL			0x12b
++#define WCD9320_A_CDC_TX1_VOL_CTL_GAIN		0x221
++#define WCD9320_A_CDC_TX1_VOL_CTL_CFG		0x222
++#define WCD9320_A_CDC_TX1_MUX_CTL		0x223
++#define WCD9320_A_CDC_TX1_DMIC_CTL		0x225
++#define WCD9320_A_CDC_CLK_TX_RESET_B1_CTL	0x302
++#define WCD9320_A_CDC_CLK_DMIC_B1_CTL		0x304
++#define WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL	0x30a
++#define WCD9320_A_CDC_CONN_TX_B1_CTL		0x393
++#define WCD9320_A_CDC_CONN_TX_SB_B1_CTL		0x3a3
++#define WCD9320_CAP_MICB_SETTLE_MS		20	/* taiko_codec_enable_micbias */
++#define WCD9320_CAP_LDOH_SETTLE_US		1000	/* __taiko_codec_enable_ldo_h */
++
++enum wcd9320_cap_stage {
++	WCD9320_CAP_MCLK,
++	WCD9320_CAP_PREREQ,
++	WCD9320_CAP_MB,
++	WCD9320_CAP_DMIC,
++	WCD9320_CAP_DEC,
++	WCD9320_CAP_SB,
++	WCD9320_CAP_N,
++};
++#define WCD9320_CAP_ALL		(BIT(WCD9320_CAP_N) - 1)
++
++static const char * const wcd9320_cap_name[WCD9320_CAP_N] = {
++	"cap mclk", "cap prereq", "mic bias1", "dmic1 clock", "dec1", "slim tx1",
++};
++
++struct wcd9320_cap_w {
++	u16 reg;
++	u8 mask, val;
++	const char *what;
++};
++
++/* MICBIAS1: LDO_H 3.0 V and on (then 1 ms), CFILT1 1.8 V, bias on CFILT1, on */
++static const struct wcd9320_cap_w wcd9320_cap_mb_ldo[] = {
++	{ WCD9320_A_LDO_H_MODE_1, 0x0c, 0x0c, "LDO_H 3.0 V (Windows' init)" },
++	{ WCD9320_A_LDO_H_MODE_1, 0x80, 0x80, "LDO_H on" },
++};
++static const struct wcd9320_cap_w wcd9320_cap_mb_bias[] = {
++	{ WCD9320_A_MICB_CFILT_1_VAL, 0xfc, 24 << 2, "CFILT1 1.8 V (k 24, Windows' value)" },
++	{ WCD9320_A_MICB_1_CTL, 0x60, 0x00, "MICBIAS1 on CFILT1" },
++	{ WCD9320_A_MICB_CFILT_1_CTL, 0x80, 0x80, "CFILT1 on" },
++	{ WCD9320_A_MICB_1_CTL, 0x80, 0x80, "MICBIAS1 on (External)" },
++};
++/* the DMIC1/2 clock at DIV_4 (2.4 MHz from 9.6 MHz), DEC1's DMIC rate, on */
++static const struct wcd9320_cap_w wcd9320_cap_dmic[] = {
++	{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x0e, 0x04, "DMIC1/2 clock DIV_4 (2.4 MHz)" },
++	{ WCD9320_A_CDC_TX1_DMIC_CTL, 0x07, 0x02, "DEC1 DMIC rate DIV_4" },
++	{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x01, 0x01, "DMIC1/2 clock on" },
++};
++/* DEC1 from DMIC1: CDC_CONN, the input, mute; (the reset pulse); HPF, clock, unmute */
++static const struct wcd9320_cap_w wcd9320_cap_dec_pre[] = {
++	{ WCD9320_CDC_CLK_OTHR_CTL, 0x04, 0x04, "CDC_CONN on" },
++	{ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03, 0x01, "DEC1 input = DMIC1" },
++	{ WCD9320_A_CDC_TX1_MUX_CTL, 0x01, 0x01, "DEC1 DMIC (not ADC) select" },
++	{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x01, "DEC1 digital mute" },
++};
++static const struct wcd9320_cap_w wcd9320_cap_dec_post[] = {
++	{ WCD9320_A_CDC_TX1_MUX_CTL, 0x30, 0x10, "DEC1 HPF cut-off 150 Hz" },
++	{ WCD9320_A_CDC_TX1_MUX_CTL, 0x08, 0x00, "DEC1 HPF on" },
++	{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, 0x01, 0x01, "DEC1 clock on" },
++	{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x00, "DEC1 unmute" },
++};
++/* SLIM TX1 = DEC1 */
++static const struct wcd9320_cap_w wcd9320_cap_sb[] = {
++	{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL, 0x0f, 0x08, "SLIM TX1 = DEC1" },
++};
++
++/* one read site for every capture baseline (the artefact gate pins the count) */
++static noinline int wcd9320_cap_read(struct wcd9320 *wcd, unsigned int reg,
++				     u8 *out)
++{
++	unsigned int v;
++	int ret = regmap_read_bypassed(wcd->regmap, reg, &v);
++
++	if (!ret)
++		*out = v & 0xff;
++	return ret;
++}
++
++/*
++ * Apply a table from slot `first` of this stage's baselines: measure each
++ * field, then write it chip-verified. cap_done[stage] counts what landed,
++ * so a failure restores exactly that much.
++ */
++static int wcd9320_cap_apply(struct wcd9320 *wcd, unsigned int stage,
++			     const struct wcd9320_cap_w *tb, unsigned int n)
++{
++	unsigned int i, slot;
++	int ret;
++
++	for (i = 0; i < n; i++) {
++		slot = wcd->cap_done[stage];
++		if (slot >= ARRAY_SIZE(wcd->cap_base[stage]))
++			return -EOVERFLOW;
++		ret = wcd9320_cap_read(wcd, tb[i].reg, &wcd->cap_base[stage][slot]);
++		if (ret)
++			return ret;
++		ret = wcd9320_c2b_write(wcd, tb[i].reg, tb[i].mask, tb[i].val,
++					tb[i].what);
++		if (ret)
++			return ret;
++		wcd->cap_done[stage]++;
++	}
++	return 0;
++}
++
++/* Restore, in reverse, every field this stage wrote (its tables in order). */
++static void wcd9320_cap_restore(struct wcd9320 *wcd, unsigned int stage,
++				const struct wcd9320_cap_w * const *tbs,
++				const unsigned int *ns, unsigned int ntb)
++{
++	const struct wcd9320_cap_w *w;
++	unsigned int k, i, slot = 0, total = 0;
++
++	for (k = 0; k < ntb; k++)
++		total += ns[k];
++	while (wcd->cap_done[stage]) {
++		slot = --wcd->cap_done[stage];
++		if (slot >= total)
++			continue;
++		for (k = 0, i = slot; i >= ns[k]; k++)
++			i -= ns[k];
++		w = &tbs[k][i];
++		wcd9320_c2b_write(wcd, w->reg, w->mask,
++				  wcd->cap_base[stage][slot] & w->mask,
++				  "capture: restored to its measured value");
++	}
++}
++
++static const struct wcd9320_cap_w * const wcd9320_cap_mb_tbs[] = {
++	wcd9320_cap_mb_ldo, wcd9320_cap_mb_bias };
++static const unsigned int wcd9320_cap_mb_ns[] = {
++	ARRAY_SIZE(wcd9320_cap_mb_ldo), ARRAY_SIZE(wcd9320_cap_mb_bias) };
++static const struct wcd9320_cap_w * const wcd9320_cap_dmic_tbs[] = { wcd9320_cap_dmic };
++static const unsigned int wcd9320_cap_dmic_ns[] = { ARRAY_SIZE(wcd9320_cap_dmic) };
++static const struct wcd9320_cap_w * const wcd9320_cap_dec_tbs[] = {
++	wcd9320_cap_dec_pre, wcd9320_cap_dec_post };
++static const unsigned int wcd9320_cap_dec_ns[] = {
++	ARRAY_SIZE(wcd9320_cap_dec_pre), ARRAY_SIZE(wcd9320_cap_dec_post) };
++static const struct wcd9320_cap_w * const wcd9320_cap_sb_tbs[] = { wcd9320_cap_sb };
++static const unsigned int wcd9320_cap_sb_ns[] = { ARRAY_SIZE(wcd9320_cap_sb) };
++
++static int wcd9320_cap_mb(struct wcd9320 *wcd, bool on)
++{
++	int ret;
++
++	if (!on) {
++		wcd9320_cap_restore(wcd, WCD9320_CAP_MB, wcd9320_cap_mb_tbs,
++				    wcd9320_cap_mb_ns, 2);
++		return 0;
++	}
++	ret = wcd9320_cap_apply(wcd, WCD9320_CAP_MB, wcd9320_cap_mb_ldo,
++				ARRAY_SIZE(wcd9320_cap_mb_ldo));
++	if (!ret) {
++		usleep_range(WCD9320_CAP_LDOH_SETTLE_US,
++			     WCD9320_CAP_LDOH_SETTLE_US + 100);
++		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_MB, wcd9320_cap_mb_bias,
++					ARRAY_SIZE(wcd9320_cap_mb_bias));
++	}
++	if (ret) {
++		wcd9320_cap_mb(wcd, false);
++		return ret;
++	}
++	msleep(WCD9320_CAP_MICB_SETTLE_MS);
++	return 0;
++}
++
++static int wcd9320_cap_dmic_clk(struct wcd9320 *wcd, bool on)
++{
++	int ret = 0;
++
++	if (on)
++		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_DMIC, wcd9320_cap_dmic,
++					ARRAY_SIZE(wcd9320_cap_dmic));
++	if (!on || ret)
++		wcd9320_cap_restore(wcd, WCD9320_CAP_DMIC, wcd9320_cap_dmic_tbs,
++				    wcd9320_cap_dmic_ns, 1);
++	return ret;
++}
++
++/*
++ * DEC1, taiko_codec_enable_dec: digital mute, a reset pulse, HPF at 150 Hz
++ * and on, the TX clock, unmute, and the gain register rewritten so it
++ * latches. The pulse is outside the tables: restoring it would assert the
++ * reset again on the way down.
++ */
++static int wcd9320_cap_dec(struct wcd9320 *wcd, bool on)
++{
++	u8 gain;
++	int ret;
++
++	if (!on)
++		goto down;
++	ret = wcd9320_cap_apply(wcd, WCD9320_CAP_DEC, wcd9320_cap_dec_pre,
++				ARRAY_SIZE(wcd9320_cap_dec_pre));
++	if (!ret)
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_CDC_CLK_TX_RESET_B1_CTL,
++					0x01, 0x01, "DEC1 reset asserted");
++	if (!ret)
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_CDC_CLK_TX_RESET_B1_CTL,
++					0x01, 0x00, "DEC1 reset released");
++	if (!ret)
++		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_DEC, wcd9320_cap_dec_post,
++					ARRAY_SIZE(wcd9320_cap_dec_post));
++	if (!ret)
++		ret = wcd9320_cap_read(wcd, WCD9320_A_CDC_TX1_VOL_CTL_GAIN, &gain);
++	if (!ret)
++		ret = wcd9320_c2b_write(wcd, WCD9320_A_CDC_TX1_VOL_CTL_GAIN, 0xff,
++					gain, "DEC1 gain rewritten (latches)");
++	if (!ret)
++		return 0;
++down:
++	wcd9320_cap_restore(wcd, WCD9320_CAP_DEC, wcd9320_cap_dec_tbs,
++			    wcd9320_cap_dec_ns, 2);
++	return on ? ret : 0;
++}
++
++static int wcd9320_cap_slim(struct wcd9320 *wcd, bool on)
++{
++	int ret = 0;
++
++	if (on)
++		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_SB, wcd9320_cap_sb,
++					ARRAY_SIZE(wcd9320_cap_sb));
++	if (!on || ret)
++		wcd9320_cap_restore(wcd, WCD9320_CAP_SB, wcd9320_cap_sb_tbs,
++				    wcd9320_cap_sb_ns, 1);
++	return ret;
++}
++
++/* The capture stages: two proven functions and four new ones. Under c3_lock. */
++static int wcd9320_cap_stage_call(struct wcd9320 *wcd, unsigned int stage,
++				  bool on)
++{
++	switch (stage) {
++	case WCD9320_CAP_MCLK:
++		return on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd);
++	case WCD9320_CAP_PREREQ:
++		return wcd9320_cdc_clk_prereq(wcd, on);
++	case WCD9320_CAP_MB:
++		return wcd9320_cap_mb(wcd, on);
++	case WCD9320_CAP_DMIC:
++		return wcd9320_cap_dmic_clk(wcd, on);
++	case WCD9320_CAP_DEC:
++		return wcd9320_cap_dec(wcd, on);
++	case WCD9320_CAP_SB:
++		return wcd9320_cap_slim(wcd, on);
++	}
++	return -EINVAL;
++}
++
++/* Take down whatever capture holds, top stage first. Under c3_lock. */
++static void wcd9320_cap_unwind(struct wcd9320 *wcd)
++{
++	int s;
++
++	for (s = WCD9320_CAP_N - 1; s >= 0; s--) {
++		if (wcd->dapm_held_cap & BIT(s)) {
++			wcd9320_cap_stage_call(wcd, s, false);
++			wcd->dapm_held_cap &= ~BIT(s);
++			wcd->cap_downs++;
++		}
++	}
++}
++
++static int wcd9320_cap_event(struct snd_soc_dapm_widget *w,
++			     struct snd_kcontrol *kc, int event)
++{
++	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
++	struct wcd9320 *wcd = dev_get_drvdata(component->dev);
++	unsigned int stage = w->shift, below;
++	struct device *dev;
++	int ret = 0;
++
++	if (!wcd || wcd->is_ifd || stage >= WCD9320_CAP_N)
++		return -ENODEV;
++	dev = &wcd->sdev->dev;
++	below = BIT(stage) - 1;
++
++	mutex_lock(&wcd->c3_lock);
++	if (SND_SOC_DAPM_EVENT_ON(event)) {
++		if (wcd->dapm_held_cap != below) {
++			wcd->cap_refusals++;
++			dev_err(dev, "capture: %s REFUSED -- capture holds %02x, the stage needs exactly %02x below it\n",
++				wcd9320_cap_name[stage], wcd->dapm_held_cap, below);
++			ret = -EAGAIN;
++			goto out;
++		}
++		if (stage == WCD9320_CAP_MCLK && !wcd9320_dapm_idle(wcd)) {
++			wcd->cap_refusals++;
++			dev_err(dev, "capture: REFUSED -- an output or a research path holds the codec (mclk_users=%u)\n",
++				wcd->mclk_users);
++			ret = -EBUSY;
++			goto out;
++		}
++		ret = wcd9320_cap_stage_call(wcd, stage, true);
++		if (ret) {
++			wcd->cap_failures++;
++			dev_err(dev, "capture: %s FAILED (%d) -- capture unwound\n",
++				wcd9320_cap_name[stage], ret);
++			wcd9320_cap_unwind(wcd);
++			goto out;
++		}
++		wcd->dapm_held_cap |= BIT(stage);
++		wcd->cap_ups++;
++		dev_info(dev, "capture: %s up, capture holds %02x\n",
++			 wcd9320_cap_name[stage], wcd->dapm_held_cap);
++	} else {
++		if (!(wcd->dapm_held_cap & BIT(stage)))
++			goto out;
++		ret = wcd9320_cap_stage_call(wcd, stage, false);
++		wcd->dapm_held_cap &= ~BIT(stage);
++		wcd->cap_downs++;
++		if (ret)
++			wcd->cap_failures++;
++		dev_info(dev, "capture: %s down (%d), capture holds %02x\n",
++			 wcd9320_cap_name[stage], ret, wcd->dapm_held_cap);
++	}
++out:
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
++#define WCD9320_CAP_STAGE(wname, stage) \
++	SND_SOC_DAPM_SUPPLY_S(wname, stage, SND_SOC_NOPM, stage, 0, \
++			      wcd9320_cap_event, \
++			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD)
++
 +#define WCD9320_DAPM_STAGE(wname, path, stage) \
 +	SND_SOC_DAPM_SUPPLY_S(wname, stage, SND_SOC_NOPM, \
 +			      WCD9320_DAPM_SHIFT(path, stage), 0, \
@@ -12616,6 +12983,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	WCD9320_DAPM_STAGE("LO PA", WCD9320_DP_LO, WCD9320_DO_PA),
 +	SND_SOC_DAPM_PGA("LO", SND_SOC_NOPM, 0, 0, NULL, 0),
 +	SND_SOC_DAPM_OUTPUT("LO_OUT"),
++	/* r197: capture -- DMIC1 through DEC1 to SLIM TX1 */
++	SND_SOC_DAPM_INPUT("DMIC1"),
++	WCD9320_CAP_STAGE("CAP MCLK", WCD9320_CAP_MCLK),
++	WCD9320_CAP_STAGE("CAP PREREQ", WCD9320_CAP_PREREQ),
++	WCD9320_CAP_STAGE("MIC BIAS1", WCD9320_CAP_MB),
++	WCD9320_CAP_STAGE("DMIC1 CLK", WCD9320_CAP_DMIC),
++	WCD9320_CAP_STAGE("DEC1", WCD9320_CAP_DEC),
++	WCD9320_CAP_STAGE("SLIM TX1", WCD9320_CAP_SB),
++	SND_SOC_DAPM_PGA("CAP", SND_SOC_NOPM, 0, 0, NULL, 0),
++	SND_SOC_DAPM_AIF_OUT("AIF1 CAP", "WCD9320 SLIM TX1 Capture", 0,
++			     SND_SOC_NOPM, 0, 0),
 +};
 +
 +static const struct snd_soc_dapm_route wcd9320_dapm_routes[] = {
@@ -12654,6 +13032,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	{ "LO", NULL, "RX3+RX5 CHAIN" },
 +	{ "LO", NULL, "LO DAC" },
 +	{ "LO", NULL, "LO PA" },
++	/* r197: capture */
++	{ "CAP", NULL, "DMIC1" },
++	{ "AIF1 CAP", NULL, "CAP" },
++	{ "CAP", NULL, "CAP MCLK" },
++	{ "CAP", NULL, "CAP PREREQ" },
++	{ "CAP", NULL, "MIC BIAS1" },
++	{ "CAP", NULL, "DMIC1 CLK" },
++	{ "CAP", NULL, "DEC1" },
++	{ "CAP", NULL, "SLIM TX1" },
 +};
 +
 +static ssize_t dapm_state_show(struct device *dev,
@@ -12676,6 +13063,54 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return n;
 +}
 +static DEVICE_ATTR_RO(dapm_state);
++
++/* r197: the capture path, its registers live from the chip, and TX port 0 */
++static const struct {
++	u16 reg;
++	const char *key;
++} wcd9320_cap_regs[] = {
++	{ WCD9320_A_LDO_H_MODE_1, "ldoh_0x110" },
++	{ WCD9320_A_MICB_CFILT_1_CTL, "cfilt1_0x128" },
++	{ WCD9320_A_MICB_CFILT_1_VAL, "cfiltk_0x129" },
++	{ WCD9320_A_MICB_1_CTL, "micb1_0x12b" },
++	{ WCD9320_A_CDC_TX1_VOL_CTL_GAIN, "gain_0x221" },
++	{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, "volcfg_0x222" },
++	{ WCD9320_A_CDC_TX1_MUX_CTL, "mux_0x223" },
++	{ WCD9320_A_CDC_TX1_DMIC_CTL, "txdmic_0x225" },
++	{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, "dmicclk_0x304" },
++	{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, "txclk_0x30a" },
++	{ WCD9320_CDC_CLK_OTHR_CTL, "othr_0x30c" },
++	{ WCD9320_A_CDC_CONN_TX_B1_CTL, "conntx_0x393" },
++	{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL, "sbtx_0x3a3" },
++};
++
++static ssize_t capture_state_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int i, v;
++	int n;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	mutex_lock(&wcd->c3_lock);
++	n = sysfs_emit(buf, "cap_held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u prereq=%d tx_port_on=%u tx_up=%u tx_ups=%u tx_downs=%u tx_rc_prepare=%d tx_rc_enable=%d tx_port_writes=%u\n",
++		       wcd->dapm_held_cap, wcd->cap_ups, wcd->cap_downs,
++		       wcd->cap_refusals, wcd->cap_failures, wcd->mclk_users,
++		       wcd->clk_prereq_on, wcd->tx_port_on, wcd->tx_stream_up,
++		       wcd->tx_stream_ups, wcd->tx_stream_downs,
++		       wcd->tx_rc_prepare, wcd->tx_rc_enable, wcd->tx_port_writes);
++	for (i = 0; i < ARRAY_SIZE(wcd9320_cap_regs); i++) {
++		if (regmap_read_bypassed(wcd->regmap, wcd9320_cap_regs[i].reg, &v))
++			n += sysfs_emit_at(buf, n, "%s=-- ", wcd9320_cap_regs[i].key);
++		else
++			n += sysfs_emit_at(buf, n, "%s=%02x ", wcd9320_cap_regs[i].key, v & 0xff);
++	}
++	n += sysfs_emit_at(buf, n, "\n");
++	mutex_unlock(&wcd->c3_lock);
++	return n;
++}
++static DEVICE_ATTR_RO(capture_state);
 +
 +/* -------------------------------------------- r185: volume controls -- */
 +
@@ -13267,6 +13702,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_ear_buck_vref.attr,
 +	&dev_attr_ear_clsh_b32.attr,
 +	&dev_attr_ear_irq.attr,
++	&dev_attr_capture_state.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -13804,6 +14240,221 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * exist here. Calling this "rx1" after the port is accurate; calling it after
 + * a speaker or a headphone would not be.
 + */
++/*
++ * r197: THE CAPTURE DAI. TX port 0 in the interface device, programmed as
++ * the RX ports are (bitmap first, then the config byte; the reverse at
++ * teardown), and a SLIMbus stream of its own -- direction CAPTURE, channel
++ * 128 -- so it never shares the RX runtime. Same lifecycle as RX:
++ * startup allocates, hw_params programs the port and configures, trigger
++ * prepares and enables, hw_free tears the port down, shutdown frees.
++ */
++static int wcd9320_tx_port_program(struct wcd9320 *wcd, bool enable)
++{
++	struct device *dev = &wcd->sdev->dev;
++	struct wcd9320 *ifd;
++	unsigned int cfg = 0, ch = 0;
++	int ret = 0;
++
++	mutex_lock(&wcd9320_ifd_lock);
++	ifd = wcd9320_ifd_instance;
++	if (!ifd || !ifd->regmap || !ifd->online) {
++		mutex_unlock(&wcd9320_ifd_lock);
++		dev_err(dev, "tx-port: the interface function is not bound or online\n");
++		return -ENODEV;
++	}
++	if (enable) {
++		ret = regmap_write(ifd->regmap, WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x01);
++		if (!ret)
++			ret = regmap_write(ifd->regmap, WCD9320_IFD_TX_CH1(WCD9320_TX_PORT_DMIC), 0x00);
++		if (!ret)
++			ret = regmap_write(ifd->regmap, WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),
++					   WCD9320_PORT_CFG_ENABLED);
++		if (!ret) {
++			wcd->tx_port_on = true;
++			wcd->tx_port_writes += 3;
++		}
++	} else {
++		regmap_write(ifd->regmap, WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),
++			     WCD9320_PORT_CFG_DISABLED);
++		regmap_write(ifd->regmap, WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x00);
++		regmap_write(ifd->regmap, WCD9320_IFD_TX_CH1(WCD9320_TX_PORT_DMIC), 0x00);
++		wcd->tx_port_on = false;
++		wcd->tx_port_writes += 3;
++	}
++	regmap_read(ifd->regmap, WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC), &cfg);
++	regmap_read(ifd->regmap, WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), &ch);
++	mutex_unlock(&wcd9320_ifd_lock);
++	dev_info(dev, "tx-port %u: %s -> %d, config 0x%03x = %02x, channels 0x%03x = %02x\n",
++		 WCD9320_TX_PORT_DMIC, enable ? "enable" : "disable", ret,
++		 WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC), cfg & 0xff,
++		 WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), ch & 0xff);
++	return ret;
++}
++
++static int wcd9320_tx_startup(struct snd_pcm_substream *substream,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret = 0;
++
++	if (!wcd)
++		return -ENODEV;
++	mutex_lock(&wcd->slim_stream_lock);
++	if (!wcd->tx_sruntime) {
++		wcd->tx_sruntime = slim_stream_allocate(wcd->sdev,
++							WCD9320_SLIM_TX_STREAM_NAME);
++		if (IS_ERR_OR_NULL(wcd->tx_sruntime)) {
++			ret = wcd->tx_sruntime ? PTR_ERR(wcd->tx_sruntime) : -ENOMEM;
++			wcd->tx_sruntime = NULL;
++		}
++	}
++	mutex_unlock(&wcd->slim_stream_lock);
++	dev_info(&wcd->sdev->dev, "tx-stream: ASoC startup (dai %s) -> %d\n",
++		 dai->name, ret);
++	return ret;
++}
++
++static int wcd9320_tx_hw_params(struct snd_pcm_substream *substream,
++				struct snd_pcm_hw_params *params,
++				struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret;
++
++	if (!wcd)
++		return -ENODEV;
++	if (params_channels(params) != 1)
++		return -EINVAL;
++	ret = wcd9320_tx_port_program(wcd, true);
++	if (ret)
++		return ret;
++	mutex_lock(&wcd->slim_stream_lock);
++	memset(&wcd->tx_sconfig, 0, sizeof(wcd->tx_sconfig));
++	wcd->tx_chs[0] = WCD9320_SLIM_TX1_CH;
++	wcd->tx_sconfig.rate = params_rate(params);
++	wcd->tx_sconfig.bps = params_width(params);
++	wcd->tx_sconfig.ch_count = 1;
++	wcd->tx_sconfig.chs = wcd->tx_chs;
++	wcd->tx_sconfig.port_mask = BIT(WCD9320_TX_PORT_DMIC);
++	wcd->tx_sconfig.direction = SNDRV_PCM_STREAM_CAPTURE;
++	mutex_unlock(&wcd->slim_stream_lock);
++	dev_info(&wcd->sdev->dev,
++		 "tx-stream: config port %u channel %u rate %u bps %u (CAPTURE)\n",
++		 WCD9320_TX_PORT_DMIC, WCD9320_SLIM_TX1_CH, params_rate(params),
++		 params_width(params));
++	return 0;
++}
++
++static int wcd9320_tx_hw_free(struct snd_pcm_substream *substream,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++
++	if (!wcd)
++		return -ENODEV;
++	return wcd->tx_port_on ? wcd9320_tx_port_program(wcd, false) : 0;
++}
++
++static int wcd9320_tx_stream_stop(struct wcd9320 *wcd)
++{
++	int ret;
++
++	wcd->tx_rc_disable = slim_stream_disable(wcd->tx_sruntime);
++	wcd->tx_rc_unprepare = slim_stream_unprepare(wcd->tx_sruntime);
++	ret = wcd->tx_rc_disable ? wcd->tx_rc_disable : wcd->tx_rc_unprepare;
++	wcd->tx_stream_up = false;
++	wcd->tx_stream_downs++;
++	dev_info(&wcd->sdev->dev, "tx-stream: DOWN (disable %d, unprepare %d)\n",
++		 wcd->tx_rc_disable, wcd->tx_rc_unprepare);
++	return ret;
++}
++
++static int wcd9320_tx_trigger(struct snd_pcm_substream *substream, int cmd,
++			      struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++	int ret = 0;
++
++	if (!wcd)
++		return -ENODEV;
++	mutex_lock(&wcd->slim_stream_lock);
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		if (!wcd->tx_sruntime) {
++			ret = -EINVAL;
++			break;
++		}
++		ret = slim_stream_prepare(wcd->tx_sruntime, &wcd->tx_sconfig);
++		wcd->tx_rc_prepare = ret;
++		if (!ret) {
++			ret = slim_stream_enable(wcd->tx_sruntime);
++			wcd->tx_rc_enable = ret;
++			if (ret)
++				slim_stream_unprepare(wcd->tx_sruntime);
++		}
++		if (!ret) {
++			wcd->tx_stream_up = true;
++			wcd->tx_stream_ups++;
++		}
++		dev_info(&wcd->sdev->dev, "tx-stream: START -> prepare %d, enable %d (CONNECT_SOURCE)\n",
++			 wcd->tx_rc_prepare, wcd->tx_rc_enable);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		if (wcd->tx_stream_up && wcd->tx_sruntime)
++			ret = wcd9320_tx_stream_stop(wcd);
++		break;
++	default:
++		break;
++	}
++	mutex_unlock(&wcd->slim_stream_lock);
++	return ret;
++}
++
++static void wcd9320_tx_shutdown(struct snd_pcm_substream *substream,
++				struct snd_soc_dai *dai)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dai->component->dev);
++
++	if (!wcd)
++		return;
++	mutex_lock(&wcd->slim_stream_lock);
++	if (wcd->tx_stream_up && wcd->tx_sruntime)
++		wcd9320_tx_stream_stop(wcd);
++	if (wcd->tx_sruntime) {
++		slim_stream_free(wcd->tx_sruntime);
++		wcd->tx_sruntime = NULL;
++	}
++	mutex_unlock(&wcd->slim_stream_lock);
++	dev_info(&wcd->sdev->dev, "tx-stream: ASoC shutdown (dai %s)\n", dai->name);
++}
++
++/* The capture DAI's physical channel: SLIM TX1 on channel 128, nothing received. */
++static int wcd9320_tx_get_channel_map(const struct snd_soc_dai *dai,
++				      unsigned int *tx_num, unsigned int *tx_slot,
++				      unsigned int *rx_num, unsigned int *rx_slot)
++{
++	if (rx_num)
++		*rx_num = 0;
++	if (!tx_num || !tx_slot)
++		return -EINVAL;
++	tx_slot[0] = WCD9320_SLIM_TX1_CH;
++	*tx_num = 1;
++	return 0;
++}
++
++static const struct snd_soc_dai_ops wcd9320_tx_dai_ops = {
++	.hw_params = wcd9320_tx_hw_params,
++	.hw_free = wcd9320_tx_hw_free,
++	.get_channel_map = wcd9320_tx_get_channel_map,
++	.startup = wcd9320_tx_startup,
++	.shutdown = wcd9320_tx_shutdown,
++	.trigger = wcd9320_tx_trigger,
++};
++
 +static struct snd_soc_dai_driver wcd9320_dais[] = {
 +	{
 +		.name = "wcd9320-slim-rx1",
@@ -13818,6 +14469,21 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			.channels_max = 2,	/* r185: stereo */
 +		},
 +		.ops = &wcd9320_rx_dai_ops,
++	},
++	/* r197: SLIM TX port 0 -- DMIC1 through DEC1, mono */
++	{
++		.name = "wcd9320-slim-tx1",
++		.id = 1,
++		.capture = {
++			.stream_name = "WCD9320 SLIM TX1 Capture",
++			.rates = WCD9320_RX_RATES,
++			.formats = WCD9320_RX_FORMATS,
++			.rate_min = 48000,
++			.rate_max = 48000,
++			.channels_min = 1,
++			.channels_max = 1,
++		},
++		.ops = &wcd9320_tx_dai_ops,
 +	},
 +};
 +
@@ -14359,7 +15025,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("earirq-rc1");
++MODULE_VERSION("capdmic-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

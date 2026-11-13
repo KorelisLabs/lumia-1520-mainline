@@ -178,7 +178,10 @@ EXPECT = {
     # r196: 144 = 143 + 1, the CDC_CLSH_B1_CTL b3/b2 baseline in
     #            wcd9320_clsh_mode (ear_clsh_b32). Measured +1 in the
     #            compile-check tree (137 -> 138).
-    "read_bypassed_calls": 144,
+    # r197: 146 = 144 + 2, capture: wcd9320_cap_read (noinline, every
+    #            baseline) and capture_state's register loop. Measured +2 in
+    #            the compile-check tree (138 -> 140).
+    "read_bypassed_calls": 146,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -1808,12 +1811,15 @@ def main():
                       ("PGA", "SPK"), ("OUTPUT", "SPK_OUT"),
                       ("PGA", "EAR"), ("OUTPUT", "EAR_OUT"),
                       # r188: the line outs, the same shape
-                      ("PGA", "LO"), ("OUTPUT", "LO_OUT")],
+                      ("PGA", "LO"), ("OUTPUT", "LO_OUT"),
+                      # r197: capture -- its six stages are macro rows
+                      # (WCD9320_CAP_STAGE), checked in 5u
+                      ("INPUT", "DMIC1"), ("PGA", "CAP"), ("AIF_OUT", "AIF1 CAP")],
           "%s" % w_names)
     check("every widget is SND_SOC_NOPM",
           widgets and all("SND_SOC_NOPM" in a for t, n, a in widgets
-                          if t != "OUTPUT"),
-          "%d widget(s); OUTPUT takes no register argument" % len(widgets))
+                          if t not in ("OUTPUT", "INPUT")),
+          "%d widget(s); OUTPUT and INPUT take no register argument" % len(widgets))
     check("no register-backed widget macro",
           not re.search(r"SND_SOC_DAPM_\w+\([^)]*WCD9320_(?!DS_)", w_body),
           "no WCD9320_* register named in the widget table (WCD9320_DS_* is the stage)")
@@ -1861,7 +1867,11 @@ def main():
                          # r188
                          [("LO", None, "AIF1 PB"), ("LO_OUT", None, "LO")] +
                          [("LO", None, s) for s in ("LO MCLK", "LO PREP", "LO PREREQ",
-                                                    "RX3+RX5 CHAIN", "LO DAC", "LO PA")])
+                                                    "RX3+RX5 CHAIN", "LO DAC", "LO PA")] +
+                         # r197: capture
+                         [("CAP", None, "DMIC1"), ("AIF1 CAP", None, "CAP")] +
+                         [("CAP", None, s) for s in ("CAP MCLK", "CAP PREREQ", "MIC BIAS1",
+                                                     "DMIC1 CLK", "DEC1", "SLIM TX1")])
     check("the routes are exactly the mapped ones", routes == want_routes,
           "%d route(s)" % len(routes))
     comp = array_body("static const struct snd_soc_component_driver wcd9320_soc_component")
@@ -1996,11 +2006,11 @@ def main():
     check("the card exposes the pin switch",
           'SOC_DAPM_PIN_SWITCH("Headphones")' in card, '"Headphones Switch"')
     check("the card disables the pin at init",
-          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*"Lineout",\s*"Loudspeaker",\s*\}',
+          re.search(r'lumia_q6_pins_off\[\]\s*=\s*\{\s*"Headphones",\s*"Speaker",\s*"Earpiece",\s*"Lineout",\s*"Loudspeaker",\s*"Handset Mic",\s*/\* r197 \*/\s*\}',
                     card) is not None
           and "snd_soc_dapm_disable_pin(&card->dapm, lumia_q6_pins_off[i])" in card
           and "card->late_probe = lumia_q6_late_probe;" in card,
-          "r187/r188/r189: every pin, late_probe, before the first sync")
+          "r187/r188/r189/r197: every pin, late_probe, before the first sync")
     check("the card never enables the pin itself",
           "enable_pin" not in card and "force_enable" not in card,
           "only the jack and the operator's control do")
@@ -2656,7 +2666,7 @@ def main():
     check("the amplifier driver registers before the card",
           re.search(r"lumia_q6_drivers\[\]\s*=\s*\{\s*&lumia_i2s_spk_driver,\s*&lumia_q6_driver,\s*\}", card) is not None
           and "module_platform_driver(" not in card, "the card defers until the component exists")
-    check("the card is q6-card-rc11", 'MODULE_VERSION("q6-card-rc11");' in card, "r193")
+    check("the card is q6-card-rc12", 'MODULE_VERSION("q6-card-rc12");' in card, "r197")
 
     DTS = REPO / "pmaports/linux-postmarketos-qcom-msm8974/qcom-msm8974-microsoft-rm940.dts"
     dts = DTS.read_text(errors="replace") if DTS.exists() else ""
@@ -2711,7 +2721,7 @@ def main():
     cko = pathlib.Path(ko).with_name("snd-soc-lumia1520-q6.ko") if ko else None
     if cko is not None and cko.exists():
         cmi = modinfo(str(cko))
-        check("built card is q6-card-rc11", cmi.get("version") == "q6-card-rc11",
+        check("built card is q6-card-rc12", cmi.get("version") == "q6-card-rc12",
               "found %s" % cmi.get("version"))
         ce = Elf(str(cko))
         cs = ce.by_name.get(".modinfo")
@@ -3153,6 +3163,156 @@ def main():
           all(("&dev_attr_%s.attr," % a) in ptext_all and ("static DEVICE_ATTR_RW(%s);" % a) in ptext_all
               for a in ("ear_buck_vref", "ear_clsh_b32", "ear_irq")), "sysfs")
 
+    # ==================================================================
+    # 5u. r197: CAPTURE -- DMIC1 -> DEC1 -> SLIM TX1 -> SLIMBUS_0_TX.
+    #
+    # docs/audio/wcd9320-mic-mapping.md, sections 6-10.
+    #   1. six stages of its own (macro rows, subsequence = stage), one
+    #      event: refusal before anything, stage 0 needs an idle codec,
+    #      a failure unwinds capture
+    #   2. the stage calls: the proven MCLK and prereq, four new ones
+    #   3. the mapped values: LDO_H 3.0 V, CFILT1 k 24 (1.8 V), MICBIAS1 on
+    #      CFILT1, DMIC DIV_4, DEC1 from DMIC1 with downstream's sequence,
+    #      SLIM TX1 = DEC1; every field measured first, restored masked in
+    #      reverse; the reset pulse outside the tables
+    #   4. the TX DAI: TX port 0 (0x50 / 0x100 / 0x101), bitmap before the
+    #      config and the reverse at teardown; CAPTURE on channel 128, mono
+    #   5. DT and card: the AFE TX DAI, the MM2 TX front end, two codec
+    #      DAIs, the capture links; the mono fixup, the TX channel map, the
+    #      Handset Mic pin
+    # ==================================================================
+    print()
+    print("=== 5u. the r197 capture fence ===")
+    cap_rows = re.findall(r'WCD9320_CAP_STAGE\(\s*"([^"]+)"\s*,\s*(WCD9320_CAP_\w+)\s*\)', w_body)
+    check("capture: six stage rows, in stage order",
+          cap_rows == [("CAP MCLK", "WCD9320_CAP_MCLK"), ("CAP PREREQ", "WCD9320_CAP_PREREQ"),
+                       ("MIC BIAS1", "WCD9320_CAP_MB"), ("DMIC1 CLK", "WCD9320_CAP_DMIC"),
+                       ("DEC1", "WCD9320_CAP_DEC"), ("SLIM TX1", "WCD9320_CAP_SB")],
+          "%s" % cap_rows)
+    check("capture: the stage macro is a NOPM supply, subsequence = stage, PRE_PMU|POST_PMD",
+          "#define WCD9320_CAP_STAGE(wname, stage) \\\n\tSND_SOC_DAPM_SUPPLY_S(wname, stage, SND_SOC_NOPM, stage, 0, \\\n\t\t\t      wcd9320_cap_event, \\\n\t\t\t      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD)" in ptext_all,
+          "the same shape as the output stages")
+    check("capture: the AIF is fed by the TX DAI's stream",
+          re.search(r'SND_SOC_DAPM_AIF_OUT\(\s*"AIF1 CAP"\s*,\s*"WCD9320 SLIM TX1 Capture"', w_body) is not None,
+          "sname = the capture stream_name")
+    ce_ = func_body("wcd9320_cap_event")
+    i_on = ce_.find("ret = wcd9320_cap_stage_call(wcd, stage, true);")
+    check("capture event: refusal, then the idle check, then the stage, under c3_lock",
+          0 <= ce_.find("mutex_lock(&wcd->c3_lock);") < ce_.find("if (wcd->dapm_held_cap != below) {")
+          < ce_.find("if (stage == WCD9320_CAP_MCLK && !wcd9320_dapm_idle(wcd)) {") < i_on
+          and ce_.count("mutex_unlock(&wcd->c3_lock);") == 1, "one path at a time")
+    check("capture event: a failed stage unwinds capture",
+          0 <= i_on < ce_.find("wcd9320_cap_unwind(wcd);") and "wcd->cap_failures++;" in ce_,
+          "nothing left half up")
+    cs_ = func_body("wcd9320_cap_stage_call")
+    check("capture stages: the proven MCLK and prereq, and the four new ones",
+          all(c in cs_ for c in ("on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd)",
+                                 "return wcd9320_cdc_clk_prereq(wcd, on);",
+                                 "return wcd9320_cap_mb(wcd, on);", "return wcd9320_cap_dmic_clk(wcd, on);",
+                                 "return wcd9320_cap_dec(wcd, on);", "return wcd9320_cap_slim(wcd, on);")),
+          "nothing else")
+    want_tb = {
+        "wcd9320_cap_mb_ldo": ['{ WCD9320_A_LDO_H_MODE_1, 0x0c, 0x0c,', '{ WCD9320_A_LDO_H_MODE_1, 0x80, 0x80,'],
+        "wcd9320_cap_mb_bias": ['{ WCD9320_A_MICB_CFILT_1_VAL, 0xfc, 24 << 2,', '{ WCD9320_A_MICB_1_CTL, 0x60, 0x00,',
+                                '{ WCD9320_A_MICB_CFILT_1_CTL, 0x80, 0x80,', '{ WCD9320_A_MICB_1_CTL, 0x80, 0x80,'],
+        "wcd9320_cap_dmic": ['{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x0e, 0x04,', '{ WCD9320_A_CDC_TX1_DMIC_CTL, 0x07, 0x02,',
+                             '{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x01, 0x01,'],
+        "wcd9320_cap_dec_pre": ['{ WCD9320_CDC_CLK_OTHR_CTL, 0x04, 0x04,', '{ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03, 0x01,',
+                                '{ WCD9320_A_CDC_TX1_MUX_CTL, 0x01, 0x01,', '{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x01,'],
+        "wcd9320_cap_dec_post": ['{ WCD9320_A_CDC_TX1_MUX_CTL, 0x30, 0x10,', '{ WCD9320_A_CDC_TX1_MUX_CTL, 0x08, 0x00,',
+                                 '{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, 0x01, 0x01,', '{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x00,'],
+        "wcd9320_cap_sb": ['{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL, 0x0f, 0x08,'],
+    }
+    for nm, rows in want_tb.items():
+        tb = array_body("static const struct wcd9320_cap_w %s[]" % nm)
+        pos = [tb.find(r) for r in rows]
+        check("capture table %s: the mapped writes, in order" % nm,
+              all(p >= 0 for p in pos) and pos == sorted(pos) and tb.count("{ WCD9320") == len(rows),
+              "%d row(s)" % tb.count("{ WCD9320"))
+    defs = {"WCD9320_A_MICB_1_CTL": "0x12b", "WCD9320_A_CDC_TX1_VOL_CTL_GAIN": "0x221",
+            "WCD9320_A_CDC_TX1_VOL_CTL_CFG": "0x222", "WCD9320_A_CDC_TX1_MUX_CTL": "0x223",
+            "WCD9320_A_CDC_TX1_DMIC_CTL": "0x225", "WCD9320_A_CDC_CLK_TX_RESET_B1_CTL": "0x302",
+            "WCD9320_A_CDC_CLK_DMIC_B1_CTL": "0x304", "WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL": "0x30a",
+            "WCD9320_A_CDC_CONN_TX_B1_CTL": "0x393", "WCD9320_A_CDC_CONN_TX_SB_B1_CTL": "0x3a3",
+            "WCD9320_SLIM_TX1_CH": "128", "WCD9320_TX_PORT_DMIC": "0"}
+    bad = [k for k, v in defs.items()
+           if re.findall(r"^#define\s+%s\s+(\S+)" % re.escape(k), ptext_all, re.M) != [v]]
+    check("capture register and channel definitions", not bad, "wrong: %s" % bad if bad else "12 defines")
+    ap = func_body("wcd9320_cap_apply")
+    check("capture: every field measured before it is written, counted after it lands",
+          0 <= ap.find("ret = wcd9320_cap_read(wcd, tb[i].reg, &wcd->cap_base[stage][slot]);")
+          < ap.find("ret = wcd9320_c2b_write(wcd, tb[i].reg, tb[i].mask, tb[i].val,")
+          < ap.find("wcd->cap_done[stage]++;"), "the inverse is exact")
+    rs = func_body("wcd9320_cap_restore")
+    check("capture: restored in reverse, masked to the measured value",
+          "slot = --wcd->cap_done[stage];" in rs and "wcd->cap_base[stage][slot] & w->mask," in rs,
+          "every field it wrote")
+    mb = func_body("wcd9320_cap_mb")
+    check("mic bias: LDO_H first, its 1 ms settle, then the bias, then 20 ms",
+          0 <= mb.find("wcd9320_cap_mb_ldo,") < mb.find("usleep_range(WCD9320_CAP_LDOH_SETTLE_US,")
+          < mb.find("wcd9320_cap_mb_bias,") < mb.find("msleep(WCD9320_CAP_MICB_SETTLE_MS);")
+          and "#define WCD9320_CAP_MICB_SETTLE_MS\t\t20" in ptext_all, "taiko_codec_enable_micbias")
+    dc = func_body("wcd9320_cap_dec")
+    check("DEC1: mute, the reset pulse (outside the tables), HPF and clock, unmute, gain rewrite",
+          0 <= dc.find("wcd9320_cap_dec_pre,") < dc.find('0x01, 0x01, "DEC1 reset asserted"')
+          < dc.find('0x01, 0x00, "DEC1 reset released"') < dc.find("wcd9320_cap_dec_post,")
+          < dc.find('gain, "DEC1 gain rewritten (latches)"'), "taiko_codec_enable_dec")
+    check("capture: one baseline read site, noinline",
+          "static noinline int wcd9320_cap_read(struct wcd9320 *wcd, unsigned int reg," in ptext_all,
+          "the pin stays exact")
+    tp = func_body("wcd9320_tx_port_program")
+    i_en = tp.find("if (enable) {")
+    i_dis = tp.find("} else {", i_en)
+    check("TX port 0: the bitmap, then the config byte; the reverse at teardown",
+          0 <= i_en < tp.find("WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x01);") < tp.find(
+              "WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),\n\t\t\t\t\t   WCD9320_PORT_CFG_ENABLED);") < i_dis
+          and i_dis < tp.find("WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),\n\t\t\t     WCD9320_PORT_CFG_DISABLED);")
+          < tp.find("WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x00);"),
+          "as the RX ports are")
+    check("TX port registers: config 0x50 + p, bitmap 0x100 + 4p and 0x101 + 4p",
+          "#define WCD9320_IFD_TX_CFG(port)\t(0x050 + (port))" in ptext_all
+          and "#define WCD9320_IFD_TX_CH0(port)\t(0x100 + 4 * (port))" in ptext_all
+          and "#define WCD9320_IFD_TX_CH1(port)\t(0x101 + 4 * (port))" in ptext_all, "mainline wcd9335.h")
+    th = func_body("wcd9320_tx_hw_params")
+    check("TX stream: mono only, CAPTURE, port 0, channel 128, its own runtime",
+          "if (params_channels(params) != 1)" in th and "wcd->tx_sconfig.direction = SNDRV_PCM_STREAM_CAPTURE;" in th
+          and "wcd->tx_sconfig.port_mask = BIT(WCD9320_TX_PORT_DMIC);" in th
+          and "wcd->tx_chs[0] = WCD9320_SLIM_TX1_CH;" in th and "wcd->sconfig" not in th, "never the RX runtime")
+    gm = func_body("wcd9320_tx_get_channel_map")
+    check("TX channel map: transmit slot 128, nothing received",
+          "tx_slot[0] = WCD9320_SLIM_TX1_CH;" in gm and "*tx_num = 1;" in gm and "*rx_num = 0;" in gm,
+          "the codec owns its channel")
+    check("the TX DAI: id 1, mono capture, its ops",
+          '.name = "wcd9320-slim-tx1",\n+\t\t.id = 1,' in PATCH.read_text(errors="replace")
+          and ".ops = &wcd9320_tx_dai_ops," in ptext_all, "SLIM TX1")
+    check("capture_state is in the attribute group",
+          "&dev_attr_capture_state.attr," in ptext_all and "static DEVICE_ATTR_RO(capture_state);" in ptext_all,
+          "the runner's state source")
+    check("DT: the SLIMBUS_0_TX AFE DAI and the MULTIMEDIA2 TX front end",
+          re.search(r"dai@3 \{\s*reg = <SLIMBUS_0_TX>;", dts) is not None
+          and re.search(r"dai@1 \{\s*reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;\s*direction = <Q6ASM_DAI_TX>;", dts) is not None,
+          "q6afedai, q6asmdai")
+    check("DT: two codec DAIs; playback names 0, capture names 1",
+          re.search(r"wcd9320: codec@1,0 \{.*?#sound-dai-cells = <1>;", dts, re.S) is not None
+          and "sound-dai = <&wcd9320 0>;" in dts and "sound-dai = <&wcd9320 1>;" in dts
+          and "sound-dai = <&wcd9320>;" not in dts, "args_count 1")
+    check("DT: the capture links",
+          re.search(r'mm2-dai-link \{\s*link-name = "MultiMedia2 Capture";\s*cpu \{\s*sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;', dts) is not None
+          and re.search(r'slim-tx-dai-link \{\s*link-name = "SLIM Capture";\s*cpu \{\s*sound-dai = <&q6afedai SLIMBUS_0_TX>;\s*\};\s*platform \{\s*sound-dai = <&q6routing>;\s*\};\s*codec \{\s*sound-dai = <&wcd9320 1>;', dts) is not None,
+          "FE and BE")
+    check("card: the capture back end is mono, 48 kHz, S16",
+          "link->id == SLIMBUS_0_TX ?\n\t\t\t\tlumia_q6_tx_hw_params_fixup :" in card
+          and "channels->min = channels->max = 1;" in func_body("lumia_q6_tx_hw_params_fixup", card),
+          "SLIM TX1 is mono")
+    check("card: on capture the codec's TX slots go to the AFE",
+          "ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt, tx_ch,\n\t\t\t\t\t\t  0, NULL);" in func_body("lumia_q6_be_tx_hw_params", card)
+          and "return lumia_q6_be_tx_hw_params(rtd, params);" in func_body("lumia_q6_be_hw_params", card),
+          "the codec owns its channel numbers")
+    check("card: the Handset Mic pin on DMIC1, with its switch",
+          'SND_SOC_DAPM_MIC("Handset Mic", NULL),' in card
+          and re.search(r'\{\s*"DMIC1"\s*,\s*NULL\s*,\s*"Handset Mic"\s*\}', card) is not None
+          and 'SOC_DAPM_PIN_SWITCH("Handset Mic"),' in card, "OFF at init (pins_off)")
+
     if args.expect_asoc:
         print()
         print("=== 5b. the ASoC component ===")
@@ -3190,8 +3350,10 @@ def main():
             # check() prints its detail on pass and fail alike, so the detail
             # states a fact rather than explaining a failure -- a PASS line
             # reading "found a .capture member" would be actively misleading.
-            check("no capture stream (no TX DAI)", ".capture" not in body,
-                  "playback only")
+            # r197: exactly one capture stream, the TX DAI's
+            check("one capture stream (the TX DAI)",
+                  body.count(".capture") == 1 and '"WCD9320 SLIM TX1 Capture"' in body,
+                  "SLIM TX1, mono")
             check("DAI registered with ARRAY_SIZE(wcd9320_dais)",
                   "ARRAY_SIZE(wcd9320_dais)" in ptext)
 

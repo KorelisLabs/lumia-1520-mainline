@@ -72,8 +72,8 @@ diff -uprN orig/sound/soc/qcom/Makefile new/sound/soc/qcom/Makefile
 +obj-$(CONFIG_SND_SOC_LUMIA1520_Q6) += snd-soc-lumia1520-q6.o
 diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 --- orig/sound/soc/qcom/lumia1520-q6.c	1969-12-31 19:00:00.000000000 -0500
-+++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-11 18:58:10.795627577 -0500
-@@ -0,0 +1,1291 @@
++++ new/sound/soc/qcom/lumia1520-q6.c	2026-11-13 15:56:35.834427939 -0500
+@@ -0,0 +1,1367 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Lumia RM-940 QDSP6 sound card -- Branch A, build 2 of 2.
@@ -196,6 +196,72 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	return 0;
 +}
 +
++/*
++ * r197: the capture back end (SLIMBUS_0_TX) is mono -- the codec's SLIM TX1
++ * carries DMIC1 alone. 48 kHz S16 first; 24-bit (Windows' format) after.
++ */
++static int lumia_q6_tx_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
++				       struct snd_pcm_hw_params *params)
++{
++	struct snd_interval *rate =
++		hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
++	struct snd_interval *channels =
++		hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
++
++	rate->min = rate->max = 48000;
++	channels->min = channels->max = 1;
++	snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
++			    SNDRV_PCM_FORMAT_S16_LE);
++
++	return 0;
++}
++
++/*
++ * r197: on capture, the same ownership model in the other direction -- the
++ * codec reports its TX slots, this hands them to the AFE.
++ */
++static int lumia_q6_be_tx_hw_params(struct snd_soc_pcm_runtime *rtd,
++				    struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *codec_dai;
++	unsigned int rx_ch[LUMIA_MAX_SLIM_CH], tx_ch[LUMIA_MAX_SLIM_CH];
++	unsigned int rx_ch_cnt = 0, tx_ch_cnt = 0;
++	int ret, i;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai) {
++		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
++						  &rx_ch_cnt, rx_ch);
++		if (ret == -ENOTSUPP)
++			continue;
++		if (ret) {
++			dev_err(rtd->card->dev,
++				"codec %s would not report its capture channel map: %d\n",
++				codec_dai->name, ret);
++			return ret;
++		}
++		if (!tx_ch_cnt || tx_ch_cnt > LUMIA_MAX_SLIM_CH) {
++			dev_err(rtd->card->dev,
++				"codec %s reported %u transmit channels\n",
++				codec_dai->name, tx_ch_cnt);
++			return -EINVAL;
++		}
++		ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt, tx_ch,
++						  0, NULL);
++		if (ret && ret != -ENOTSUPP) {
++			dev_err(rtd->card->dev,
++				"failed to set the AFE transmit channel map: %d\n",
++				ret);
++			return ret;
++		}
++		dev_info(rtd->card->dev,
++			 "BE hw_params (capture): cpu=%s codec=%s rate=%u ch=%u tx ch_map=%u ch from %u (reported by the codec)\n",
++			 cpu_dai->name, codec_dai->name, params_rate(params),
++			 params_channels(params), tx_ch_cnt, tx_ch[0]);
++	}
++	return 0;
++}
++
 +static int lumia_q6_be_hw_params(struct snd_pcm_substream *substream,
 +				 struct snd_pcm_hw_params *params)
 +{
@@ -206,6 +272,9 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	unsigned int rx_ch_cnt = 0, tx_ch_cnt = 0;
 +	int ret, i;
 +
++	/* r197: capture has its own branch; playback below is unchanged */
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		return lumia_q6_be_tx_hw_params(rtd, params);
 +	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
 +		return 0;
 +
@@ -709,7 +778,9 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +	for_each_card_prelinks(card, i, link) {
 +		if (link->no_pcm) {
-+			link->be_hw_params_fixup = lumia_q6_be_hw_params_fixup;
++			link->be_hw_params_fixup = link->id == SLIMBUS_0_TX ?
++				lumia_q6_tx_hw_params_fixup :	/* r197: mono */
++				lumia_q6_be_hw_params_fixup;
 +			if (link->id == SECONDARY_MI2S_RX) {
 +				/* r189: the loudspeaker's own ops */
 +				link->init = lumia_q6_mi2s_init;
@@ -788,6 +859,8 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	SND_SOC_DAPM_SPK("Earpiece", NULL),
 +	SND_SOC_DAPM_LINE("Lineout", NULL),
 +	SND_SOC_DAPM_SPK("Loudspeaker", NULL),
++	/* r197: the call mic, DMIC1, OFF at init -- capture powers nothing until it is on */
++	SND_SOC_DAPM_MIC("Handset Mic", NULL),
 +};
 +
 +static const struct snd_soc_dapm_route lumia_q6_routes[] = {
@@ -796,6 +869,7 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	{ "Earpiece", NULL, "EAR_OUT" },
 +	{ "Lineout", NULL, "LO_OUT" },
 +	{ "Loudspeaker", NULL, "I2S_SPK_OUT" },
++	{ "DMIC1", NULL, "Handset Mic" },	/* r197 */
 +};
 +
 +static const struct snd_kcontrol_new lumia_q6_controls[] = {
@@ -804,10 +878,12 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +	SOC_DAPM_PIN_SWITCH("Earpiece"),
 +	SOC_DAPM_PIN_SWITCH("Lineout"),
 +	SOC_DAPM_PIN_SWITCH("Loudspeaker"),
++	SOC_DAPM_PIN_SWITCH("Handset Mic"),	/* r197 */
 +};
 +
 +static const char * const lumia_q6_pins_off[] = {
 +	"Headphones", "Speaker", "Earpiece", "Lineout", "Loudspeaker",
++	"Handset Mic",	/* r197 */
 +};
 +
 +static struct snd_soc_jack lumia_q6_jack;
@@ -1364,4 +1440,4 @@ diff -uprN orig/sound/soc/qcom/lumia1520-q6.c new/sound/soc/qcom/lumia1520-q6.c
 +
 +MODULE_DESCRIPTION("Nokia Lumia 1520 QDSP6 sound card (WCD9320 over SLIMbus, I2S loudspeaker on Secondary MI2S)");
 +MODULE_LICENSE("GPL v2");
-+MODULE_VERSION("q6-card-rc11");
++MODULE_VERSION("q6-card-rc12");

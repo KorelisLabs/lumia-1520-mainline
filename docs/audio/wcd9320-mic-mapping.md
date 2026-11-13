@@ -216,3 +216,67 @@ does for RX.
 1. Whether 24-bit capture needs anything on the codec side. The SLIMbus word length is set by the stream config. The DSP side is 24-bit capable.
 2. The TX digital gain default (`TXn_VOL_CTL_GAIN`), and a sensible starting level.
 3. The headset mic, device 0x08, in the headset batch.
+
+## 12. r197 (`capdmic-rc1`, card `q6-card-rc12`, pkgrel 197): staged 2026-11-13
+
+**Codec (C1):**
+- **A capture path of its own.** It has six DAPM supply stages:
+  1. cap MCLK, the proven `mclk_get` / `mclk_put`;
+  2. cap prereq, the proven `cdc_clk_prereq`;
+  3. MIC BIAS1, which turns LDO_H on at 3.0 V, then a 1 ms settle, then CFILT1 at k = 24 (1.8 V), the bias on CFILT1 and the bias on, then a 20 ms settle;
+  4. the DMIC1/2 clock at DIV_4 (2.4 MHz), with DEC1's DMIC rate set to DIV_4;
+  5. DEC1: CDC_CONN, the input set to DMIC1, the DMIC select, mute, a reset pulse, the HPF at 150 Hz and on, the TX clock, unmute, and the gain rewritten;
+  6. SLIM TX1 = DEC1.
+
+  Every field is measured first and restored masked in reverse at teardown. The reset pulse sits outside the tables.
+- **The event.** Capture has its own held mask and event function. Its stage 0 requires an idle codec. While capture holds MCLK and the prereq, every output's stage 0 refuses. That keeps the rule of one path at a time, with capture included, and leaves the proven output code untouched. A failed stage unwinds capture.
+- **The TX DAI.** AIF1 CAP, "WCD9320 SLIM TX1 Capture", is mono:
+  - `hw_params` programs TX port 0 in the interface device: the bitmap 0x100 = 01, then the config 0x50. The reverse happens at `hw_free`.
+  - The SLIMbus runtime is its own, CAPTURE on channel 128.
+  - `get_channel_map` reports TX slot 128.
+- **Evidence:** `capture_state` (the stages, the TX port and stream, and 13 registers live from the chip).
+
+**DT and card (C2):**
+- the AFE `SLIMBUS_0_TX` DAI (id 3) and the `MULTIMEDIA2` TX front end;
+- the codec's `#sound-dai-cells` is now `<1>`, with playback as `<&wcd9320 0>` and capture as `<&wcd9320 1>`;
+- the links "MultiMedia2 Capture" and "SLIM Capture";
+- the card fixes the capture back end at mono, 48 kHz, S16, and relays the TX slots to q6afe;
+- a **"Handset Mic"** pin on DMIC1 is OFF at init, like every output pin.
+
+**The route to record:**
+- "MultiMedia2 Mixer SLIMBUS_0_TX" = 1;
+- "Handset Mic Switch" = 1;
+- open the capture PCM (`/dev/snd/pcmC0D*c`).
+
+**Tools:**
+- **`pcm-capture.c`:** raw ioctls, a static musl build, a WAV out, and the stats printed.
+- **`build-pcm-capture.sh`:** builds it in the armv7 buildroot.
+- **`wcd9320-capture.sh`:**
+  - preflight: the versions, every output idle, capture idle, and the pin and mixer off;
+  - the run: the mixer and pin on, record, the pin and mixer off;
+  - 41 checks: every mapped field live, and every register back as found after.
+- **The card version** in the runners is now rc12.
+
+**Verification:**
+- **Compile:** `W=1` is clean for the codec and the card, and the DT compiles through cpp and dtc.
+- **Pin:** `read_bypassed_calls` is 146, from +2 measured in the compile-check tree (138 → 140).
+- **Fence 5u** has 30 checks. The widget, route, NOPM and pins-off fences and the capture-stream check were updated.
+- **Results:** 726 checks pass. The only 3 failures are against the old r196 build: its version, its pin and its card version.
+- **Mutation test:** 21/21.
+- **Selftest:** 131/0.
+
+**Build:** both commands, `--expect-dais 2` now:
+```
+tools/build-wcd9320-kernel.sh --pkgrel 197 --version capdmic-rc1 \
+    --expect-asoc --expect-dais 2 --stage ~/r197 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+tools/build-pcm-capture.sh --stage ~/r197
+```
+
+**Test plan, after the gates:**
+1. **A silent capture, 5 s:** the noise floor and the path proof.
+2. **A 1 kHz tone from the PC speaker** (`c3a-capture.py play`) at a fixed distance, 5 s, analysed on the PC.
+
+Each run needs one chat go. Nothing on the phone drives a transducer.

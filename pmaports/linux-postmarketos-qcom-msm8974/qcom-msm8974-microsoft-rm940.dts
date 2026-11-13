@@ -515,6 +515,11 @@
 						reg = <SLIMBUS_0_RX>;
 					};
 
+					/* r197: capture -- the codec's SLIM TX1 (TX port 0, channel 128) */
+					dai@3 {
+						reg = <SLIMBUS_0_TX>;
+					};
+
 					/*
 					 * r189: AFE port 0x1002, the loudspeaker.
 					 * ONE data line per boot: mainline falls back
@@ -554,6 +559,12 @@
 					dai@0 {
 						reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
 						direction = <Q6ASM_DAI_RX>;
+					};
+
+					/* r197: the capture front end */
+					dai@1 {
+						reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+						direction = <Q6ASM_DAI_TX>;
 					};
 				};
 			};
@@ -734,8 +745,11 @@
 				 * component->dev->of_node. A phandle to the
 				 * interface function would find no component
 				 * and return -EPROBE_DEFER forever.
+				 *
+				 * r197: two DAIs now -- 0 is SLIM RX1 playback,
+				 * 1 is SLIM TX1 capture.
 				 */
-				#sound-dai-cells = <0>;
+				#sound-dai-cells = <1>;
 
 				/* downstream: qcom,cdc-reset-gpio = <&msmgpio 63 0>,
 				 * driven low 20 ms then high 20 ms -- active low. */
@@ -889,10 +903,9 @@
 		 * qcom_snd_parse_of() to mark it no_pcm; the platform is the routing
 		 * component, which is how the FE reaches this BE at all.
 		 *
-		 * The codec phandle carries no argument because the WCD9320 node
-		 * declares #sound-dai-cells = <0> and its component registers exactly
-		 * one DAI -- snd_soc_get_dlc() maps args_count 0 to index 0, which is
-		 * unambiguous by construction. It must point at codec@1,0 (the control
+		 * r197: the codec phandle carries index 0 -- the WCD9320 node now
+		 * declares #sound-dai-cells = <1> and registers two DAIs, SLIM RX1
+		 * playback (0) and SLIM TX1 capture (1). It must point at codec@1,0 (the control
 		 * function), because that is the device the ASoC component is
 		 * registered against.
 		 *
@@ -913,7 +926,7 @@
 			};
 
 			codec {
-				sound-dai = <&wcd9320>;
+				sound-dai = <&wcd9320 0>;
 			};
 		};
 
@@ -936,6 +949,35 @@
 
 			codec {
 				sound-dai = <&i2s_spk>;
+			};
+		};
+
+		/*
+		 * r197: CAPTURE. The front end, then DMIC1 -> DEC1 -> SLIM TX1 ->
+		 * SLIMBUS_0_TX, reached through "MultiMedia2 Mixer SLIMBUS_0_TX". The
+		 * card's "Handset Mic" pin starts OFF.
+		 */
+		mm2-dai-link {
+			link-name = "MultiMedia2 Capture";
+
+			cpu {
+				sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+			};
+		};
+
+		slim-tx-dai-link {
+			link-name = "SLIM Capture";
+
+			cpu {
+				sound-dai = <&q6afedai SLIMBUS_0_TX>;
+			};
+
+			platform {
+				sound-dai = <&q6routing>;
+			};
+
+			codec {
+				sound-dai = <&wcd9320 1>;
 			};
 		};
 	};
