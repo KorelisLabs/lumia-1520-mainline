@@ -161,16 +161,58 @@ For one microphone (DMIC1, the call mic), in DAPM order:
 5. **The SLIMbus TX port:** `CDC_CONN_TX_SB_B1` = 8 routes DEC1 to SLIM TX1. Windows writes the same mux values 1–8 and 1–0x11.
 6. **The capture interface:** AIF1 CAP, on codec TX ports 0–15. `taiko_tx_chs` maps TX port n to channel n; the RX ports start at 16.
 
-## 8. Still to map
+## 8. The SLIMbus TX side (mapped from mainline WCD9335)
 
-1. **Our SLIMbus side:** TX ports and channels. The stream code covers RX only; TX port 0 to the ADSP's SLIMBUS_0_TX is the first target.
-2. **QDSP6:** the AFE `SLIMBUS_0_TX` port, ASM capture, and the card's capture link and routing.
-3. **The decimator details still worth checking:** the `TXn_VOL_CTL_GAIN` default, the TX path HPF settle, and whether 24-bit needs anything codec-side (the SLIMbus word length).
-4. **The headset mic,** device 0x08, in the headset batch.
+Mainline's `wcd9335.c` and `wcd9335.h` drive the same SLIMbus "PGD"
+interface-device layout our RX code already uses. That code programs
+`PORT_CFG(16)` at 0x40 and the multi-channel register at 0x180, which is
+0x140 + 4·16.
 
-## 9. Proposed build order (not started)
+| | RX (ours, proven) | TX (to build) |
+|---|---|---|
+| port config | `0x30 + port` (port 16 → 0x40) | **`0x50 + port`** (TX port 0 → 0x50) |
+| channel bitmap | `0x140 + 4·port` | **`0x100 + 4·port`**, plus `0x101 + 4·port` for TX ports 8 and 9 |
+| SLIMbus channel | 144 + n (we use 144/145) | **128 + n**: DMIC1 on TX port 0 → channel 128 |
+| slim stream | direction PLAYBACK, port mask BIT(16) | direction **CAPTURE**, port mask BIT(0) |
+| port interrupts | `PORT_INT_*_RX_0/1` | `PORT_INT_*_TX_0/1`, already counted in our IFD snapshot |
 
-- **C1 (codec):** MICBIAS1 at 1.8 V, the DMIC1 clock at 2.4 MHz, decimator 1 from DMIC1, and SLIM TX1 from DEC1. These go in as DAPM stages under the same verified-write discipline as the outputs, with a `capture_state` sysfs attribute.
-- **C2 (SLIMbus):** TX port 0 on the slave and its channel, mirroring the RX stream code.
-- **C3 (card and Q6):** a capture DAI link (SLIMBUS_0_TX to AIF1 CAP), with the MultiMedia1 capture route.
-- **Test:** the PC plays a 1 kHz tone at a fixed level near the phone while it records 48 kHz audio; the analyser checks the tone's level and the noise floor. A silent capture first gives the floor. Approval gates as for playback; capture itself drives nothing audible.
+The codec answers `get_channel_map` with `tx_slot[] = { 128 }` for its
+capture DAI. The card hands that to q6afe's `set_channel_map`, as it already
+does for RX.
+
+## 9. The DSP side
+
+- **q6afe** already supports `SLIMBUS_0_TX`: the q6slim ops, the DAPM route `SLIMBUS_0_TX` ← "Slimbus Capture", and `set_channel_map` for TX slots. Our DT declares only `dai@2 = SLIMBUS_0_RX`, so it needs a `SLIMBUS_0_TX` child.
+- **q6asm** declares only `MULTIMEDIA1` with `direction = Q6ASM_DAI_RX`. Capture needs a second front end, for example `MULTIMEDIA2` with `direction = Q6ASM_DAI_TX`.
+- **q6routing** connects them with the UL mixer, "MultiMedia2 Mixer" / `SLIMBUS_0_TX`, the capture twin of "SLIMBUS_0_RX Audio Mixer MultiMedia1".
+- **The codec** has a single DAI today, with `#sound-dai-cells = <0>`. Capture adds AIF1 CAP as a second DAI, so it becomes `<1>`: the playback link names `<&wcd9320 0>` and capture `<&wcd9320 1>`. The artefact gate's `--expect-dais` goes from 1 to 2.
+
+## 10. Build plan (not started)
+
+**C1 (codec, `wcd9320-core.c`):**
+- **The capture DAI:** AIF1 CAP, "WCD9320 SLIM TX1 Capture". Its `hw_params` programs TX port 0 (`0x50`, `0x100` bit 0), and the slim stream runs CAPTURE on channel 128. `get_channel_map` returns TX slot 128.
+- **DAPM stages,** the same verified-write and refusal discipline as the outputs:
+  - the mic bias (LDO_H 3.0 V, CFILT1 1.8 V, `MICB_1_CTL` bit 7, 20 ms settle);
+  - the DMIC1 clock (DIV_4, 2.4 MHz);
+  - DEC1 (fixed to DMIC1, with the downstream enable sequence);
+  - SLIM TX1 = DEC1;
+  - AIF1 CAP.
+- **Evidence:** `capture_state` in sysfs.
+
+**C2 (DT and card):**
+- the `SLIMBUS_0_TX` AFE DAI and the `MULTIMEDIA2` TX front end;
+- the "MultiMedia2 Capture" and "SLIM Capture" links;
+- the card's back-end `hw_params` hands the TX slots to q6afe, and the capture fixup starts mono S16 at 48 kHz, with 24-bit after;
+- the routing control.
+
+**Test:**
+- **A capture tool on the phone,** the capture twin of `pcm-tone`, which writes a WAV.
+- **The silent floor first,** the phone face up and the room quiet.
+- **Then the tone:** the PC plays a 1 kHz tone at a fixed level (`c3a-capture.py play`), and the existing analyser checks it on the PC.
+- **Approval:** nothing on the phone drives a transducer, so the gate is one go per run, rather than the per-stream amplifier gates.
+
+## 11. Still to map
+
+1. Whether 24-bit capture needs anything on the codec side. The SLIMbus word length is set by the stream config. The DSP side is 24-bit capable.
+2. The TX digital gain default (`TXn_VOL_CTL_GAIN`), and a sensible starting level.
+3. The headset mic, device 0x08, in the headset batch.
