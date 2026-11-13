@@ -185,3 +185,31 @@ tools/build-wcd9320-kernel.sh --pkgrel 194 --version earcm-rc1 \
 - one chat "go" per stream: s1 is Windows, s2 is the r187 control.
 
 -30 and -20 dBFS only with "declared".
+
+## 7. r194 result (2026-11-13): `clear` is not enough
+
+Booted `earcm-rc1` / `q6-card-rc11`. The post-boot gates all passed: dapm
+83/0, mclk-own 90/0 and hphl-vm 57/0. Two listen runs followed, each with
+`EAR_CMBUFF=clear,keep`, the mic at the earpiece slot, and one chat go per
+stream.
+
+| run | spec | 0x1be live (clear / keep) | 0x1c5 live | ear_pa, OCP | heard | analyser |
+|---|---|---|---|---|---|---|
+| A | `B:0:84`, -40 dBFS | 04 / 05 | 88 / 88 | 1, none | nothing | 0 events; pattern score at the floor |
+| B | `B:6:84`, -20 dBFS (declared) | 04 / 05 | 88 / 88 | 1, none | nothing | 0 events; pattern score at the floor |
+
+Each runner passed 101/0. Each `clear` stream cleared bit 0 once,
+read it back as 0x04, and restored the 0x05 baseline once. Each `keep`
+stream left the register untouched.
+
+**Verdict.** Clearing `RX_EAR_CMBUFF` bit 0 does not make the earpiece
+audible. Run B repeats r187's silent case (-20 dBFS, full gain) with the
+Windows write, and it is still silent. `RX_EAR_STATUS` reads 0x88 in both
+modes, so the chip's own status does not change with the bit either. The
+hypothesis in section 0 is rejected. The write stays as Windows parity.
+
+**Next candidates, in order:**
+1. **Ordering.** Windows powers DAC1 before class-H; we do it the other way round.
+2. **A full live register snapshot** of the analog block and the RX1 path
+   during an earpiece stream, diffed against a headphone stream. RX1 drives
+   the headphones and they play.
