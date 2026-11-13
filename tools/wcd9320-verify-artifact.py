@@ -171,7 +171,11 @@ EXPECT = {
     # r194: 142 = 139 + 3, the earpiece's RX_EAR_CMBUFF: 1 in wcd9320_ear_dac
     #            (the 0x1be baseline before the clear) and 2 in out_state_show
     #            (0x1be and EAR_STATUS 0x1c5). Measured 142 on the r194 build.
-    "read_bypassed_calls": 142,
+    # r195: 143 = 142 + 1, the live register snapshot's loop in
+    #            wcd9320_snap_take (noinline, so one site whatever the
+    #            inliner does). Measured +1 in the compile-check tree
+    #            (136 -> 137); the build is the arbiter.
+    "read_bypassed_calls": 143,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -1907,8 +1911,11 @@ def main():
           ", ".join("%s%d" % (c.split("(")[0][8:], d_call.count(c)) for c in want_calls))
     all_calls = [c for c in re.findall(r"\b(\w+)\s*\(", d_call)
                  if c not in ("switch", "if", "return", "sizeof")]
+    # r195: plus the read-only register snapshot, wrapped around the EAR and
+    # HPHR PA calls (which stay verbatim above); 5s fences what it does
     check("the dispatcher calls nothing else",
-          sorted(set(all_calls)) == sorted({c.split("(")[0] for c in want_calls}),
+          sorted(set(all_calls)) == sorted({c.split("(")[0] for c in want_calls} | {"wcd9320_snap_after"})
+          and d_call.count("wcd9320_snap_after(") == 2,
           "%s" % sorted(set(all_calls)))
     check("the DAC stage is register-gain mode, DAC powered",
           "wcd9320_hphl_dac_path(wcd, on, true,\n\t\t\t\t\t     WCD9320_GAIN_SRC_REGISTER)" in d_call
@@ -2965,7 +2972,9 @@ def main():
           < eup.find("wcd->ear_cmbuff_base = cur & 0xff;") < eup.find("wcd->ear_cmbuff_cleared = true;")
           < eup.find(clr) < eup.find("wcd->ear_cmbuff_clears++;") < eup.find("wcd->ear_dac_on = true;"),
           "Windows' third DAC1 write")
-    blk = eup[eup.find("if (wcd->ear_cmbuff_clear) {"):eup.find("wcd->ear_dac_on = true;")]
+    # r195: bounded by the clear's counter -- the Windows-order class-H
+    # enable follows it, before dac_on, with an exit of its own (5s)
+    blk = eup[eup.find("if (wcd->ear_cmbuff_clear) {"):eup.find("wcd->ear_cmbuff_clears++;")]
     check("a failed baseline read or clear tears the stage down",
           blk.count("goto teardown;") == 2, "%d exits" % blk.count("goto teardown;"))
     rst = ("if (!wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_CMBUFF, 0xff,\n\t\t\t\t       wcd->ear_cmbuff_base,")
@@ -2994,6 +3003,74 @@ def main():
           "ear_cmbuff_mode=%s ear_cmbuff_cleared=%u ear_cmbuff_clears=%u ear_cmbuff_restores=%u ear_cmbuff_base=%02x cmbuff_0x1be=%02x earstat_0x1c5=%02x" in ptext_all
           and "regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_EAR_STATUS, &est);" in func_body("out_state_show"),
           "the runners' state source")
+
+    # ==================================================================
+    # 5s. r195: the EAR power-up order, and the live register snapshot.
+    #
+    # docs/audio/wcd9320-r194-earpiece-mapping.md, section 7.
+    #   1. ear_order: downstream (default) keeps class-H EAR BEFORE the DAC1
+    #      switch; windows enables it AFTER DAC1 power and the CMBUFF clear,
+    #      before dac_on, with a teardown exit and its own counter; exactly
+    #      one of the two sites runs, by the flag
+    #   2. the switch: downstream|windows only, under c3_lock, refused while
+    #      any earpiece stage is up or a CMBUFF restore is owed
+    #   3. reg_snap: taken only after a SUCCESSFUL PA on, only when armed,
+    #      one-shot (disarms itself), read only (no write in it), noinline
+    #   4. hooked on EAR PA on and HPHR PA on only; PA off never snapshots
+    #   5. the ranges, and the buffer sized to them
+    # ==================================================================
+    print()
+    print("=== 5s. the r195 EAR order and register snapshot fence ===")
+    edac = func_body("wcd9320_ear_dac")
+    eup = edac[:edac.find("teardown:")]
+    ds = "\tif (!wcd->ear_order_windows) {\n\t\tret = wcd9320_clsh_ear(wcd, true);\n\t\tif (ret)\n\t\t\tgoto teardown;\n\t}"
+    ws = "\tif (wcd->ear_order_windows) {\n\t\tret = wcd9320_clsh_ear(wcd, true);\n\t\tif (ret)\n\t\t\tgoto teardown;\n\t\twcd->ear_order_windows_ups++;\n\t}"
+    check("downstream: class-H EAR before the DAC1 switch",
+          0 <= eup.find(ds) < eup.find('"DAC1 switch (bit 5)"'), "r187-r194 order")
+    check("windows: class-H EAR after DAC1 power and the CMBUFF clear, before dac_on",
+          0 <= eup.find('"DAC1 power (bit 6)"') < eup.find("wcd->ear_cmbuff_clears++;")
+          < eup.find(ws) < eup.find("wcd->ear_dac_on = true;"), "qcauddev8974.sys order")
+    check("exactly two class-H EAR enables in the DAC stage, one per order",
+          eup.count("wcd9320_clsh_ear(wcd, true)") == 2 and eup.count(ds) == 1 and eup.count(ws) == 1,
+          "%d enables" % eup.count("wcd9320_clsh_ear(wcd, true)"))
+    check("the default order is downstream, set at probe",
+          "wcd->ear_order_windows = false;" in func_body("wcd9320_probe"), "the proven order unless asked")
+    eos = func_body("ear_order_store")
+    check("ear_order: downstream|windows only, under c3_lock, refused while up or owed",
+          'sysfs_streq(buf, "windows")' in eos and 'sysfs_streq(buf, "downstream")' in eos
+          and "return -EINVAL;" in eos
+          and 0 <= eos.find("mutex_lock(&wcd->c3_lock);") < eos.find(
+              "if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on ||\n\t    wcd->ear_cmbuff_cleared) {")
+          < eos.find("wcd->ear_order_windows = windows;") < eos.find("mutex_unlock(&wcd->c3_lock);"),
+          "a stream never changes order under itself")
+    sa = func_body("wcd9320_snap_after")
+    check("snapshot only after a successful PA on, only when armed",
+          "if (on && !ret && wcd->snap_armed)" in sa and "return ret;" in sa, "the PA's result passes through")
+    st = func_body("wcd9320_snap_take")
+    check("snapshot: one-shot, from the chip, read only",
+          "regmap_read_bypassed(wcd->regmap, r, &v)" in st and "wcd->snap_armed = false;" in st
+          and "regmap_write" not in st and "regmap_update_bits" not in st and "c2b_write" not in st
+          and "k < ARRAY_SIZE(wcd->snap_val)" in st, "it changes nothing on the chip")
+    check("snapshot: noinline, one read_bypassed site",
+          "static noinline void wcd9320_snap_take(struct wcd9320 *wcd, const char *label)" in ptext_all,
+          "the pin stays exact")
+    check("hooked on EAR PA on and HPHR PA on, and nowhere else",
+          ptext_all.count("wcd9320_snap_after(wcd, wcd9320_ear_pa(wcd, on), on, \"ear\")") == 1
+          and ptext_all.count("wcd9320_snap_after(wcd, wcd9320_hphr_pa_path(wcd, on), on, \"hph\")") == 1
+          and ptext_all.count("wcd9320_snap_after(") == 3, "two hooks and the definition")
+    ranges = "\t{ 0x100, 0x11f },\t/* bias, bandgap */\n\t{ 0x180, 0x1ff },\t/* analog RX: buck, NCP, HPH, EAR, LO, SPK */\n\t{ 0x2b0, 0x2ff },\t/* RX1..RX7 digital */\n\t{ 0x300, 0x33f },\t/* CDC clocks, class-H */\n\t{ 0x380, 0x3bf },\t/* CDC_CONN muxes */"
+    check("the snapshot ranges, and the buffer sized to them (368)",
+          ranges in ptext_all and "u16 snap_val[368];" in ptext_all,
+          "0x20 + 0x80 + 0x50 + 0x40 + 0x40")
+    rss = func_body("reg_snap_store")
+    check("reg_snap: arm|disarm only, under c3_lock",
+          'sysfs_streq(buf, "arm")' in rss and 'sysfs_streq(buf, "disarm")' in rss
+          and 0 <= rss.find("mutex_lock(&wcd->c3_lock);") < rss.find("wcd->snap_armed = arm;")
+          < rss.find("mutex_unlock(&wcd->c3_lock);"), "sysfs")
+    check("ear_order and reg_snap are in the attribute group",
+          "&dev_attr_ear_order.attr," in ptext_all and "&dev_attr_reg_snap.attr," in ptext_all
+          and "static DEVICE_ATTR_RW(ear_order);" in ptext_all and "static DEVICE_ATTR_RW(reg_snap);" in ptext_all,
+          "sysfs")
 
     if args.expect_asoc:
         print()

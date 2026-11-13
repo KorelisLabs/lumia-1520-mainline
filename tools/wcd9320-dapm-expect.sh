@@ -246,6 +246,16 @@ ear_cmbuff_list_ok() {	# ear_cmbuff_list_ok <list> -> 0 when every element is cl
 	case "$1" in ,*|*,|*,,*) return 1 ;; esac
 	return 0
 }
+# r195: EAR_ORDER -- a comma list of downstream|windows, one per earpiece
+# stream, the last repeating; picked per stream with ear_cmbuff_for
+ear_order_list_ok() {	# ear_order_list_ok <list> -> 0 when every element is downstream|windows
+	[ -n "$1" ] || return 1
+	for _eo in $(printf '%s' "$1" | tr ',' ' '); do
+		case "$_eo" in downstream|windows) ;; *) return 1 ;; esac
+	done
+	case "$1" in ,*|*,|*,,*) return 1 ;; esac
+	return 0
+}
 ear_cmbuff_for() {	# ear_cmbuff_for <list> <stream n, from 1> -> its mode
 	_ecl=""; _eci=0
 	for _ec in $(printf '%s' "$1" | tr ',' ' '); do

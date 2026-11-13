@@ -213,3 +213,55 @@ hypothesis in section 0 is rejected. The write stays as Windows parity.
 2. **A full live register snapshot** of the analog block and the RX1 path
    during an earpiece stream, diffed against a headphone stream. RX1 drives
    the headphones and they play.
+
+## 8. r195 (`earord-rc1`, pkgrel 195): staged 2026-11-13
+
+Two tools for the next earpiece probe, built so one boot answers both
+questions. The card (`q6-card-rc11`) and the DT are unchanged.
+
+**The order switch, `ear_order`** (`downstream`, the default, or `windows`):
+- **`downstream`** keeps r187–r194's order: class-H EAR PRE_DAC, then DAC1's switch and power, then the CMBUFF clear.
+- **`windows`** follows `qcauddev8974.sys`: DAC1's switch and power and the CMBUFF clear first, *then* class-H EAR, before `dac_on`. It has its own teardown exit and counts `windows_ups`.
+- **Teardown is the same for both.** The PA stage already drops class-H before DAC1 goes off, which is Windows' off order.
+- The switch is refused under `c3_lock` while any earpiece stage is up or a CMBUFF restore is owed.
+
+**The live register snapshot, `reg_snap`** (`arm` / `disarm`):
+- **When:** once armed, it is taken exactly once, from the chip (`regmap_read_bypassed`), right after the next successful EAR PA on or HPHR PA on (the last stage of each path). It runs inside the DAPM event under `c3_lock`, so it cannot race the 1 s tone.
+- **What it covers:** 368 registers.
+  - `0x100–0x11f` bias
+  - `0x180–0x1ff` analog RX
+  - `0x2b0–0x2ff` RX1..RX7 digital
+  - `0x300–0x33f` clocks and class-H
+  - `0x380–0x3bf` CDC_CONN muxes
+- **It writes nothing.** When unarmed, the proven paths are unchanged. `wcd9320_snap_take` is `noinline`, so it is one call site whatever the inliner does.
+- **The dispatcher still calls** `ear_pa(wcd, on)` and `hphr_pa_path(wcd, on)` verbatim; the snapshot wraps them.
+
+**Verifier:**
+- **Fence 5s** has 12 checks. 5r's exit count is now bounded to the CMBUFF block.
+- **Pin:** `read_bypassed_calls` is 143, from +1 measured in the compile-check tree (136 → 137).
+- **Results:** 686 checks pass. The only 2 failures are the old r194 .ko's version and pin.
+- **Mutation test:** 15/15, 12 for 5s and 3 for 5r.
+
+**Compile:** clean at `W=1` in the compile-check tree, with 0 warnings.
+
+**Runner:**
+- **`EAR_ORDER=downstream|windows[,...]`** sets the order per earpiece stream. Each stream's order is written and read back while the path is down. The driver's `windows_ups` counter must move +1 for a `windows` stream and +0 for a `downstream` one. The run ends with the order as it was found.
+- **`SNAP=1`** (hph or ear) arms the snapshot before each stream. After the stream, it saves the snapshot to `/var/log/wcd9320-regsnap-<stamp>-s<n>.txt` and checks that exactly one was taken, at the right PA, then disarmed. Every snapshot is also dumped in the evidence.
+
+**Selftest:** 121/0, adding 6 cases.
+
+**Build:**
+```
+tools/build-wcd9320-kernel.sh --pkgrel 195 --version earord-rc1 \
+    --expect-asoc --expect-dais 1 --stage ~/r195 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+```
+
+**Probe plan, after the gates:**
+1. **Earpiece:** `OUTPUT=ear EAR_ORDER=windows,downstream EAR_CMBUFF=clear SNAP=1 SPECS=B:6:84,B:6:84 DBFS=-20 ESCALATE=declared`. The mic is at the slot, with a chat go per stream.
+   - s1 is full Windows parity.
+   - s2 is the r194 control, with a snapshot of each.
+2. **Headphones, for the diff:** `OUTPUT=hph SNAP=1 SPECS=B:0:84 DBFS=-40`, one stream at minimum gain. Nothing needs to be plugged in, because only its registers are wanted.
+3. **The diff:** EAR (s1, s2) against HPH, over the same RX1. Anything set for HPH but not for EAR, outside the HPH- and EAR-only registers, is the next lead.

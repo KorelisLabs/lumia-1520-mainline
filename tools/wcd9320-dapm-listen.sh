@@ -147,6 +147,26 @@ case "$EAR_CMBUFF:$OUTPUT" in
 	{ echo "INVALID SETUP: EAR_CMBUFF=$EAR_CMBUFF (clear or keep, comma-separated per stream)"; exit 2; } ;;
 *) echo "INVALID SETUP: EAR_CMBUFF=$EAR_CMBUFF with OUTPUT=$OUTPUT (it is for ear)"; exit 2 ;;
 esac
+# r195: EAR_ORDER=downstream|windows[,...] -- the earpiece power-up order per
+# stream, through the codec's ear_order: downstream is class-H EAR then DAC1
+# (r187-r194), windows is DAC1 then class-H (qcauddev8974.sys). Unset: the
+# driver's order is used and recorded.
+EAR_ORDER="${EAR_ORDER:-}"
+case "$EAR_ORDER:$OUTPUT" in
+:*) ;;
+*:ear) ear_order_list_ok "$EAR_ORDER" ||
+	{ echo "INVALID SETUP: EAR_ORDER=$EAR_ORDER (downstream or windows, comma-separated per stream)"; exit 2; } ;;
+*) echo "INVALID SETUP: EAR_ORDER=$EAR_ORDER with OUTPUT=$OUTPUT (it is for ear)"; exit 2 ;;
+esac
+# r195: SNAP=1 -- the codec reads the chip once at each stream's PA on
+# (reg_snap; read only), for the EAR-vs-HPH register diff. hph or ear.
+SNAP="${SNAP:-0}"
+case "$SNAP:$OUTPUT" in
+0:*)   SNAP_LABEL="" ;;
+1:ear) SNAP_LABEL=ear ;;
+1:hph) SNAP_LABEL=hph ;;
+*) echo "INVALID SETUP: SNAP=$SNAP with OUTPUT=$OUTPUT (SNAP=1 is for hph or ear)"; exit 2 ;;
+esac
 case "$HOLD_5V:$OUTPUT" in
 :*|i2s:lo|i2s:ear) ;;
 *) echo "INVALID SETUP: HOLD_5V=$HOLD_5V with OUTPUT=$OUTPUT (HOLD_5V=i2s is for lo or ear)"; exit 2 ;;
@@ -379,6 +399,14 @@ preflight() {
 		[ "$(rv "$OPRE" ear_cmbuff_cleared)" != "1" ] || _bad="$_bad ear-cmbuff-owed"
 		CMPRE=$(rv "$(cat "$PGD/ear_cmbuff" 2>/dev/null)" mode)
 		[ -z "$EAR_CMBUFF" ] || [ -n "$CMPRE" ] || _bad="$_bad no-ear_cmbuff"
+		# r195: the order switch present when asked for; the snapshot present and idle
+		ORPRE=$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" order)
+		[ -z "$EAR_ORDER" ] || [ -n "$ORPRE" ] || _bad="$_bad no-ear_order"
+		if [ "$SNAP" = "1" ]; then
+			_sp=$(head -n1 "$PGD/reg_snap" 2>/dev/null)
+			[ -n "$_sp" ] || _bad="$_bad no-reg_snap"
+			[ "$(rv "$_sp" armed)" != "1" ] || _bad="$_bad reg-snap-armed"
+		fi
 		[ $(( 0x$(rv "$OPRE" spken_0x1df) & 0x80 )) -eq 0 ] || _bad="$_bad spk-en-set"
 		[ "$(rv "$OPRE" lo_pa)" = "0" ] || _bad="$_bad lo-pa-on"
 		[ "$(rv "$OPRE" locnp_0x1ca)" = "00" ] || _bad="$_bad lo-cnp-set"
@@ -473,6 +501,34 @@ stream() {	# stream <n> <spec>
 		keep)  jrn "RX_EAR_CMBUFF: keep (r187: never written)" ;;
 		*)     jrn "RX_EAR_CMBUFF: no switch on this module" ;;
 		esac
+	fi
+
+	# r195: this stream's earpiece order, written while the path is down
+	if [ "$OUTPUT" = "ear" ] && [ -n "$EAR_ORDER" ]; then
+		_eo=$(ear_cmbuff_for "$EAR_ORDER" "$_n")
+		echo "$_eo" > "$PGD/ear_order" 2>/dev/null
+		_eor=$(cat "$PGD/ear_order" 2>/dev/null)
+		if [ "$(rv "$_eor" order)" != "$_eo" ]; then
+			jrn "EAR order did not read back $_eo (got '$_eor') -- abort"
+			dl_abort "ear-order-c$_n"
+			return 1
+		fi
+		eval "S${_n}_ORD=\$_eo; S${_n}_ORU0=$(rv "$_eor" windows_ups)"
+		case "$_eo" in
+		windows)    jrn "EAR ORDER: windows (DAC1 switch + power + CMBUFF, THEN class-H EAR)" ;;
+		downstream) jrn "EAR ORDER: downstream (class-H EAR PRE_DAC, then DAC1)" ;;
+		esac
+	fi
+	# r195: SNAP=1 -- arm the one-shot snapshot for this stream's PA on
+	if [ "$SNAP" = "1" ]; then
+		eval "S${_n}_SNT0=$(rv "$(head -n1 "$PGD/reg_snap" 2>/dev/null)" takes)"
+		echo arm > "$PGD/reg_snap" 2>/dev/null
+		if [ "$(rv "$(head -n1 "$PGD/reg_snap" 2>/dev/null)" armed)" != "1" ]; then
+			jrn "register snapshot did not arm -- abort"
+			dl_abort "reg-snap-c$_n"
+			return 1
+		fi
+		jrn "register snapshot armed: the codec reads the chip once, at this stream's PA on"
 	fi
 
 	jrn "GATE dapm-c$_n: waiting up to $HOLD_GO s for the approval in chat -- Volume Down aborts"
@@ -637,6 +693,18 @@ stream() {	# stream <n> <spec>
 	_p=$(cat "$PGD/hphl_pa_state" 2>/dev/null)
 	eval "S${_n}_DOWN_MS=$((_w * 100)); S${_n}_AFTER=\$_a; S${_n}_PAOFF=\$_p"
 	jrn "after the stream (~$((_w * 100)) ms): $_a | 0x1ab=$(rv "$_p" pa_0x1ab)"
+	# r195: the snapshot and the order counter, read once the path is down
+	if [ "$SNAP" = "1" ]; then
+		_sf="$OUTDIR/wcd9320-regsnap-$STAMP-s$_n.txt"
+		cat "$PGD/reg_snap" > "$_sf" 2>/dev/null
+		_sh=$(head -n1 "$_sf" 2>/dev/null)
+		echo disarm > "$PGD/reg_snap" 2>/dev/null
+		eval "S${_n}_SNH=\$_sh; S${_n}_SNF=\$_sf"
+		jrn "register snapshot: $_sh -> $_sf"
+	fi
+	if [ "$OUTPUT" = "ear" ] && [ -n "$EAR_ORDER" ]; then
+		eval "S${_n}_ORU1=$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" windows_ups)"
+	fi
 
 	pin_set 0 || jrn "pin OFF did not read back"
 	[ -z "$HOLD_5V" ] || ctl_set "Loudspeaker Switch" 0 || jrn "Loudspeaker pin OFF did not read back"
@@ -683,6 +751,8 @@ launch)
 	[ "$RAIL5V" = "auto" ] || CMD="$CMD --setenv=RAIL5V=$RAIL5V"
 	[ "$SPK_GAIN_RAW" = "22" ] || CMD="$CMD --setenv=SPK_GAIN_RAW=$SPK_GAIN_RAW"
 	[ -z "$EAR_CMBUFF" ] || CMD="$CMD --setenv=EAR_CMBUFF=$EAR_CMBUFF"
+	[ -z "$EAR_ORDER" ] || CMD="$CMD --setenv=EAR_ORDER=$EAR_ORDER"
+	[ "$SNAP" = "0" ] || CMD="$CMD --setenv=SNAP=$SNAP"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -764,6 +834,13 @@ if [ -n "$EAR_CMBUFF" ] && [ -n "${CMPRE:-}" ]; then
 	[ "$(rv "$(cat "$PGD/ear_cmbuff" 2>/dev/null)" mode)" = "$CMPRE" ] &&
 		jrn "RX_EAR_CMBUFF mode restored to $CMPRE" || jrn "RX_EAR_CMBUFF MODE DID NOT RESTORE"
 fi
+# r195: the earpiece order back to what the run found; the snapshot disarmed
+if [ -n "$EAR_ORDER" ] && [ -n "${ORPRE:-}" ]; then
+	echo "$ORPRE" > "$PGD/ear_order" 2>/dev/null
+	[ "$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" order)" = "$ORPRE" ] &&
+		jrn "EAR order restored to $ORPRE" || jrn "EAR ORDER DID NOT RESTORE"
+fi
+[ "$SNAP" != "1" ] || echo disarm > "$PGD/reg_snap" 2>/dev/null
 # r187: read AFTER the restore -- the "at their minimum" check is about the
 # state the run leaves behind, and a run whose last stream was at full gain
 # (Speaker Volume 8, field 0) failed it when this was read before.
@@ -808,6 +885,10 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 	check "card module version" "${CARDV:-}" "$DAPM_CARD_VERSION"
 	check "the run was not aborted" "$ABORTED" "0"
 	check "streams completed" "$((n - 1))" "$CYCLES"
+	[ "$SNAP" != "1" ] || check "register snapshot left disarmed" \
+		"$(rv "$(head -n1 "$PGD/reg_snap" 2>/dev/null)" armed)" "0"
+	[ -z "$EAR_ORDER" ] || check "EAR order as found" \
+		"$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" order)" "${ORPRE:-?}"
 	c=1
 	while [ "$c" -lt "$n" ]; do
 		eval "_pi=\${S${c}_PINON:-}; _l=\${S${c}_LIVE:-}; _a=\${S${c}_AFTER:-}; _p=\${S${c}_PA:-}; _f=\${S${c}_PAOFF:-}; _cs=\${S${c}_CS:-}; _hs=\${S${c}_HS:-}; _t=\${S${c}_TRC:-}; _pin=\${S${c}_PIN:-}"
@@ -818,6 +899,15 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		say "-- stream $c [$_sp] --"
 		check "s$c pin alone powers nothing" "$(dapm_kv "$_pi" "$OUT_KEY")" "$OUT_NONE"
 		check "s$c DAPM holds the whole path live" "$(dapm_kv "$_l" "$OUT_KEY")" "$OUT_ALL"
+		# r195: the live register snapshot, taken once at this stream's PA on
+		if [ "$SNAP" = "1" ]; then
+			eval "_sh=\${S${c}_SNH:-}; _st0=\${S${c}_SNT0:-0}; _sf=\${S${c}_SNF:-}"
+			_st1=$(rv "$_sh" takes)
+			check "s$c register snapshot taken once, at the $SNAP_LABEL PA on" \
+			      "$(( ${_st1:-0} - ${_st0:-0} )) $(rv "$_sh" label) $(rv "$_sh" armed) $(rv "$_sh" valid)" \
+			      "1 $SNAP_LABEL 0 1"
+			say "        s$c snapshot: $_sh -> $_sf"
+		fi
 		eval "_o=\${S${c}_O:-}; _oa=\${S${c}_OAFTER:-}"
 		if [ "$OUTPUT" = "i2s" ]; then
 			eval "_i=\${S${c}_I2S:-}; _ia=\${S${c}_I2SA:-}; _v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
@@ -924,6 +1014,12 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 					      "$(rv "$_oa" cmbuff_0x1be) $(rv "$_oa" ear_cmbuff_cleared)" "$(rv "$OPRE" cmbuff_0x1be) 0"
 					say "        s$c EAR_STATUS 0x1c5 live $(rv "$_o" earstat_0x1c5), after $(rv "$_oa" earstat_0x1c5)"
 				fi
+				# r195: the order this stream ran, by the driver's own counter
+				eval "_eo=\${S${c}_ORD:-}; _u0=\${S${c}_ORU0:-0}; _u1=\${S${c}_ORU1:-0}"
+				case "$_eo" in
+				windows)    check "s$c EAR order windows: class-H after DAC1 (windows_ups +1)" "$((_u1 - _u0))" "1" ;;
+				downstream) check "s$c EAR order downstream (windows_ups +0)" "$((_u1 - _u0))" "0" ;;
+				esac
 			fi
 			check "s$c DAPM holds nothing after" "$(dapm_kv "$_a" "$OUT_KEY")" "$OUT_NONE"
 			check "s$c pin OFF after" "$_pin" "0"
@@ -1092,6 +1188,16 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		check "RX3 and RX5 off" "$(rv "$OPOST" rx3_on) $(rv "$OPOST" rx5_on)" "0 0"
 	fi
 
+	# r195: every stream's snapshot in full, for the diff
+	if [ "$SNAP" = "1" ]; then
+		c=1
+		while [ "$c" -lt "$n" ]; do
+			eval "_sf=\${S${c}_SNF:-}"
+			hdr "register snapshot, stream $c ($SNAP_LABEL PA on)"
+			[ -z "$_sf" ] || cat "$_sf" 2>/dev/null
+			c=$((c + 1))
+		done
+	fi
 	hdr "dapm events (dmesg)"
 	dmesg | grep -E 'dapm: |mclk: (get|put)' | tail -n 40
 

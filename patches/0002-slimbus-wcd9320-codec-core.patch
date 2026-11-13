@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 08:25:39.900230496 -0500
-@@ -0,0 +1,13542 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 12:49:01.994360568 -0500
+@@ -0,0 +1,13742 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2012,6 +2012,25 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	bool ear_cmbuff_clear, ear_cmbuff_cleared;
 +	u8 ear_cmbuff_base;
 +	unsigned int ear_cmbuff_clears, ear_cmbuff_restores;
++	/*
++	 * r195: the EAR power-up order. false = downstream (class-H EAR
++	 * PRE_DAC, then DAC1: r187-r194); true = Windows (DAC1's switch and
++	 * power and the CMBUFF clear, THEN class-H EAR). windows_ups counts
++	 * the class-H enables issued in the Windows position.
++	 */
++	bool ear_order_windows;
++	unsigned int ear_order_windows_ups;
++	/*
++	 * r195: the live register snapshot (reg_snap). Armed from sysfs, taken
++	 * ONCE by the next earpiece or headphone PA-on, from the chip, inside
++	 * the DAPM event under c3_lock. Read only. 0x100 marks an unreadable
++	 * register.
++	 */
++	bool snap_armed, snap_valid;
++	unsigned int snap_takes, snap_errors;
++	const char *snap_label;
++	s64 snap_us;
++	u16 snap_val[368];
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -10126,10 +10145,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		goto teardown;
 +	wcd->ear_bias_held = true;
-+	/* DAC1 PRE_PMU: class-H EAR PRE_DAC; then the switch and the widget */
-+	ret = wcd9320_clsh_ear(wcd, true);
-+	if (ret)
-+		goto teardown;
++	/*
++	 * DAC1 PRE_PMU: class-H EAR PRE_DAC; then the switch and the widget.
++	 * r195: ear_order "windows" moves class-H after DAC1 (below).
++	 */
++	if (!wcd->ear_order_windows) {
++		ret = wcd9320_clsh_ear(wcd, true);
++		if (ret)
++			goto teardown;
++	}
 +	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_EAR_EN, WCD9320_EAR_DAC_SWITCH,
 +				WCD9320_EAR_DAC_SWITCH, "DAC1 switch (bit 5)");
 +	if (!ret)
@@ -10157,6 +10181,17 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		if (ret)
 +			goto teardown;
 +		wcd->ear_cmbuff_clears++;
++	}
++	/*
++	 * r195: Windows' order -- class-H EAR after DAC1's switch, power and
++	 * the CMBUFF clear (qcauddev8974.sys). Teardown is unchanged: the PA
++	 * stage already drops class-H before DAC1 goes off, as Windows does.
++	 */
++	if (wcd->ear_order_windows) {
++		ret = wcd9320_clsh_ear(wcd, true);
++		if (ret)
++			goto teardown;
++		wcd->ear_order_windows_ups++;
 +	}
 +	wcd->ear_dac_on = true;
 +	return 0;
@@ -10773,6 +10808,165 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret ? ret : len;
 +}
 +static DEVICE_ATTR_RW(ear_cmbuff);
++
++/*
++ * r195: ear_order -- "downstream" (the default, r187-r194) or "windows".
++ * Refused under c3_lock while any earpiece stage is up or a CMBUFF restore
++ * is owed, so a stream never changes order under itself.
++ */
++static ssize_t ear_order_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf, "order=%s windows_ups=%u\n",
++			  wcd->ear_order_windows ? "windows" : "downstream",
++			  wcd->ear_order_windows_ups);
++}
++
++static ssize_t ear_order_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	bool windows;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "windows"))
++		windows = true;
++	else if (sysfs_streq(buf, "downstream"))
++		windows = false;
++	else
++		return -EINVAL;
++
++	mutex_lock(&wcd->c3_lock);
++	if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on ||
++	    wcd->ear_cmbuff_cleared) {
++		ret = -EBUSY;
++	} else {
++		wcd->ear_order_windows = windows;
++		dev_info(dev, "ear: order %s for the next DAC stage\n",
++			 windows ? "windows (DAC1, then class-H)" :
++				   "downstream (class-H, then DAC1)");
++		ret = 0;
++	}
++	mutex_unlock(&wcd->c3_lock);
++
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(ear_order);
++
++/*
++ * r195: THE LIVE REGISTER SNAPSHOT. docs/audio/wcd9320-r194-earpiece-mapping.md,
++ * section 7: diff the chip during an earpiece stream against a headphone
++ * stream on the same RX1. Armed through reg_snap, taken once at the next
++ * EAR PA or HPHR PA on (the last stage of each path), from the chip, under
++ * c3_lock -- so it cannot race the 1 s tone. It writes nothing.
++ */
++static const struct {
++	u16 lo, hi;
++} wcd9320_snap_ranges[] = {
++	{ 0x100, 0x11f },	/* bias, bandgap */
++	{ 0x180, 0x1ff },	/* analog RX: buck, NCP, HPH, EAR, LO, SPK */
++	{ 0x2b0, 0x2ff },	/* RX1..RX7 digital */
++	{ 0x300, 0x33f },	/* CDC clocks, class-H */
++	{ 0x380, 0x3bf },	/* CDC_CONN muxes */
++};
++
++static noinline void wcd9320_snap_take(struct wcd9320 *wcd, const char *label)
++{
++	unsigned int i, r, v, k = 0, err = 0;
++	ktime_t t0 = ktime_get();
++
++	for (i = 0; i < ARRAY_SIZE(wcd9320_snap_ranges); i++) {
++		for (r = wcd9320_snap_ranges[i].lo;
++		     r <= wcd9320_snap_ranges[i].hi &&
++		     k < ARRAY_SIZE(wcd->snap_val); r++, k++) {
++			if (regmap_read_bypassed(wcd->regmap, r, &v)) {
++				wcd->snap_val[k] = 0x100;
++				err++;
++			} else {
++				wcd->snap_val[k] = v & 0xff;
++			}
++		}
++	}
++	wcd->snap_us = ktime_us_delta(ktime_get(), t0);
++	wcd->snap_errors = err;
++	wcd->snap_label = label;
++	wcd->snap_armed = false;
++	wcd->snap_valid = true;
++	wcd->snap_takes++;
++	dev_info(&wcd->sdev->dev,
++		 "snap: %s PA on, %u registers from the chip in %lld us, %u unreadable\n",
++		 label, k, wcd->snap_us, err);
++}
++
++/* after a SUCCESSFUL PA-on only, and only when armed; PA off never */
++static int wcd9320_snap_after(struct wcd9320 *wcd, int ret, bool on,
++			      const char *label)
++{
++	if (on && !ret && wcd->snap_armed)
++		wcd9320_snap_take(wcd, label);
++	return ret;
++}
++
++static ssize_t reg_snap_show(struct device *dev,
++			     struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	unsigned int i, r, k = 0;
++	int n;
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	mutex_lock(&wcd->c3_lock);
++	n = sysfs_emit(buf, "armed=%u takes=%u label=%s us=%lld regs=%zu errors=%u valid=%u\n",
++		       wcd->snap_armed, wcd->snap_takes,
++		       wcd->snap_label ? wcd->snap_label : "none", wcd->snap_us,
++		       ARRAY_SIZE(wcd->snap_val), wcd->snap_errors, wcd->snap_valid);
++	for (i = 0; wcd->snap_valid && i < ARRAY_SIZE(wcd9320_snap_ranges); i++) {
++		for (r = wcd9320_snap_ranges[i].lo;
++		     r <= wcd9320_snap_ranges[i].hi &&
++		     k < ARRAY_SIZE(wcd->snap_val); r++, k++) {
++			if ((r & 0xf) == 0)
++				n += sysfs_emit_at(buf, n, "%03x:", r);
++			if (wcd->snap_val[k] > 0xff)
++				n += sysfs_emit_at(buf, n, " --");
++			else
++				n += sysfs_emit_at(buf, n, " %02x", wcd->snap_val[k]);
++			if ((r & 0xf) == 0xf)
++				n += sysfs_emit_at(buf, n, "\n");
++		}
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return n;
++}
++
++static ssize_t reg_snap_store(struct device *dev,
++			      struct device_attribute *attr,
++			      const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	bool arm;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "arm"))
++		arm = true;
++	else if (sysfs_streq(buf, "disarm"))
++		arm = false;
++	else
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	wcd->snap_armed = arm;
++	mutex_unlock(&wcd->c3_lock);
++	return len;
++}
++static DEVICE_ATTR_RW(reg_snap);
 +
 +/* ------------------------------- r178: the on-chip HPHL voltmeter -- */
 +
@@ -11979,7 +12173,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		case WCD9320_DO_DAC:
 +			return wcd9320_ear_dac(wcd, on);
 +		case WCD9320_DO_PA:
-+			return wcd9320_ear_pa(wcd, on);
++			/* r195: the snapshot, after a successful EAR PA on */
++			return wcd9320_snap_after(wcd, wcd9320_ear_pa(wcd, on), on, "ear");
 +		}
 +		return -EINVAL;
 +	}
@@ -12002,7 +12197,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case WCD9320_DS_PAL:
 +		return wcd9320_hphl_pa_path(wcd, on);
 +	case WCD9320_DS_PAR:
-+		return wcd9320_hphr_pa_path(wcd, on);
++		/* r195: the snapshot, after a successful HPHR PA on -- the last stage */
++		return wcd9320_snap_after(wcd, wcd9320_hphr_pa_path(wcd, on), on, "hph");
 +	}
 +	return -EINVAL;
 +}
@@ -12808,6 +13004,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_jack_detect.attr,
 +	&dev_attr_out_state.attr,
 +	&dev_attr_ear_cmbuff.attr,
++	&dev_attr_ear_order.attr,
++	&dev_attr_reg_snap.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -13415,6 +13613,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->ear_gain_field = wcd9320_ear_gain_steps[0];
 +	/* r194: Windows' RX_EAR_CMBUFF behaviour by default */
 +	wcd->ear_cmbuff_clear = true;
++	/* r195: downstream order by default (r187-r194); the runner selects */
++	wcd->ear_order_windows = false;
 +	/* r188: the line outs at their minimum, all four selected */
 +	wcd->lo_gain_field = WCD9320_LINE_GAIN_MIN;
 +	wcd->lo_select = WCD9320_LINE_ALL;
@@ -13887,7 +14087,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("earcm-rc1");
++MODULE_VERSION("earord-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c
