@@ -265,3 +265,44 @@ tools/build-wcd9320-kernel.sh --pkgrel 195 --version earord-rc1 \
    - s2 is the r194 control, with a snapshot of each.
 2. **Headphones, for the diff:** `OUTPUT=hph SNAP=1 SPECS=B:0:84 DBFS=-40`, one stream at minimum gain. Nothing needs to be plugged in, because only its registers are wanted.
 3. **The diff:** EAR (s1, s2) against HPH, over the same RX1. Anything set for HPH but not for EAR, outside the HPH- and EAR-only registers, is the next lead.
+
+## 9. r195 result (2026-11-13): order is not it; the live diff is clean
+
+Booted `earord-rc1`. The gates passed: dapm 83/0, mclk-own 90/0 and vm 57/0.
+
+**Earpiece run** (107/0): `EAR_ORDER=windows,downstream EAR_CMBUFF=clear SNAP=1`,
+`B:6:84` at -20 dBFS (declared), with the mic at the slot.
+- **Result:** both streams were silent by ear and by the analyser. Two pattern hits were broadband handling noise, with the spectral peak wandering from 100 to 2600 Hz and 1 kHz no more than a few dB above its neighbours.
+- **Live state:** the earpiece PA was on, with no OCP. 0x1be read 04 and EAR_STATUS 0x1c5 read 88.
+- **The two orders' snapshots are identical,** 0 of 368 registers.
+
+**Headphone run** (98/0): `OUTPUT=hph SNAP=1 B:0:84 -40 dBFS`, a snapshot only.
+
+**EAR vs HPH, live at PA on.** 20 of 368 registers differ, and every one is accounted for:
+
+| group | registers (EAR / HPH) | reading |
+|---|---|---|
+| HPH analog | 1a5 a4/24, 1a9 2a/1a, 1ab 80/b0, 1ac da/db, 1ad 15/58, 1ae 00/34, 1b1 00/c0, 1b3 04/08, 1b4 00/34, 1b7 00/c0, 1b9 04/08 | HPH PAs, DACs, gains, wavegen, status: on only for HPH |
+| EAR analog | 1bc 70/00, 1be 04/05, 1c5 88/04 | EAR DAC1, switch and PA, CMBUFF, status: on only for EAR |
+| RX2 | 2bd 80/a8, 30f 01/03, 383 00/06 | RX2 chain, clock and mixer: HPHR only |
+| class-H | 320 37/23, 328 0f/04 | EAR mode vs HPH mode, as downstream sets them |
+| RX7 volume | 2e7 00/fa | the speaker's digital volume, left at its boot value by the HPH run; not on this path |
+
+**The shared path is identical:** RX1 digital (0x2b0–0x2b7), the RX1 mixer
+(0x380 = 05), the CLASS_H_DSM mux (0x3b0 = 14, DSM_HPHL_RX1), the clocks,
+the buck and NCP block, and the bias. **Within the 368 registers read, the
+earpiece is programmed as downstream and Windows program it, on the same
+live RX1 and DSM that play the headphones.**
+
+**What the snapshot could not see:**
+- 56 addresses that the regmap refuses, among them **0x1c4** inside the EAR block, and 0x180, 0x19d, 0x1a3, 0x1de and 0x1ff;
+- 0x000–0x0ff, 0x120–0x17f, 0x340–0x37f and 0x3c0–0x3ff.
+
+**EAR_STATUS 0x1c5** reads 0x88 live. Bit 3 matches the HPH status
+registers' clocked bit (04 → 08). **Bit 7 has no HPH counterpart,** and its
+meaning is unknown.
+
+**Leads, offline first:**
+1. Decode the ACDB EAR codec path's record list (0x10102; element 0x1009 occurs only in EAR paths) as register writes, in case Windows applies an EAR register profile from the ACDB that the driver code doesn't show.
+2. Search `qcauddev8974.sys` for 0x1c4 and 0x1c5, and for any read of EAR_STATUS bit 7.
+3. Check the board: does the earpiece really hang off EAR_P/EAR_M, or is there an external switch or amp the DSDT does not name?
