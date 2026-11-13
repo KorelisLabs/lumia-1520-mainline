@@ -306,3 +306,44 @@ meaning is unknown.
 1. Decode the ACDB EAR codec path's record list (0x10102; element 0x1009 occurs only in EAR paths) as register writes, in case Windows applies an EAR register profile from the ACDB that the driver code doesn't show.
 2. Search `qcauddev8974.sys` for 0x1c4 and 0x1c5, and for any read of EAR_STATUS bit 7.
 3. Check the board: does the earpiece really hang off EAR_P/EAR_M, or is there an external switch or amp the DSDT does not name?
+
+## 10. Offline leads closed, and the PA flags (2026-11-13)
+
+**The ACDB EAR path is not a register profile.** `EAROUT_SPEAKER` (0x10102)
+is a list of (action, element) steps that `qcauddev8974.sys` executes.
+- Element 0x1009 is the EAR element, and its handler is the section 3 sequence.
+- Next to the headphone path, EAR also uses the NCP and buck elements, but not 0x1010, which the HPH and LO paths include.
+
+**`qcauddev8974.sys` writes nothing more to the EAR block.** Of the 991
+helper calls with constant addresses, the EAR block (0x1b8–0x1c7) receives
+only:
+- 0x1ba and 0x1c6, the PA bias, [7:4] = 7;
+- 0x1bc bits 4–6;
+- 0x1bd [7:5], the gain;
+- 0x1be bit 0.
+
+The same init block also writes buck fields 0x183, 0x186 and 0x189. Our
+live snapshot already holds every one of those values.
+
+The driver's only register table is an ascending list of valid addresses,
+with no values. **0x1c4 is not in it,** so that register does not exist, which
+is why the regmap refuses it. **0x1c5 is never accessed.** The 0x1c3–0x1c7
+hits were WPP trace message numbers, not registers.
+
+**The EAR PA's own flags.** `INTR_STATUS2` bit 2 is EAR_PA_OCPL_FAULT and
+bit 5 is EAR_PA_STARTUP. Both are masked (`INTR_MASK2` = 3f), and no run had
+ever sampled them. Runner 5aa155d now samples `irq_live` about every 25 ms,
+80 times, through each hph or ear tone.
+- **Earpiece** (`B:0:84`, -40 dBFS, 83/0): 80 of 80 samples read 00, so neither bit was ever seen. Nothing was heard.
+- **Headphone control** (`B:0:84`, -40 dBFS, 96/0): 80 of 80 samples read 00. **Not even the HPH start-up bits** (3 and 4) appeared, on the path that plays.
+
+So masked sources do not show in `INTR_STATUS2` on this chip. **This
+sampling cannot see an EAR OCP trip,** and the result is no evidence either
+way.
+
+**Where this leaves the earpiece.** Every codec-side difference that
+Windows, downstream or a working HPH stream could reveal has been tested or
+shown equal. That covers CMBUFF, the order, the live registers on the shared
+path, and the whole Windows EAR write set. The remaining possibilities are:
+1. **The earpiece itself or its wiring.** This needs a hardware answer: does the earpiece work on this unit under Windows, does it measure as a receiver across EAR_P/EAR_M (about 32 Ω), and is there a part between the codec and the earpiece?
+2. **An OCP trip that only an unmasked source can show.** A diagnostic build could unmask bits 2 and 5 for the duration of an earpiece stream, observation only, which would answer whether the PA starts up or faults.
