@@ -439,3 +439,39 @@ tools/build-wcd9320-kernel.sh --pkgrel 196 --version earirq-rc1 \
 3. **The interrupt counts read in every case:**
    - start-up seen and no OCP: the PA starts cleanly, and the codec side is closed;
    - OCP seen: the PA is tripping, which points at the load or the wiring.
+
+## 13. r196 result (2026-11-13): the EAR PA starts cleanly, no OCP, still silent
+
+Booted `earirq-rc1`. The gates passed: dapm 83/0, mclk-own 90/0 and vm 57/0.
+The run was `OUTPUT=ear EAR_BUCK=3f,ff EAR_B32=keep EAR_IRQ=1 SNAP=1`,
+`B:0:84` × 2 at -40 dBFS, with CMBUFF `keep` (the new default). It passed
+117/0, and nothing was heard on either stream.
+
+| stream | buck vref live | B1 b3/b2 | EAR_PA_STARTUP irqs | EAR_PA_OCPL irqs | heard |
+|---|---|---|---|---|---|
+| s1, Windows parity | 3f | 04 (untouched) | 2 | 0 | nothing |
+| s2, control | ff | 04 | 2 | 0 | nothing |
+
+**Reading the interrupts:**
+- **Start-up** fires about 140 ms after class-H comes up, as the PA turns on, and again after the tone. So the PA completes its start-up both at turn-on and at turn-off.
+- **OCP** never fires, and there was no storm.
+- **Snapshots:** the two 848-register snapshots differ in exactly one register, 0x184, which is the switch under test.
+
+**What this establishes:**
+- The codec's EAR PA is enabled, starts up and runs without an over-current fault.
+- It is programmed as Windows programs it, with the full class-H EAR sequence including the buck reference and CMBUFF.
+- It is fed by the same RX1 that plays the headphones.
+
+**A PA that starts cleanly, sees no over-current and produces no sound fits
+an open load on EAR_P/EAR_M:**
+- a dead receiver coil;
+- a receiver module that is not making contact in its slot;
+- a broken connection between the codec and the slot.
+
+A shorted load would be expected to trip OCP.
+
+**The codec side is exhausted.** Every Windows and downstream difference
+has been tested, and the PA reports healthy. **The next step is physical:**
+reseat or clean the earpiece module's contacts, measure the receiver
+(about 32 Ω expected), or fit a replacement receiver. Windows no longer
+boots on this unit, so it cannot be used to check.
