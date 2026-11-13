@@ -91,6 +91,17 @@ ear_order_list_ok "windows,clear" && bad "order list: bad word refused" "accepte
 ear_order_list_ok "" && bad "order list: empty refused" "accepted" || ok "order list: empty refused"
 ear_order_list_ok ",windows" && bad "order list: leading comma refused" "accepted" || ok "order list: leading comma refused"
 eq "order for stream 2 of windows,downstream" "$(ear_cmbuff_for windows,downstream 2)" "downstream"
+# r195b: the INTR_STATUS2 summary
+_i2t=$(mktemp)
+printf '00\n24\n20\n' > "$_i2t"
+eq "intr2: EAR OCP once, EAR start-up twice" "$(intr2_summary "$_i2t")" "n=3 or=24 ocp_ear=1 start_ear=2 ocp_hph=0 start_hph=0"
+printf '08\n18\n01\nzz\n' > "$_i2t"
+eq "intr2: HPH start-up and OCP, junk ignored" "$(intr2_summary "$_i2t")" "n=3 or=19 ocp_ear=0 start_ear=0 ocp_hph=1 start_hph=2"
+: > "$_i2t"
+eq "intr2: no samples" "$(intr2_summary "$_i2t")" "n=0 or=00 ocp_ear=0 start_ear=0 ocp_hph=0 start_hph=0"
+printf 'ff\n' > "$_i2t"
+eq "intr2: every bit" "$(intr2_summary "$_i2t")" "n=1 or=ff ocp_ear=1 start_ear=1 ocp_hph=1 start_hph=1"
+rm -f "$_i2t"
 dapm_out xyz; eq "unknown output refused" "$?" "1"
 S7="held=000 ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=3f ear_held=00 spk_pa=1 ear_pa=0"
 eq "spk path held whole"        "$(dapm_held_key_is "$S7" spk_held 3f)" "OK"

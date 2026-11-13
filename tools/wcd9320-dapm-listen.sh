@@ -584,6 +584,21 @@ stream() {	# stream <n> <spec>
 	jrn "tone: 1 kHz, $DBFS dBFS, side $_side, 250 ms tone/silence/tone/silence, one stream, DAPM-powered"
 	"$TONE" -D "${PCMDEV:-/dev/snd/pcmC0D0p}" --dbfs "$DBFS" $TONE_ARM --side "$_side" >>"$JOURNAL" 2>&1 &
 	TPID=$!
+	# r195b: INTR_STATUS2 through the tone -- bit 2 EAR_PA_OCPL_FAULT, bit 5
+	# EAR_PA_STARTUP (0/1 HPH OCP, 3/4 HPH start-up), all masked as irqs and
+	# never sampled live before. Read only (irq_live), in the background, so
+	# nothing else waits on it; it ends by itself after ~3 s.
+	OCPW_PID=""
+	if [ "$OUTPUT" = "ear" ] || [ "$OUTPUT" = "hph" ]; then
+		_ocf="$OUTDIR/wcd9320-intr2-$STAMP-s$_n.txt"
+		( _k=0
+		  while [ "$_k" -lt 80 ]; do
+			sed -n 's/^status=[0-9a-f]* [0-9a-f]* \([0-9a-f]*\) .*/\1/p' "$PGD/irq_live" 2>/dev/null
+			_k=$((_k + 1))
+			sleep 0.025
+		  done ) > "$_ocf" 2>&1 &
+		OCPW_PID=$!
+	fi
 	#
 	# WAIT FOR THE PATH, DON'T ASSUME IT. DAPM powers the whole chain inside
 	# PCM prepare -- measured 1.2 s on the first r184 stream, because every
@@ -679,6 +694,13 @@ stream() {	# stream <n> <spec>
 	TPID=""
 	eval "S${_n}_TRC=\$_t"
 	jrn "tone finished rc=$_t"
+	if [ -n "$OCPW_PID" ]; then
+		wait "$OCPW_PID" 2>/dev/null
+		OCPW_PID=""
+		_os=$(intr2_summary "$_ocf")
+		eval "S${_n}_INTR2=\$_os"
+		jrn "INTR_STATUS2 through the tone: $_os -> $_ocf"
+	fi
 	flag_ok "after-tone-c$_n" || return 1
 
 	# The stream has stopped; DAPM powers down at once (no pmdown delay on
@@ -908,6 +930,8 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 			      "1 $SNAP_LABEL 0 1"
 			say "        s$c snapshot: $_sh -> $_sf"
 		fi
+		eval "_i2=\${S${c}_INTR2:-}"
+		[ -z "$_i2" ] || say "        s$c INTR_STATUS2 through the tone: $_i2"
 		eval "_o=\${S${c}_O:-}; _oa=\${S${c}_OAFTER:-}"
 		if [ "$OUTPUT" = "i2s" ]; then
 			eval "_i=\${S${c}_I2S:-}; _ia=\${S${c}_I2SA:-}; _v=\${S${c}_V5:-}; _va=\${S${c}_V5A:-}"
@@ -1000,6 +1024,13 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				fi
 				check "s$c class-H in EAR mode" "$(rv "$_o" clsh_ear)" "1"
 				check "s$c earpiece off after" "$(rv "$_oa" ear_0x1bc)" "00"
+				# r195b: the EAR PA's own fault and start-up flags through the tone
+				eval "_i2=\${S${c}_INTR2:-}"
+				_i2n=$(rv "$_i2" n)
+				check "s$c INTR_STATUS2 sampled through the tone" \
+				      "$([ "${_i2n:-0}" -ge 10 ] && echo yes || echo "no (${_i2n:-0})")" "yes"
+				check "s$c EAR PA OCP fault (INTR_STATUS2 bit 2) never set" "$(rv "$_i2" ocp_ear)" "0"
+				say "        s$c EAR PA start-up flag (bit 5) in $(rv "$_i2" start_ear) of ${_i2n:-0} samples"
 				# r194: the CMBUFF mode, live and after
 				eval "_cm=\${S${c}_CMB:-}"
 				_cb=$(rv "$_o" cmbuff_0x1be)

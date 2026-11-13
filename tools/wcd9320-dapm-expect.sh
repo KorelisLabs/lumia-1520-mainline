@@ -256,6 +256,27 @@ ear_order_list_ok() {	# ear_order_list_ok <list> -> 0 when every element is down
 	case "$1" in ,*|*,|*,,*) return 1 ;; esac
 	return 0
 }
+# r195b: INTR_STATUS2 samples, one hex byte per line (irq_live's third
+# status byte) -> n= or= ocp_ear= start_ear= ocp_hph= start_hph=, the counts
+# of samples with bit 2 (EAR_PA_OCPL_FAULT), bit 5 (EAR_PA_STARTUP), bits
+# 0|1 (HPH OCP) and bits 3|4 (HPH start-up). No awk bit operators: busybox.
+intr2_summary() {	# intr2_summary <file>
+	awk 'function bit(v, k) { return int(v / (2 ^ k)) % 2 }
+	/^[0-9a-f][0-9a-f]$/ {
+		v = (index("0123456789abcdef", substr($1, 1, 1)) - 1) * 16 + index("0123456789abcdef", substr($1, 2, 1)) - 1
+		n++
+		for (k = 0; k < 8; k++) if (bit(v, k)) seen[k] = 1
+		if (bit(v, 2)) oe++
+		if (bit(v, 5)) se++
+		if (bit(v, 0) || bit(v, 1)) oh++
+		if (bit(v, 3) || bit(v, 4)) sh++
+	}
+	END {
+		o = 0
+		for (k = 0; k < 8; k++) if (seen[k]) o += 2 ^ k
+		printf "n=%d or=%02x ocp_ear=%d start_ear=%d ocp_hph=%d start_hph=%d\n", n, o, oe, se, oh, sh
+	}' "$1" 2>/dev/null
+}
 ear_cmbuff_for() {	# ear_cmbuff_for <list> <stream n, from 1> -> its mode
 	_ecl=""; _eci=0
 	for _ec in $(printf '%s' "$1" | tr ',' ' '); do
