@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 12:49:01.994360568 -0500
-@@ -0,0 +1,13742 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 14:14:46.121643472 -0500
+@@ -0,0 +1,14014 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2030,7 +2030,22 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	unsigned int snap_takes, snap_errors;
 +	const char *snap_label;
 +	s64 snap_us;
-+	u16 snap_val[368];
++	u16 snap_val[848];
++	/*
++	 * r196 (docs/audio/wcd9320-r194-earpiece-mapping.md, section 11):
++	 * ear_buck_vref is BUCK_MODE_4 for class-H EAR (0xff downstream 2 V,
++	 * 0x3f Windows); ear_clsh_b32_clear clears CDC_CLSH_B1_CTL b3/b2 during
++	 * EAR (owed flag + measured base, restored at class-H teardown);
++	 * ear_irq_on means the EAR PA OCP and start-up sources are requested.
++	 */
++	u8 ear_buck_vref;
++	unsigned int ear_buck_vref_ups;
++	bool ear_clsh_b32_clear, ear_clsh_b32_owed;
++	u8 ear_clsh_b32_base;
++	unsigned int ear_clsh_b32_clears, ear_clsh_b32_restores;
++	bool ear_irq_on, ear_irq_storm;
++	int ear_virq_ocp, ear_virq_startup;
++	unsigned int ear_irq_ocp, ear_irq_startup;
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -6578,8 +6593,46 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		goto unwind;
 +
-+	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode,
-+				 ARRAY_SIZE(wcd9320_clsh_buck_mode));
++	/*
++	 * r196: ear_clsh_b32 "clear" -- B1_CTL b3/b2 to 0 for EAR. Windows'
++	 * EAR path never writes them (its HPH path sets both); ours read b2=1
++	 * (POR) during EAR. Measured first, owed flag before the write.
++	 */
++	if (ear && wcd->ear_clsh_b32_clear) {
++		unsigned int b32;
++
++		ret = regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b32);
++		if (ret)
++			goto unwind;
++		wcd->ear_clsh_b32_base = b32 & 0x0c;
++		wcd->ear_clsh_b32_owed = true;
++		ret = wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x0c, 0x00,
++				       "clsh b1 b3/b2 clear (r196 ear_clsh_b32)");
++		if (ret)
++			goto unwind;
++		wcd->ear_clsh_b32_clears++;
++	}
++
++	/*
++	 * r196: ear_buck_vref -- Windows' EAR (and HPH) class-H writes
++	 * BUCK_MODE_4 = 0x3f where downstream writes 0xff. EAR only, and in
++	 * Windows' place: after mode5, before the mode bits and the enable.
++	 */
++	if (ear && wcd->ear_buck_vref != WCD9320_BUCK_VREF_2V) {
++		ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode, 1);
++		if (!ret)
++			ret = wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_4, 0xff,
++					       wcd->ear_buck_vref,
++					       "buck vref EAR (r196 ear_buck_vref)");
++		if (!ret)
++			ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode + 2,
++						 ARRAY_SIZE(wcd9320_clsh_buck_mode) - 2);
++		if (!ret)
++			wcd->ear_buck_vref_ups++;
++	} else {
++		ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode,
++					 ARRAY_SIZE(wcd9320_clsh_buck_mode));
++	}
 +	if (ret)
 +		goto unwind;
 +	usleep_range(WCD9320_BUCK_SETTLE_US, WCD9320_BUCK_SETTLE_US + 10);
@@ -6615,6 +6668,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			   ARRAY_SIZE(wcd9320_clsh_off));
 +	wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x01, 0x00,
 +			       "clsh block off");
++	/* r196: the b3/b2 inverse, owed whatever the clear did */
++	if (wcd->ear_clsh_b32_owed) {
++		if (!wcd9320_clsh_one(wcd, WCD9320_A_CDC_CLSH_B1_CTL, 0x0c,
++				      wcd->ear_clsh_b32_base,
++				      "clsh b1 b3/b2 restored (r196)"))
++			wcd->ear_clsh_b32_restores++;
++		wcd->ear_clsh_b32_owed = false;
++	}
 +
 +	if (wcd->clsh_on) {
 +		wcd->clsh_on = false;
@@ -10870,11 +10931,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +static const struct {
 +	u16 lo, hi;
 +} wcd9320_snap_ranges[] = {
-+	{ 0x100, 0x11f },	/* bias, bandgap */
-+	{ 0x180, 0x1ff },	/* analog RX: buck, NCP, HPH, EAR, LO, SPK */
-+	{ 0x2b0, 0x2ff },	/* RX1..RX7 digital */
-+	{ 0x300, 0x33f },	/* CDC clocks, class-H */
-+	{ 0x380, 0x3bf },	/* CDC_CONN muxes */
++	{ 0x000, 0x1ff },	/* r196: chip, interrupts, bias, TX/MBHC, analog RX */
++	{ 0x2b0, 0x3ff },	/* r196: RX1..RX7 digital, clocks, class-H, 0x34x, CONN, 0x3cx */
 +};
 +
 +static noinline void wcd9320_snap_take(struct wcd9320 *wcd, const char *label)
@@ -10967,6 +11025,206 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return len;
 +}
 +static DEVICE_ATTR_RW(reg_snap);
++
++/*
++ * r196: the class-H EAR switches. Both refused under c3_lock while any
++ * earpiece stage or class-H is up, or a b3/b2 restore is owed.
++ */
++static bool wcd9320_ear_busy(struct wcd9320 *wcd)
++{
++	return wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on ||
++	       wcd->clsh_on || wcd->ear_clsh_b32_owed;
++}
++
++static ssize_t ear_buck_vref_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf, "vref=%02x ups=%u\n", wcd->ear_buck_vref,
++			  wcd->ear_buck_vref_ups);
++}
++
++static ssize_t ear_buck_vref_store(struct device *dev,
++				   struct device_attribute *attr,
++				   const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	u8 v;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "ff"))
++		v = WCD9320_BUCK_VREF_2V;
++	else if (sysfs_streq(buf, "3f"))
++		v = 0x3f;
++	else
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	if (wcd9320_ear_busy(wcd)) {
++		ret = -EBUSY;
++	} else {
++		wcd->ear_buck_vref = v;
++		dev_info(dev, "ear: class-H buck vref %02x (%s) for the next EAR stage\n",
++			 v, v == WCD9320_BUCK_VREF_2V ? "downstream 2 V" : "Windows");
++		ret = 0;
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(ear_buck_vref);
++
++static ssize_t ear_clsh_b32_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf, "mode=%s owed=%u clears=%u restores=%u base=%02x\n",
++			  wcd->ear_clsh_b32_clear ? "clear" : "keep",
++			  wcd->ear_clsh_b32_owed, wcd->ear_clsh_b32_clears,
++			  wcd->ear_clsh_b32_restores, wcd->ear_clsh_b32_base);
++}
++
++static ssize_t ear_clsh_b32_store(struct device *dev,
++				  struct device_attribute *attr,
++				  const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	bool clear;
++	int ret;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "clear"))
++		clear = true;
++	else if (sysfs_streq(buf, "keep"))
++		clear = false;
++	else
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	if (wcd9320_ear_busy(wcd)) {
++		ret = -EBUSY;
++	} else {
++		wcd->ear_clsh_b32_clear = clear;
++		dev_info(dev, "ear: class-H B1 b3/b2 %s for the next EAR stage\n",
++			 clear ? "clear" : "keep");
++		ret = 0;
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(ear_clsh_b32);
++
++/*
++ * r196: THE EAR PA's OWN INTERRUPTS, OBSERVED. Masked sources do not show in
++ * INTR_STATUS2 on this chip (doc section 10), so EAR_PA_OCPL_FAULT and
++ * EAR_PA_STARTUP are requested through the regmap-irq domain while ear_irq
++ * is on. The handler only counts; an OCP storm (> 64) disables that line.
++ */
++#define WCD9320_EAR_IRQ_STORM	64
++
++static irqreturn_t wcd9320_ear_irq_thread(int irq, void *data)
++{
++	struct wcd9320 *wcd = data;
++	unsigned int n;
++
++	if (irq == wcd->ear_virq_ocp) {
++		n = ++wcd->ear_irq_ocp;
++		dev_info_ratelimited(&wcd->sdev->dev, "ear irq: EAR_PA_OCPL_FAULT #%u\n", n);
++		if (n > WCD9320_EAR_IRQ_STORM && !wcd->ear_irq_storm) {
++			wcd->ear_irq_storm = true;
++			disable_irq_nosync(irq);
++			dev_err(&wcd->sdev->dev, "ear irq: OCP storm, line disabled\n");
++		}
++	} else {
++		n = ++wcd->ear_irq_startup;
++		dev_info_ratelimited(&wcd->sdev->dev, "ear irq: EAR_PA_STARTUP #%u\n", n);
++	}
++	return IRQ_HANDLED;
++}
++
++static void wcd9320_ear_irq_free(struct wcd9320 *wcd)
++{
++	if (wcd->ear_virq_ocp > 0) {
++		if (wcd->ear_irq_storm)
++			enable_irq(wcd->ear_virq_ocp);	/* balance before free */
++		free_irq(wcd->ear_virq_ocp, wcd);
++	}
++	if (wcd->ear_virq_startup > 0)
++		free_irq(wcd->ear_virq_startup, wcd);
++	wcd->ear_virq_ocp = 0;
++	wcd->ear_virq_startup = 0;
++	wcd->ear_irq_storm = false;
++	wcd->ear_irq_on = false;
++}
++
++static ssize_t ear_irq_show(struct device *dev,
++			    struct device_attribute *attr, char *buf)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++
++	if (wcd->is_ifd)
++		return sysfs_emit(buf, "interface function: not applicable\n");
++	return sysfs_emit(buf, "on=%u ocp=%u startup=%u storm=%u virq_ocp=%d virq_startup=%d\n",
++			  wcd->ear_irq_on, READ_ONCE(wcd->ear_irq_ocp),
++			  READ_ONCE(wcd->ear_irq_startup), wcd->ear_irq_storm,
++			  wcd->ear_virq_ocp, wcd->ear_virq_startup);
++}
++
++static ssize_t ear_irq_store(struct device *dev,
++			     struct device_attribute *attr,
++			     const char *buf, size_t len)
++{
++	struct wcd9320 *wcd = dev_get_drvdata(dev);
++	bool on;
++	int ret = 0, v;
++
++	if (wcd->is_ifd)
++		return -ENODEV;
++	if (sysfs_streq(buf, "on"))
++		on = true;
++	else if (sysfs_streq(buf, "off"))
++		on = false;
++	else
++		return -EINVAL;
++	if (!wcd->irq_data)
++		return -ENXIO;
++	mutex_lock(&wcd->c3_lock);
++	if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on) {
++		ret = -EBUSY;
++	} else if (on && !wcd->ear_irq_on) {
++		v = regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_EAR_PA_OCPL_FAULT);
++		ret = v > 0 ? request_threaded_irq(v, NULL, wcd9320_ear_irq_thread,
++						   IRQF_ONESHOT, "wcd9320-ear-ocp", wcd) : -ENXIO;
++		if (!ret)
++			wcd->ear_virq_ocp = v;
++		if (!ret) {
++			v = regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_EAR_PA_STARTUP);
++			ret = v > 0 ? request_threaded_irq(v, NULL, wcd9320_ear_irq_thread,
++							   IRQF_ONESHOT, "wcd9320-ear-startup", wcd) : -ENXIO;
++			if (!ret)
++				wcd->ear_virq_startup = v;
++		}
++		if (ret)
++			wcd9320_ear_irq_free(wcd);
++		else
++			wcd->ear_irq_on = true;
++		dev_info(dev, "ear irq: observation %s (virq %d, %d): %d\n",
++			 ret ? "FAILED" : "ON", wcd->ear_virq_ocp,
++			 wcd->ear_virq_startup, ret);
++	} else if (!on && wcd->ear_irq_on) {
++		wcd9320_ear_irq_free(wcd);
++		dev_info(dev, "ear irq: observation OFF\n");
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return ret ? ret : len;
++}
++static DEVICE_ATTR_RW(ear_irq);
 +
 +/* ------------------------------- r178: the on-chip HPHL voltmeter -- */
 +
@@ -13006,6 +13264,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	&dev_attr_ear_cmbuff.attr,
 +	&dev_attr_ear_order.attr,
 +	&dev_attr_reg_snap.attr,
++	&dev_attr_ear_buck_vref.attr,
++	&dev_attr_ear_clsh_b32.attr,
++	&dev_attr_ear_irq.attr,
 +	NULL,
 +};
 +ATTRIBUTE_GROUPS(wcd9320);
@@ -13611,8 +13872,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* r187: the speaker and earpiece at their minimum, too */
 +	wcd->spk_gain_field = WCD9320_SPKR_GAIN_STEPS;
 +	wcd->ear_gain_field = wcd9320_ear_gain_steps[0];
-+	/* r194: Windows' RX_EAR_CMBUFF behaviour by default */
-+	wcd->ear_cmbuff_clear = true;
++	/*
++	 * r196: Windows SETS 0x1be b0 (doc section 11) -- the chip idles with
++	 * it set, so Windows parity is keep, the default from r196.
++	 */
++	wcd->ear_cmbuff_clear = false;
++	/* r196: downstream's 2 V buck reference for EAR unless asked */
++	wcd->ear_buck_vref = WCD9320_BUCK_VREF_2V;
 +	/* r195: downstream order by default (r187-r194); the runner selects */
 +	wcd->ear_order_windows = false;
 +	/* r188: the line outs at their minimum, all four selected */
@@ -13989,6 +14255,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* r185: the jack source must be freed while the irq chip still exists */
 +	if (wcd && !wcd->is_ifd)
 +		wcd9320_jack_disable(wcd, false);
++	/* r196: so must the EAR PA observation sources */
++	if (wcd && !wcd->is_ifd && wcd->ear_irq_on) {
++		mutex_lock(&wcd->c3_lock);
++		wcd9320_ear_irq_free(wcd);
++		mutex_unlock(&wcd->c3_lock);
++	}
 +
 +	/*
 +	 * The MBHC test hook uses plain request_irq rather than devm, so that
@@ -14087,7 +14359,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("earord-rc1");
++MODULE_VERSION("earirq-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

@@ -167,6 +167,18 @@ case "$SNAP:$OUTPUT" in
 1:hph) SNAP_LABEL=hph ;;
 *) echo "INVALID SETUP: SNAP=$SNAP with OUTPUT=$OUTPUT (SNAP=1 is for hph or ear)"; exit 2 ;;
 esac
+# r196 (doc section 11): EAR_BUCK=ff|3f[,...] is class-H EAR's buck reference
+# per stream (ff downstream 2 V, 3f Windows); EAR_B32=keep|clear[,...] is
+# CDC_CLSH_B1_CTL b3/b2 during EAR; EAR_IRQ=1 requests the EAR PA's OCP and
+# start-up interrupts for the run and counts them per stream. All ear only.
+EAR_BUCK="${EAR_BUCK:-}"; EAR_B32="${EAR_B32:-}"; EAR_IRQ="${EAR_IRQ:-0}"
+[ "$EAR_IRQ" = "0" ] || [ "$OUTPUT" = "ear" ] || { echo "INVALID SETUP: EAR_IRQ is for OUTPUT=ear"; exit 2; }
+[ -z "$EAR_BUCK$EAR_B32" ] || [ "$OUTPUT" = "ear" ] || { echo "INVALID SETUP: EAR_BUCK / EAR_B32 are for OUTPUT=ear"; exit 2; }
+[ -z "$EAR_BUCK" ] || ear_words_ok "$EAR_BUCK" ff 3f ||
+	{ echo "INVALID SETUP: EAR_BUCK=$EAR_BUCK (ff or 3f, comma-separated per stream)"; exit 2; }
+[ -z "$EAR_B32" ] || ear_words_ok "$EAR_B32" keep clear ||
+	{ echo "INVALID SETUP: EAR_B32=$EAR_B32 (keep or clear, comma-separated per stream)"; exit 2; }
+case "$EAR_IRQ" in 0|1) ;; *) echo "INVALID SETUP: EAR_IRQ=$EAR_IRQ (0 or 1)"; exit 2 ;; esac
 case "$HOLD_5V:$OUTPUT" in
 :*|i2s:lo|i2s:ear) ;;
 *) echo "INVALID SETUP: HOLD_5V=$HOLD_5V with OUTPUT=$OUTPUT (HOLD_5V=i2s is for lo or ear)"; exit 2 ;;
@@ -402,6 +414,15 @@ preflight() {
 		# r195: the order switch present when asked for; the snapshot present and idle
 		ORPRE=$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" order)
 		[ -z "$EAR_ORDER" ] || [ -n "$ORPRE" ] || _bad="$_bad no-ear_order"
+		# r196: the class-H EAR switches present when asked for; observation off
+		BKPRE=$(rv "$(cat "$PGD/ear_buck_vref" 2>/dev/null)" vref)
+		B3PRE=$(rv "$(cat "$PGD/ear_clsh_b32" 2>/dev/null)" mode)
+		IQPRE=$(cat "$PGD/ear_irq" 2>/dev/null)
+		[ -z "$EAR_BUCK" ] || [ -n "$BKPRE" ] || _bad="$_bad no-ear_buck_vref"
+		[ -z "$EAR_B32" ] || [ -n "$B3PRE" ] || _bad="$_bad no-ear_clsh_b32"
+		[ "$EAR_IRQ" = "0" ] || [ -n "$IQPRE" ] || _bad="$_bad no-ear_irq"
+		[ "$EAR_IRQ" = "0" ] || [ "$(rv "$IQPRE" on)" = "0" ] || _bad="$_bad ear-irq-already-on"
+		[ "$(rv "$(cat "$PGD/ear_clsh_b32" 2>/dev/null)" owed)" != "1" ] || _bad="$_bad b32-owed"
 		if [ "$SNAP" = "1" ]; then
 			_sp=$(head -n1 "$PGD/reg_snap" 2>/dev/null)
 			[ -n "$_sp" ] || _bad="$_bad no-reg_snap"
@@ -518,6 +539,43 @@ stream() {	# stream <n> <spec>
 		windows)    jrn "EAR ORDER: windows (DAC1 switch + power + CMBUFF, THEN class-H EAR)" ;;
 		downstream) jrn "EAR ORDER: downstream (class-H EAR PRE_DAC, then DAC1)" ;;
 		esac
+	fi
+	# r196: this stream's buck reference and B1 b3/b2, while the path is down;
+	# the EAR irq observation on for the run, this stream's counters noted
+	if [ "$OUTPUT" = "ear" ]; then
+		if [ -n "$EAR_BUCK" ]; then
+			_bk=$(ear_cmbuff_for "$EAR_BUCK" "$_n")
+			echo "$_bk" > "$PGD/ear_buck_vref" 2>/dev/null
+			if [ "$(rv "$(cat "$PGD/ear_buck_vref" 2>/dev/null)" vref)" != "$_bk" ]; then
+				jrn "EAR buck vref did not read back $_bk -- abort"
+				dl_abort "ear-buck-c$_n"
+				return 1
+			fi
+			eval "S${_n}_BK=\$_bk"
+			jrn "EAR BUCK VREF: $_bk ($([ "$_bk" = ff ] && echo downstream 2 V || echo Windows))"
+		fi
+		if [ -n "$EAR_B32" ]; then
+			_b3=$(ear_cmbuff_for "$EAR_B32" "$_n")
+			echo "$_b3" > "$PGD/ear_clsh_b32" 2>/dev/null
+			if [ "$(rv "$(cat "$PGD/ear_clsh_b32" 2>/dev/null)" mode)" != "$_b3" ]; then
+				jrn "CLSH B1 b3/b2 mode did not read back $_b3 -- abort"
+				dl_abort "ear-b32-c$_n"
+				return 1
+			fi
+			eval "S${_n}_B3=\$_b3"
+			jrn "CLSH B1 b3/b2: $_b3"
+		fi
+		if [ "$EAR_IRQ" = "1" ]; then
+			[ "$(rv "$(cat "$PGD/ear_irq" 2>/dev/null)" on)" = "1" ] || echo on > "$PGD/ear_irq" 2>/dev/null
+			_iq=$(cat "$PGD/ear_irq" 2>/dev/null)
+			if [ "$(rv "$_iq" on)" != "1" ]; then
+				jrn "EAR irq observation did not come on ('$_iq') -- abort"
+				dl_abort "ear-irq-c$_n"
+				return 1
+			fi
+			eval "S${_n}_IQ0=\$_iq"
+			jrn "EAR irq observation on: $_iq"
+		fi
 	fi
 	# r195: SNAP=1 -- arm the one-shot snapshot for this stream's PA on
 	if [ "$SNAP" = "1" ]; then
@@ -727,6 +785,11 @@ stream() {	# stream <n> <spec>
 	if [ "$OUTPUT" = "ear" ] && [ -n "$EAR_ORDER" ]; then
 		eval "S${_n}_ORU1=$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" windows_ups)"
 	fi
+	if [ "$OUTPUT" = "ear" ] && [ "$EAR_IRQ" = "1" ]; then
+		_iq=$(cat "$PGD/ear_irq" 2>/dev/null)
+		eval "S${_n}_IQ1=\$_iq"
+		jrn "EAR irq after the stream: $_iq"
+	fi
 
 	pin_set 0 || jrn "pin OFF did not read back"
 	[ -z "$HOLD_5V" ] || ctl_set "Loudspeaker Switch" 0 || jrn "Loudspeaker pin OFF did not read back"
@@ -775,6 +838,9 @@ launch)
 	[ -z "$EAR_CMBUFF" ] || CMD="$CMD --setenv=EAR_CMBUFF=$EAR_CMBUFF"
 	[ -z "$EAR_ORDER" ] || CMD="$CMD --setenv=EAR_ORDER=$EAR_ORDER"
 	[ "$SNAP" = "0" ] || CMD="$CMD --setenv=SNAP=$SNAP"
+	[ -z "$EAR_BUCK" ] || CMD="$CMD --setenv=EAR_BUCK=$EAR_BUCK"
+	[ -z "$EAR_B32" ] || CMD="$CMD --setenv=EAR_B32=$EAR_B32"
+	[ "$EAR_IRQ" = "0" ] || CMD="$CMD --setenv=EAR_IRQ=$EAR_IRQ"
 	CMD="$CMD --setenv=EXPECT_VERSION=${EXPECT_VERSION:-} sh $DIR/$(basename "$0") detached"
 	say "  $CMD"
 	exec $CMD ;;
@@ -863,6 +929,12 @@ if [ -n "$EAR_ORDER" ] && [ -n "${ORPRE:-}" ]; then
 		jrn "EAR order restored to $ORPRE" || jrn "EAR ORDER DID NOT RESTORE"
 fi
 [ "$SNAP" != "1" ] || echo disarm > "$PGD/reg_snap" 2>/dev/null
+# r196: the class-H EAR switches back as found; the observation off
+[ -z "$EAR_BUCK" ] || [ -z "${BKPRE:-}" ] || echo "$BKPRE" > "$PGD/ear_buck_vref" 2>/dev/null
+[ -z "$EAR_B32" ] || [ -z "${B3PRE:-}" ] || echo "$B3PRE" > "$PGD/ear_clsh_b32" 2>/dev/null
+[ "$EAR_IRQ" = "0" ] || echo off > "$PGD/ear_irq" 2>/dev/null
+[ -z "$EAR_BUCK$EAR_B32" ] && [ "$EAR_IRQ" = "0" ] ||
+	jrn "class-H EAR switches restored: $(cat "$PGD/ear_buck_vref" 2>/dev/null) | $(cat "$PGD/ear_clsh_b32" 2>/dev/null) | $(cat "$PGD/ear_irq" 2>/dev/null)"
 # r187: read AFTER the restore -- the "at their minimum" check is about the
 # state the run leaves behind, and a run whose last stream was at full gain
 # (Speaker Volume 8, field 0) failed it when this was read before.
@@ -911,6 +983,12 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 		"$(rv "$(head -n1 "$PGD/reg_snap" 2>/dev/null)" armed)" "0"
 	[ -z "$EAR_ORDER" ] || check "EAR order as found" \
 		"$(rv "$(cat "$PGD/ear_order" 2>/dev/null)" order)" "${ORPRE:-?}"
+	[ -z "$EAR_BUCK" ] || check "EAR buck vref as found" \
+		"$(rv "$(cat "$PGD/ear_buck_vref" 2>/dev/null)" vref)" "${BKPRE:-?}"
+	[ -z "$EAR_B32" ] || check "CLSH B1 b3/b2 mode as found, nothing owed" \
+		"$(rv "$(cat "$PGD/ear_clsh_b32" 2>/dev/null)" mode) $(rv "$(cat "$PGD/ear_clsh_b32" 2>/dev/null)" owed)" "${B3PRE:-?} 0"
+	[ "$EAR_IRQ" = "0" ] || check "EAR irq observation off at the end" \
+		"$(rv "$(cat "$PGD/ear_irq" 2>/dev/null)" on)" "0"
 	c=1
 	while [ "$c" -lt "$n" ]; do
 		eval "_pi=\${S${c}_PINON:-}; _l=\${S${c}_LIVE:-}; _a=\${S${c}_AFTER:-}; _p=\${S${c}_PA:-}; _f=\${S${c}_PAOFF:-}; _cs=\${S${c}_CS:-}; _hs=\${S${c}_HS:-}; _t=\${S${c}_TRC:-}; _pin=\${S${c}_PIN:-}"
@@ -1031,6 +1109,20 @@ open_output "$OUTDIR/wcd9320-dapm-listen-$STAMP.txt"
 				      "$([ "${_i2n:-0}" -ge 10 ] && echo yes || echo "no (${_i2n:-0})")" "yes"
 				check "s$c EAR PA OCP fault (INTR_STATUS2 bit 2) never set" "$(rv "$_i2" ocp_ear)" "0"
 				say "        s$c EAR PA start-up flag (bit 5) in $(rv "$_i2" start_ear) of ${_i2n:-0} samples"
+				# r196: the buck reference and B1 b3/b2 live, and the EAR PA's interrupts
+				eval "_bk=\${S${c}_BK:-}; _b3=\${S${c}_B3:-}; _q0=\${S${c}_IQ0:-}; _q1=\${S${c}_IQ1:-}"
+				[ -z "$_bk" ] || check "s$c EAR buck vref live (0x184)" "$(rv "$_o" buck4_0x184)" "$_bk"
+				case "$_b3" in
+				clear) check "s$c CLSH B1 b3/b2 cleared live" "$(printf '%02x' $(( 0x$(rv "$_o" clsh_0x320) & 0x0c )))" "00" ;;
+				keep)  check "s$c CLSH B1 b3/b2 untouched live" "$(printf '%02x' $(( 0x$(rv "$_o" clsh_0x320) & 0x0c )))" \
+				             "$(printf '%02x' $(( 0x$(rv "$OPRE" clsh_0x320) & 0x0c )))" ;;
+				esac
+				if [ -n "$_q1" ]; then
+					_qo=$(( $(rv "$_q1" ocp) - $(rv "$_q0" ocp) ))
+					_qs=$(( $(rv "$_q1" startup) - $(rv "$_q0" startup) ))
+					check "s$c EAR PA OCP interrupt never fired" "$_qo" "0"
+					say "        s$c EAR PA interrupts this stream: start-up $_qs, OCP $_qo (storm=$(rv "$_q1" storm))"
+				fi
 				# r194: the CMBUFF mode, live and after
 				eval "_cm=\${S${c}_CMB:-}"
 				_cb=$(rv "$_o" cmbuff_0x1be)

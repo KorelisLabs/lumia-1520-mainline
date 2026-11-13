@@ -102,6 +102,13 @@ eq "intr2: no samples" "$(intr2_summary "$_i2t")" "n=0 or=00 ocp_ear=0 start_ear
 printf 'ff\n' > "$_i2t"
 eq "intr2: every bit" "$(intr2_summary "$_i2t")" "n=1 or=ff ocp_ear=1 start_ear=1 ocp_hph=1 start_hph=1"
 rm -f "$_i2t"
+# r196: the class-H EAR word lists
+ear_words_ok "3f,ff" ff 3f && ok "buck list: 3f,ff" || bad "buck list: 3f,ff" "refused"
+ear_words_ok "3f,fe" ff 3f && bad "buck list: fe refused" "accepted" || ok "buck list: fe refused"
+ear_words_ok "keep,clear" keep clear && ok "b32 list: keep,clear" || bad "b32 list: keep,clear" "refused"
+ear_words_ok "keep,,clear" keep clear && bad "b32 list: empty element refused" "accepted" || ok "b32 list: empty element refused"
+ear_words_ok "" keep clear && bad "b32 list: empty refused" "accepted" || ok "b32 list: empty refused"
+eq "buck for stream 3 of 3f,ff" "$(ear_cmbuff_for 3f,ff 3)" "ff"
 dapm_out xyz; eq "unknown output refused" "$?" "1"
 S7="held=000 ups=6 downs=0 refusals=0 failures=0 mclk_users=1 pa_on=0 pa_r_on=0 spk_held=3f ear_held=00 spk_pa=1 ear_pa=0"
 eq "spk path held whole"        "$(dapm_held_key_is "$S7" spk_held 3f)" "OK"

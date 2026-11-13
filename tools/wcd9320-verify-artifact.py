@@ -175,7 +175,10 @@ EXPECT = {
     #            wcd9320_snap_take (noinline, so one site whatever the
     #            inliner does). Measured +1 in the compile-check tree
     #            (136 -> 137); the build is the arbiter.
-    "read_bypassed_calls": 143,
+    # r196: 144 = 143 + 1, the CDC_CLSH_B1_CTL b3/b2 baseline in
+    #            wcd9320_clsh_mode (ear_clsh_b32). Measured +1 in the
+    #            compile-check tree (137 -> 138).
+    "read_bypassed_calls": 144,
 }
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -2988,8 +2991,9 @@ def main():
     check("keep writes nothing: the clear is only inside the mode test",
           eup.count("WCD9320_A_RX_EAR_CMBUFF") == 2 and blk.count("WCD9320_A_RX_EAR_CMBUFF") == 2,
           "r187 behaviour is reachable")
-    check("the default is clear (Windows), set at probe",
-          "wcd->ear_cmbuff_clear = true;" in func_body("wcd9320_probe"), "Windows parity")
+    # r196: Windows SETS b0 (doc section 11), so parity is keep
+    check("the default is keep (Windows sets b0), set at probe",
+          "wcd->ear_cmbuff_clear = false;" in func_body("wcd9320_probe"), "Windows parity")
     est = func_body("ear_cmbuff_store")
     check("the switch: clear|keep only, under c3_lock, refused while up or owed",
           'sysfs_streq(buf, "clear")' in est and 'sysfs_streq(buf, "keep")' in est and "return -EINVAL;" in est
@@ -3058,10 +3062,11 @@ def main():
           ptext_all.count("wcd9320_snap_after(wcd, wcd9320_ear_pa(wcd, on), on, \"ear\")") == 1
           and ptext_all.count("wcd9320_snap_after(wcd, wcd9320_hphr_pa_path(wcd, on), on, \"hph\")") == 1
           and ptext_all.count("wcd9320_snap_after(") == 3, "two hooks and the definition")
-    ranges = "\t{ 0x100, 0x11f },\t/* bias, bandgap */\n\t{ 0x180, 0x1ff },\t/* analog RX: buck, NCP, HPH, EAR, LO, SPK */\n\t{ 0x2b0, 0x2ff },\t/* RX1..RX7 digital */\n\t{ 0x300, 0x33f },\t/* CDC clocks, class-H */\n\t{ 0x380, 0x3bf },\t/* CDC_CONN muxes */"
-    check("the snapshot ranges, and the buffer sized to them (368)",
-          ranges in ptext_all and "u16 snap_val[368];" in ptext_all,
-          "0x20 + 0x80 + 0x50 + 0x40 + 0x40")
+    # r196: widened to everything but 0x200-0x2af (TX digital)
+    ranges = "\t{ 0x000, 0x1ff },\t/* r196: chip, interrupts, bias, TX/MBHC, analog RX */\n\t{ 0x2b0, 0x3ff },\t/* r196: RX1..RX7 digital, clocks, class-H, 0x34x, CONN, 0x3cx */"
+    check("the snapshot ranges, and the buffer sized to them (848)",
+          ranges in ptext_all and "u16 snap_val[848];" in ptext_all,
+          "0x200 + 0x150")
     rss = func_body("reg_snap_store")
     check("reg_snap: arm|disarm only, under c3_lock",
           'sysfs_streq(buf, "arm")' in rss and 'sysfs_streq(buf, "disarm")' in rss
@@ -3071,6 +3076,82 @@ def main():
           "&dev_attr_ear_order.attr," in ptext_all and "&dev_attr_reg_snap.attr," in ptext_all
           and "static DEVICE_ATTR_RW(ear_order);" in ptext_all and "static DEVICE_ATTR_RW(reg_snap);" in ptext_all,
           "sysfs")
+
+    # ==================================================================
+    # 5t. r196: class-H EAR switches and the EAR PA's own interrupts.
+    #
+    # docs/audio/wcd9320-r194-earpiece-mapping.md, section 11.
+    #   1. ear_buck_vref: EAR only; 0x3f goes in Windows' place (after
+    #      mode5, before the mode bits and the enable); 0xff (default)
+    #      applies the proven table whole
+    #   2. ear_clsh_b32: EAR only, measured, owed before the write, the
+    #      inverse at class-H teardown after the block is off
+    #   3. both switches: fixed words only, under c3_lock, refused while
+    #      the earpiece or class-H is up or a restore is owed
+    #   4. ear_irq: the two EAR sources via regmap-irq, ONESHOT; refused
+    #      while the earpiece is up; the handler counts and writes nothing;
+    #      a storm guard; freed at remove while the irq chip exists
+    # ==================================================================
+    print()
+    print("=== 5t. the r196 class-H EAR and EAR irq fence ===")
+    cm = func_body("wcd9320_clsh_mode")
+    cup = cm[:cm.find("unwind:")]
+    cdn = cm[cm.find("teardown:"):]
+    vb = "if (ear && wcd->ear_buck_vref != WCD9320_BUCK_VREF_2V) {"
+    check("buck vref: EAR only, after mode5, before the mode bits and the enable",
+          0 <= cup.find('"comp req EAR"') < cup.find(vb)
+          < cup.find("ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode, 1);")
+          < cup.find("ret = wcd9320_clsh_one(wcd, WCD9320_A_BUCK_MODE_4, 0xff,\n\t\t\t\t\t       wcd->ear_buck_vref,")
+          < cup.find("ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode + 2,")
+          < cup.find("ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_ncp,"),
+          "Windows' place")
+    check("buck vref: the default applies the proven table whole",
+          "} else {\n\t\tret = wcd9320_clsh_apply(wcd, wcd9320_clsh_buck_mode,\n\t\t\t\t\t ARRAY_SIZE(wcd9320_clsh_buck_mode));\n\t}" in cup
+          and "wcd->ear_buck_vref = WCD9320_BUCK_VREF_2V;" in func_body("wcd9320_probe"),
+          "0xff unless asked")
+    bb = "if (ear && wcd->ear_clsh_b32_clear) {"
+    check("b3/b2: EAR only, measured, owed before the write, after comp req",
+          0 <= cup.find('"comp req EAR"') < cup.find(bb)
+          < cup.find("regmap_read_bypassed(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b32);")
+          < cup.find("wcd->ear_clsh_b32_base = b32 & 0x0c;") < cup.find("wcd->ear_clsh_b32_owed = true;")
+          < cup.find('"clsh b1 b3/b2 clear (r196 ear_clsh_b32)"') < cup.find(vb),
+          "the inverse is owed whatever the write did")
+    check("b3/b2: the inverse after the block is off, then the flag cleared",
+          0 <= cdn.find('"clsh block off"') < cdn.find("if (wcd->ear_clsh_b32_owed) {")
+          < cdn.find("wcd->ear_clsh_b32_base,") < cdn.find("wcd->ear_clsh_b32_restores++;")
+          < cdn.find("wcd->ear_clsh_b32_owed = false;"), "every exit")
+    busy = func_body("wcd9320_ear_busy")
+    check("the busy test covers the earpiece, class-H and an owed restore",
+          all(x in busy for x in ("wcd->ear_prep_on", "wcd->ear_dac_on", "wcd->ear_pa_on",
+                                  "wcd->clsh_on", "wcd->ear_clsh_b32_owed")), "a stream never changes under itself")
+    for fn, words, setter in (("ear_buck_vref_store", ('"ff"', '"3f"'), "wcd->ear_buck_vref = v;"),
+                              ("ear_clsh_b32_store", ('"clear"', '"keep"'), "wcd->ear_clsh_b32_clear = clear;")):
+        b = func_body(fn)
+        check("%s: fixed words, under c3_lock, refused while busy" % fn,
+              all(("sysfs_streq(buf, %s)" % w) in b for w in words) and "return -EINVAL;" in b
+              and 0 <= b.find("mutex_lock(&wcd->c3_lock);") < b.find("if (wcd9320_ear_busy(wcd)) {")
+              < b.find(setter) < b.find("mutex_unlock(&wcd->c3_lock);"), "sysfs")
+    ist = func_body("ear_irq_store")
+    check("ear_irq: both EAR sources via regmap-irq, ONESHOT, refused while the earpiece is up",
+          "regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_EAR_PA_OCPL_FAULT)" in ist
+          and "regmap_irq_get_virq(wcd->irq_data, WCD9320_IRQ_EAR_PA_STARTUP)" in ist
+          and ist.count("IRQF_ONESHOT") == 2
+          and 0 <= ist.find("mutex_lock(&wcd->c3_lock);")
+          < ist.find("if (wcd->ear_prep_on || wcd->ear_dac_on || wcd->ear_pa_on) {")
+          < ist.find("mutex_unlock(&wcd->c3_lock);")
+          and "wcd9320_ear_irq_free(wcd);" in ist, "observation only")
+    th = func_body("wcd9320_ear_irq_thread")
+    check("the EAR irq handler counts, guards a storm, and writes nothing",
+          "++wcd->ear_irq_ocp;" in th and "++wcd->ear_irq_startup;" in th
+          and "disable_irq_nosync(irq);" in th and "return IRQ_HANDLED;" in th
+          and "regmap" not in th and "c2b" not in th and "clsh_one" not in th, "the chip is untouched")
+    rm = func_body("wcd9320_remove")
+    check("remove frees the EAR sources while the irq chip still exists",
+          0 <= rm.find("wcd9320_jack_disable(wcd, false);") < rm.find("wcd9320_ear_irq_free(wcd);"),
+          "before devm tears the chip down")
+    check("the three r196 switches are in the attribute group",
+          all(("&dev_attr_%s.attr," % a) in ptext_all and ("static DEVICE_ATTR_RW(%s);" % a) in ptext_all
+              for a in ("ear_buck_vref", "ear_clsh_b32", "ear_irq")), "sysfs")
 
     if args.expect_asoc:
         print()

@@ -277,6 +277,19 @@ intr2_summary() {	# intr2_summary <file>
 		printf "n=%d or=%02x ocp_ear=%d start_ear=%d ocp_hph=%d start_hph=%d\n", n, o, oe, se, oh, sh
 	}' "$1" 2>/dev/null
 }
+# r196: a comma list of fixed words, one per earpiece stream, the last
+# repeating (picked with ear_cmbuff_for)
+ear_words_ok() {	# ear_words_ok <list> <word>... -> 0 when every element is one of the words
+	_wl=$1; shift
+	[ -n "$_wl" ] || return 1
+	case "$_wl" in ,*|*,|*,,*) return 1 ;; esac
+	for _we in $(printf '%s' "$_wl" | tr ',' ' '); do
+		_wk=1
+		for _ww in "$@"; do [ "$_we" = "$_ww" ] && _wk=0; done
+		[ "$_wk" = 0 ] || return 1
+	done
+	return 0
+}
 ear_cmbuff_for() {	# ear_cmbuff_for <list> <stream n, from 1> -> its mode
 	_ecl=""; _eci=0
 	for _ec in $(printf '%s' "$1" | tr ',' ' '); do

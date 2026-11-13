@@ -395,3 +395,47 @@ routine** (0x4466d8) uses 0xe6 (1.8 V), then 0x3f. The run-time values
 - An `ear_buck_vref` switch (0xff, or Windows' 0x3f) A/Bs the buck reference.
 - Optionally, a switch for `0x320` b3/b2 during EAR.
 - These go in alongside the unmasked EAR OCP and start-up observation, and the wider snapshot.
+
+## 12. r196 (`earirq-rc1`, pkgrel 196): staged 2026-11-13
+
+The card (`q6-card-rc11`) and the DT are unchanged.
+
+**Codec driver:**
+- **The CMBUFF default is `keep`** (Windows parity, section 11).
+- **`ear_buck_vref`** (`ff` default, or `3f`, Windows) sets class-H EAR's `BUCK_MODE_4`. `3f` goes in Windows' place: after mode5, before the mode bits and the enable. `ff` applies the proven table whole.
+- **`ear_clsh_b32`** (`keep` default, or `clear`) clears `CDC_CLSH_B1_CTL` b3/b2 for EAR. The base is measured, the owed flag is set before the write, and the inverse is written at class-H teardown after the block is off.
+- **The two class-H switches** are refused under `c3_lock` while the earpiece or class-H is up, or while a restore is owed.
+- **`ear_irq`** (`on` / `off`) requests EAR_PA_OCPL_FAULT and EAR_PA_STARTUP through the regmap-irq domain, ONESHOT. The handler only counts and writes nothing. An OCP storm (> 64) disables that line. The sources are freed at remove, while the irq chip still exists. Turning it on is refused while the earpiece is up.
+- **`reg_snap`** now reads `0x000–0x1ff` and `0x2b0–0x3ff`, 848 registers in all.
+
+**Verifier:**
+- **Fence 5t** has 11 checks.
+- **Updated checks:** 5r's default is now `keep`, and 5s covers 848 registers.
+- **Pin:** `read_bypassed_calls` is 144, from +1 measured in the compile-check tree (137 → 138).
+- **Results:** 697 checks pass. The only 2 failures are the old .ko's version and pin.
+- **Mutation test:** 15/15.
+
+**Compile:** clean at `W=1`, with 0 warnings.
+
+**Runner:**
+- **`EAR_BUCK=ff|3f[,...]`** and **`EAR_B32=keep|clear[,...]`** apply per stream. Each is written and read back while the path is down, and checked live from `out_state` (`buck4_0x184`, `clsh_0x320 & 0x0c`).
+- **`EAR_IRQ=1`** turns observation on for the run and gives per-stream start-up and OCP deltas, with OCP checked to be 0.
+- **At the end**, everything is restored as it was found and observation is turned off.
+
+**Selftest:** 131/0.
+
+**Build:**
+```
+tools/build-wcd9320-kernel.sh --pkgrel 196 --version earirq-rc1 \
+    --expect-asoc --expect-dais 1 --stage ~/r196 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+```
+
+**Probe plan, after the gates.** All runs use `OUTPUT=ear EAR_IRQ=1 SNAP=1`, with a chat go per stream.
+1. **-40 dBFS, `B:0:84`:** `EAR_BUCK=3f,ff EAR_B32=keep,keep`. s1 is full Windows parity and s2 is the r195 control, both with CMBUFF `keep`.
+2. **If both are silent, -20 dBFS full gain (declared):** `EAR_BUCK=3f,3f EAR_B32=keep,clear`.
+3. **The interrupt counts read in every case:**
+   - start-up seen and no OCP: the PA starts cleanly, and the codec side is closed;
+   - OCP seen: the PA is tripping, which points at the load or the wiring.
