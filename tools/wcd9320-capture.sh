@@ -10,7 +10,7 @@
 # stimulus (or nothing, for the floor) and analyses the WAV afterwards.
 #
 # Usage (as root on the phone):
-#   EXPECT_VERSION=capdmic-rc1 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
+#   EXPECT_VERSION=capsel-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
 # Output: /var/log/wcd9320-capture-<stamp>-<tag>.wav and .txt
 # Exit: 0 PASS, 1 FAIL, 2 refused before anything changed.
 
@@ -21,7 +21,11 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-run}"
 SECS="${CAP_SECONDS:-5}"
-EXPECT_VERSION="${EXPECT_VERSION:-capdmic-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-capsel-rc1}"
+# r198: CAP_DMIC=1..4 -- which DMIC the run records (cap_dmic in the codec);
+# DMIC n goes through decimator n, SLIM TXn, TX port n-1, channel 128+n-1,
+# on MICBIAS1 (1/2) or MICBIAS3 (3/4)
+CAPN="${CAP_DMIC:-1}"
 CARD_VERSION="${CARD_VERSION:-q6-card-rc12}"
 WAV="$OUTDIR/wcd9320-capture-$STAMP-$TAG.wav"
 OUT="$OUTDIR/wcd9320-capture-$STAMP-$TAG.txt"
@@ -61,6 +65,9 @@ CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 [ "$(rv "$CPRE" tx_port_on)" = "0" ] || bad="$bad tx-port-on"
 [ "$(ctl_get "$PIN")" = "0" ] || bad="$bad pin-not-off"
 [ "$(ctl_get "$MIXER")" = "0" ] || bad="$bad mixer-not-off"
+case "$CAPN" in 1|2|3|4) ;; *) bad="$bad cap-dmic=$CAPN" ;; esac
+[ -e "$PGD/cap_dmic" ] || bad="$bad no-cap_dmic"
+DMPRE=$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)
 PCMDEV=$(ls /dev/snd/pcmC0D*c 2>/dev/null)
 [ "$(printf '%s\n' $PCMDEV | grep -c .)" = "1" ] || bad="$bad capture-pcm='$PCMDEV'"
 if [ -n "$bad" ]; then
@@ -78,14 +85,31 @@ abort() {
 {
 echo "================ wcd9320 capture run $STAMP ($TAG) ================"
 echo "codec $CODECV, card $CARDV, device $PCMDEV, $SECS s, S16_LE mono 48 kHz"
-echo "pre:  $CPRE"
 RUN_OK=1
-ctl_set "$MIXER" 1 || { abort "the capture mixer did not read back 1"; RUN_OK=0; }
+# r198: select the DMIC while everything is idle, then re-read the baseline
+echo "$CAPN" > "$PGD/cap_dmic" 2>/dev/null
+[ "$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)" = "$CAPN" ] || { echo "ABORT: cap_dmic did not read back $CAPN"; RUN_OK=0; }
+echo "route: $(cat "$PGD/cap_dmic" 2>/dev/null)"
+CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
+echo "pre:  $CPRE"
+[ "$RUN_OK" = 1 ] && { ctl_set "$MIXER" 1 || { abort "the capture mixer did not read back 1"; RUN_OK=0; }; }
 [ "$RUN_OK" = 1 ] && { ctl_set "$PIN" 1 || { abort "the Handset Mic pin did not read back 1"; RUN_OK=0; }; }
 if [ "$RUN_OK" = 1 ]; then
 	"$CAP" -D "$PCMDEV" -s "$SECS" -o "$WAV" > "$TLOG" 2>&1 &
 	CPID=$!
-	sleep 1
+	# poll, don't sleep: the path takes ~1 s to come up (MCLK switch,
+	# LDO_H, the 20 ms bias settle), and a fixed 1 s sample caught it at
+	# 1f on the first r197 run. Up to 4 s for all six stages and the stream.
+	_w=0
+	while [ "$_w" -lt 40 ]; do
+		CLIVE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
+		[ "$(rv "$CLIVE" cap_held) $(rv "$CLIVE" tx_up)" = "3f 1" ] && break
+		kill -0 "$CPID" 2>/dev/null || break
+		sleep 0.1
+		_w=$((_w + 1))
+	done
+	echo "path up after ~$((_w * 100)) ms"
+	sleep 0.2
 	CLIVE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 	DLIVE=$(cat "$PGD/dapm_state" 2>/dev/null)
 	echo "live: $CLIVE"
@@ -116,22 +140,33 @@ check "live: TX port 0 on, SLIMbus TX stream up" "$(rv "$CLIVE" tx_port_on) $(rv
 check "live: LDO_H on at 3.0 V (0x110 & 8c)" "$(hexand "$(rv "$CLIVE" ldoh_0x110)" 0x8c)" "8c"
 check "live: CFILT1 k 24 = 1.8 V (0x129 & fc)" "$(hexand "$(rv "$CLIVE" cfiltk_0x129)" 0xfc)" "60"
 check "live: CFILT1 on (0x128 b7)" "$(hexand "$(rv "$CLIVE" cfilt1_0x128)" 0x80)" "80"
-check "live: MICBIAS1 on, on CFILT1 (0x12b & e0)" "$(hexand "$(rv "$CLIVE" micb1_0x12b)" 0xe0)" "80"
-check "live: DMIC1/2 clock DIV_4 and on (0x304 & 0f)" "$(hexand "$(rv "$CLIVE" dmicclk_0x304)" 0x0f)" "05"
-check "live: DEC1 DMIC rate DIV_4 (0x225 & 07)" "$(hexand "$(rv "$CLIVE" txdmic_0x225)" 0x07)" "02"
-check "live: DEC1 input DMIC1 (0x393 & 03)" "$(hexand "$(rv "$CLIVE" conntx_0x393)" 0x03)" "01"
-check "live: DEC1 DMIC sel, HPF 150 Hz on (0x223 & 39)" "$(hexand "$(rv "$CLIVE" mux_0x223)" 0x39)" "11"
-check "live: DEC1 unmuted (0x222 b0)" "$(hexand "$(rv "$CLIVE" volcfg_0x222)" 0x01)" "00"
-check "live: DEC1 clock on (0x30a b0)" "$(hexand "$(rv "$CLIVE" txclk_0x30a)" 0x01)" "01"
+# r198: DMIC n's own bits -- the pair's clock field, decimator n, SLIM TXn
+if [ "$CAPN" -gt 2 ]; then CKM=0xf0; CKW=50; MBN=3; else CKM=0x0f; CKW=05; MBN=1; fi
+FSH=$(( 2 * (CAPN - 1) )); DBIT=$(( 1 << (CAPN - 1) ))
+check "live: the route is DMIC$CAPN on TX port $((CAPN - 1))" "$(rv "$CLIVE" cap_dmic) $(rv "$CLIVE" tx_port)" "$CAPN $((CAPN - 1))"
+check "live: MICBIAS$MBN on, on CFILT1 (& e0)" "$(hexand "$(rv "$CLIVE" micb)" 0xe0)" "80"
+check "live: the pair's clock DIV_4 and on (0x304 & ${CKM#0x})" "$(hexand "$(rv "$CLIVE" dmicclk_0x304)" $CKM)" "$CKW"
+check "live: DEC$CAPN DMIC rate DIV_4 (& 07)" "$(hexand "$(rv "$CLIVE" txdmic)" 0x07)" "02"
+check "live: DEC$CAPN input DMIC$CAPN (0x393 field)" "$(( (0x$(rv "$CLIVE" conntx_0x393) >> FSH) & 3 ))" "1"
+check "live: DEC$CAPN DMIC sel, HPF 150 Hz on (& 39)" "$(hexand "$(rv "$CLIVE" mux)" 0x39)" "11"
+check "live: DEC$CAPN unmuted (b0)" "$(hexand "$(rv "$CLIVE" volcfg)" 0x01)" "00"
+check "live: DEC$CAPN clock on (0x30a bit $((CAPN - 1)))" "$(( (0x$(rv "$CLIVE" txclk_0x30a) >> (CAPN - 1)) & 1 ))" "1"
 check "live: CDC_CONN on (0x30c b2)" "$(hexand "$(rv "$CLIVE" othr_0x30c)" 0x04)" "04"
-check "live: SLIM TX1 = DEC1 (0x3a3 & 0f)" "$(hexand "$(rv "$CLIVE" sbtx_0x3a3)" 0x0f)" "08"
+check "live: SLIM TX$CAPN = DEC$CAPN (& 0f)" "$(hexand "$(rv "$CLIVE" sbtx)" 0x0f)" "08"
 # after: everything down and every register as found
 check "after: capture holds nothing" "$(rv "$CPOST" cap_held)" "00"
 check "after: TX port off, stream down" "$(rv "$CPOST" tx_port_on) $(rv "$CPOST" tx_up)" "0 0"
 check "after: no MCLK user" "$(rv "$DPOST" mclk_users)" "0"
-for k in ldoh_0x110 cfilt1_0x128 cfiltk_0x129 micb1_0x12b gain_0x221 volcfg_0x222 mux_0x223 txdmic_0x225 dmicclk_0x304 txclk_0x30a othr_0x30c conntx_0x393 sbtx_0x3a3; do
+for k in ldoh_0x110 cfilt1_0x128 cfiltk_0x129 micb gain mux txdmic dmicclk_0x304 txclk_0x30a othr_0x30c conntx_0x393 sbtx; do
 	check "after: $k as found" "$(rv "$CPOST" "$k")" "$(rv "$CPRE" "$k")"
 done
+# volcfg: the driver owns bit 0 (mute) only; the first r197 run saw the chip
+# set bit 3 itself during the stream, so only bit 0 is compared
+check "after: volcfg bit 0 as found" "$(hexand "$(rv "$CPOST" volcfg)" 0x01)" "$(hexand "$(rv "$CPRE" volcfg)" 0x01)"
+echo "volcfg: before $(rv "$CPRE" volcfg), live $(rv "$CLIVE" volcfg), after $(rv "$CPOST" volcfg) (bit 3 is the chip's)"
+# r198: the route back to what the run found
+[ -n "$DMPRE" ] && echo "$DMPRE" > "$PGD/cap_dmic" 2>/dev/null
+check "cap_dmic as found" "$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)" "${DMPRE:-?}"
 for k in refusals failures; do
 	check "capture $k this run" "$(( $(rv "$CPOST" "$k") - $(rv "$CPRE" "$k") ))" "0"
 done

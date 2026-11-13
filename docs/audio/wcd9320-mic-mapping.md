@@ -280,3 +280,48 @@ tools/build-pcm-capture.sh --stage ~/r197
 2. **A 1 kHz tone from the PC speaker** (`c3a-capture.py play`) at a fixed distance, 5 s, analysed on the PC.
 
 Each run needs one chat go. Nothing on the phone drives a transducer.
+
+## 13. r197 result, and r198 (`capsel-rc1`, pkgrel 198): staged 2026-11-13
+
+**r197 on the phone.** The gates were green: dapm 83/0, mclk-own 90/0 and vm 57/0. The card registered 5 links, and the capture PCM is `pcmC0D3c`. Three DMIC1 recordings followed:
+
+| run | runner | peak | RMS | reading |
+|---|---|---|---|---|
+| silent, 5 s | 39/4 (a runner timing bug and a chip-owned bit) | 5 | −86 dBFS | idle; nearly all the power is DC and < 100 Hz |
+| PC tone, 1 kHz at −20 dBFS, heard in the room | 43/0 | 5 | −86 dBFS | **no tone** (1 kHz at −118 dBFS) |
+| blowing and tapping on the bottom edge | 43/0 | **69** | −80 dBFS | rhythmic bursts, 53% of the power in 100–1000 Hz |
+
+**What the runs establish:**
+- The whole capture chain works end to end: the stages, the TX port and the SLIMbus stream on channel 128, the DSP, the PCM and the WAV.
+- Every mapped register reads as intended while live, and is restored after.
+- **But DMIC1 delivers about 50 dB too little.** That is what reading the wrong slot of a shared DMIC data line would look like: DMIC1 and DMIC2 share a pin and are told apart by the clock edge. The other possibility is that the call mic sits on the DMIC3/4 pair.
+
+**Runner fixes:**
+- It polls for `cap_held=3f` and `tx_up=1` rather than sampling at a fixed 1 s.
+- The volume config register (0x222 for DEC1) is compared on bit 0 only. The chip sets bit 3 itself during a stream.
+
+**r198, `cap_dmic` (1–4, DMIC1 by default):**
+- DMIC *n* goes through decimator *n* (`CONN_TX_B1` field *n* = 1), then SLIM TX*n* (`0x3a3 + n−1` = 8, which is DEC*n* on every one of TX1–TX4 in downstream), then TX port *n*−1 on channel 128 + *n*−1. The port's channel bitmap carries the port's own shift.
+- **The pair** sets the clock (B1 bit 0 and [3:1] for DMIC1/2, bit 4 and [7:5] for DMIC3/4) and the bias (MICBIAS1 or MICBIAS3). Both biases sit on CFILT1 at 1.8 V, because the ACDB gives every DMIC path CFILT1, index 28.
+- **The tables** are built by `wcd9320_cap_build()` at capture stage 0 and kept until the next build. The switch is refused while capture, the TX port or a TX stream runtime is up.
+- **`capture_state`** reports the shared registers plus the selected decimator's (`micb`, `gain`, `volcfg`, `mux`, `txdmic`, `sbtx`), and `cap_dmic` / `tx_port`.
+- **The runner** takes `CAP_DMIC=1..4`, with the live checks computed for *n*.
+- **Verification:**
+  - **Compile:** `W=1` is clean.
+  - **Pin:** unchanged at 146 (140 in the compile-check tree).
+  - **Fence 5u:** the table checks were rewritten for the builder, and new checks cover `cap_dmic` and the pair logic.
+  - **Results:** 726 checks pass. The only failure is the old r197 build's version.
+  - **Mutation test:** 9/9.
+  - **Selftest:** 131/0.
+- **Unchanged:** the card and `pcm-capture`.
+
+**Build:**
+```
+tools/build-wcd9320-kernel.sh --pkgrel 198 --version capsel-rc1 \
+    --expect-asoc --expect-dais 2 --stage ~/r198 \
+    --extra-module sound/soc/qcom/qdsp6/q6core.ko \
+    --extra-module sound/soc/qcom/qdsp6/q6inventory_probe.ko \
+    --extra-module sound/soc/qcom/snd-soc-lumia1520-q6.ko
+```
+
+**Test:** four tap-and-blow recordings, `CAP_DMIC=1`, 2, 3, 4, with one go for the set. Whichever line reaches near full scale carries the mic nearest the bottom edge, and the others show where the remaining mics answer.

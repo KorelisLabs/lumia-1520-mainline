@@ -3211,33 +3211,45 @@ def main():
                                  "return wcd9320_cap_mb(wcd, on);", "return wcd9320_cap_dmic_clk(wcd, on);",
                                  "return wcd9320_cap_dec(wcd, on);", "return wcd9320_cap_slim(wcd, on);")),
           "nothing else")
-    want_tb = {
-        "wcd9320_cap_mb_ldo": ['{ WCD9320_A_LDO_H_MODE_1, 0x0c, 0x0c,', '{ WCD9320_A_LDO_H_MODE_1, 0x80, 0x80,'],
-        "wcd9320_cap_mb_bias": ['{ WCD9320_A_MICB_CFILT_1_VAL, 0xfc, 24 << 2,', '{ WCD9320_A_MICB_1_CTL, 0x60, 0x00,',
-                                '{ WCD9320_A_MICB_CFILT_1_CTL, 0x80, 0x80,', '{ WCD9320_A_MICB_1_CTL, 0x80, 0x80,'],
-        "wcd9320_cap_dmic": ['{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x0e, 0x04,', '{ WCD9320_A_CDC_TX1_DMIC_CTL, 0x07, 0x02,',
-                             '{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, 0x01, 0x01,'],
-        "wcd9320_cap_dec_pre": ['{ WCD9320_CDC_CLK_OTHR_CTL, 0x04, 0x04,', '{ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03, 0x01,',
-                                '{ WCD9320_A_CDC_TX1_MUX_CTL, 0x01, 0x01,', '{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x01,'],
-        "wcd9320_cap_dec_post": ['{ WCD9320_A_CDC_TX1_MUX_CTL, 0x30, 0x10,', '{ WCD9320_A_CDC_TX1_MUX_CTL, 0x08, 0x00,',
-                                 '{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, 0x01, 0x01,', '{ WCD9320_A_CDC_TX1_VOL_CTL_CFG, 0x01, 0x00,'],
-        "wcd9320_cap_sb": ['{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL, 0x0f, 0x08,'],
-    }
-    for nm, rows in want_tb.items():
-        tb = array_body("static const struct wcd9320_cap_w %s[]" % nm)
-        pos = [tb.find(r) for r in rows]
-        check("capture table %s: the mapped writes, in order" % nm,
-              all(p >= 0 for p in pos) and pos == sorted(pos) and tb.count("{ WCD9320") == len(rows),
-              "%d row(s)" % tb.count("{ WCD9320"))
+    cb = func_body("wcd9320_cap_build")
+    want_rows = [
+        '{ WCD9320_A_LDO_H_MODE_1, 0x0c, 0x0c,', '{ WCD9320_A_LDO_H_MODE_1, 0x80, 0x80,',
+        '{ WCD9320_A_MICB_CFILT_1_VAL, 0xfc, 24 << 2,', '{ micb, 0x60, 0x00,',
+        '{ WCD9320_A_MICB_CFILT_1_CTL, 0x80, 0x80,', '{ micb, 0x80, 0x80,',
+        '{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, p34 ? 0xe0 : 0x0e, p34 ? 0x40 : 0x04,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_DMIC_CTL, n), 0x07, 0x02,',
+        '{ WCD9320_A_CDC_CLK_DMIC_B1_CTL, p34 ? 0x10 : 0x01, p34 ? 0x10 : 0x01,',
+        '{ WCD9320_CDC_CLK_OTHR_CTL, 0x04, 0x04,',
+        '{ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03 << fsh, 0x01 << fsh,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x01, 0x01,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x01,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x30, 0x10,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x08, 0x00,',
+        '{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, dbit, dbit,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x00,',
+        '{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1), 0x0f, 0x08,']
+    pos = [cb.find(r) for r in want_rows]
+    check("capture builder: the mapped writes for DMIC n, in order",
+          all(p >= 0 for p in pos) and pos == sorted(pos) and cb.count("(struct wcd9320_cap_w){") == len(want_rows),
+          "%d row(s)" % cb.count("(struct wcd9320_cap_w){"))
+    check("capture builder: the pair picks the bias and the clock; decimator n takes DMIC n",
+          "bool p34 = n > 2;" in cb and "u16 micb = p34 ? WCD9320_A_MICB_3_CTL : WCD9320_A_MICB_1_CTL;" in cb
+          and "u8 dbit = BIT(n - 1), fsh = 2 * (n - 1);" in cb
+          and "unsigned int n = clamp_t(unsigned int, wcd->cap_dmic, 1, 4);" in cb
+          and "wcd->cap_built = n;" in cb, "MICBIAS1 for 1/2, MICBIAS3 for 3/4, CFILT1 for both")
+    check("capture: the tables are built for the chosen DMIC before stage 0",
+          0 <= ce_.find("if (stage == WCD9320_CAP_MCLK)\n\t\t\twcd9320_cap_build(wcd);")
+          < ce_.find("ret = wcd9320_cap_stage_call(wcd, stage, true);"), "kept until the next build")
     defs = {"WCD9320_A_MICB_1_CTL": "0x12b", "WCD9320_A_CDC_TX1_VOL_CTL_GAIN": "0x221",
             "WCD9320_A_CDC_TX1_VOL_CTL_CFG": "0x222", "WCD9320_A_CDC_TX1_MUX_CTL": "0x223",
             "WCD9320_A_CDC_TX1_DMIC_CTL": "0x225", "WCD9320_A_CDC_CLK_TX_RESET_B1_CTL": "0x302",
             "WCD9320_A_CDC_CLK_DMIC_B1_CTL": "0x304", "WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL": "0x30a",
             "WCD9320_A_CDC_CONN_TX_B1_CTL": "0x393", "WCD9320_A_CDC_CONN_TX_SB_B1_CTL": "0x3a3",
-            "WCD9320_SLIM_TX1_CH": "128", "WCD9320_TX_PORT_DMIC": "0"}
+            "WCD9320_SLIM_TX1_CH": "128", "WCD9320_TX_PORT_DMIC": "0",
+            "WCD9320_A_MICB_3_CTL": "0x137", "WCD9320_CAP_DEC_REG(reg,": "n)"}
     bad = [k for k, v in defs.items()
            if re.findall(r"^#define\s+%s\s+(\S+)" % re.escape(k), ptext_all, re.M) != [v]]
-    check("capture register and channel definitions", not bad, "wrong: %s" % bad if bad else "12 defines")
+    check("capture register and channel definitions", not bad, "wrong: %s" % bad if bad else "14 defines")
     ap = func_body("wcd9320_cap_apply")
     check("capture: every field measured before it is written, counted after it lands",
           0 <= ap.find("ret = wcd9320_cap_read(wcd, tb[i].reg, &wcd->cap_base[stage][slot]);")
@@ -3249,25 +3261,28 @@ def main():
           "every field it wrote")
     mb = func_body("wcd9320_cap_mb")
     check("mic bias: LDO_H first, its 1 ms settle, then the bias, then 20 ms",
-          0 <= mb.find("wcd9320_cap_mb_ldo,") < mb.find("usleep_range(WCD9320_CAP_LDOH_SETTLE_US,")
-          < mb.find("wcd9320_cap_mb_bias,") < mb.find("msleep(WCD9320_CAP_MICB_SETTLE_MS);")
+          0 <= mb.find("wcd->cap_mb_ldo_tb,") < mb.find("usleep_range(WCD9320_CAP_LDOH_SETTLE_US,")
+          < mb.find("wcd->cap_mb_bias_tb,") < mb.find("msleep(WCD9320_CAP_MICB_SETTLE_MS);")
           and "#define WCD9320_CAP_MICB_SETTLE_MS\t\t20" in ptext_all, "taiko_codec_enable_micbias")
     dc = func_body("wcd9320_cap_dec")
-    check("DEC1: mute, the reset pulse (outside the tables), HPF and clock, unmute, gain rewrite",
-          0 <= dc.find("wcd9320_cap_dec_pre,") < dc.find('0x01, 0x01, "DEC1 reset asserted"')
-          < dc.find('0x01, 0x00, "DEC1 reset released"') < dc.find("wcd9320_cap_dec_post,")
-          < dc.find('gain, "DEC1 gain rewritten (latches)"'), "taiko_codec_enable_dec")
+    check("decimator n: mute, the reset pulse (outside the tables), HPF and clock, unmute, gain rewrite",
+          0 <= dc.find("wcd->cap_dec_pre_tb,") < dc.find('rbit, rbit, "decimator reset asserted"')
+          < dc.find('rbit, 0x00, "decimator reset released"') < dc.find("wcd->cap_dec_post_tb,")
+          < dc.find('"decimator gain rewritten (latches)"')
+          and "u8 rbit = BIT(n - 1), gain;" in dc
+          and "u16 greg = WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n);" in dc, "taiko_codec_enable_dec")
     check("capture: one baseline read site, noinline",
           "static noinline int wcd9320_cap_read(struct wcd9320 *wcd, unsigned int reg," in ptext_all,
           "the pin stays exact")
     tp = func_body("wcd9320_tx_port_program")
     i_en = tp.find("if (enable) {")
     i_dis = tp.find("} else {", i_en)
-    check("TX port 0: the bitmap, then the config byte; the reverse at teardown",
-          0 <= i_en < tp.find("WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x01);") < tp.find(
-              "WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),\n\t\t\t\t\t   WCD9320_PORT_CFG_ENABLED);") < i_dis
-          and i_dis < tp.find("WCD9320_IFD_TX_CFG(WCD9320_TX_PORT_DMIC),\n\t\t\t     WCD9320_PORT_CFG_DISABLED);")
-          < tp.find("WCD9320_IFD_TX_CH0(WCD9320_TX_PORT_DMIC), 0x00);"),
+    check("TX port n-1: the bitmap (its own shift), then the config byte; the reverse at teardown",
+          "wcd->cap_tx_port = clamp_t(unsigned int, wcd->cap_dmic, 1, 4) - 1;" in tp
+          and 0 <= i_en < tp.find("WCD9320_IFD_TX_CH0(port), BIT(port));") < tp.find(
+              "WCD9320_IFD_TX_CFG(port),\n\t\t\t\t\t   WCD9320_PORT_CFG_ENABLED);") < i_dis
+          and i_dis < tp.find("WCD9320_IFD_TX_CFG(port),\n\t\t\t     WCD9320_PORT_CFG_DISABLED);")
+          < tp.find("WCD9320_IFD_TX_CH0(port), 0x00);"),
           "as the RX ports are")
     check("TX port registers: config 0x50 + p, bitmap 0x100 + 4p and 0x101 + 4p",
           "#define WCD9320_IFD_TX_CFG(port)\t(0x050 + (port))" in ptext_all
@@ -3276,12 +3291,21 @@ def main():
     th = func_body("wcd9320_tx_hw_params")
     check("TX stream: mono only, CAPTURE, port 0, channel 128, its own runtime",
           "if (params_channels(params) != 1)" in th and "wcd->tx_sconfig.direction = SNDRV_PCM_STREAM_CAPTURE;" in th
-          and "wcd->tx_sconfig.port_mask = BIT(WCD9320_TX_PORT_DMIC);" in th
-          and "wcd->tx_chs[0] = WCD9320_SLIM_TX1_CH;" in th and "wcd->sconfig" not in th, "never the RX runtime")
+          and "wcd->tx_sconfig.port_mask = BIT(wcd->cap_tx_port);" in th
+          and "wcd->tx_chs[0] = WCD9320_SLIM_TX1_CH + wcd->cap_tx_port;" in th and "wcd->sconfig" not in th, "never the RX runtime")
     gm = func_body("wcd9320_tx_get_channel_map")
-    check("TX channel map: transmit slot 128, nothing received",
-          "tx_slot[0] = WCD9320_SLIM_TX1_CH;" in gm and "*tx_num = 1;" in gm and "*rx_num = 0;" in gm,
+    check("TX channel map: transmit slot 128 + (n - 1), nothing received",
+          "tx_slot[0] = WCD9320_SLIM_TX1_CH + clamp_t(unsigned int, wcd->cap_dmic, 1, 4) - 1;" in gm
+          and "*tx_num = 1;" in gm and "*rx_num = 0;" in gm,
           "the codec owns its channel")
+    cds = func_body("cap_dmic_store")
+    check("cap_dmic: 1..4 only, under c3_lock, refused while capture or a TX stream is up",
+          "if (kstrtouint(buf, 10, &n) || n < 1 || n > 4)" in cds
+          and 0 <= cds.find("mutex_lock(&wcd->c3_lock);") < cds.find(
+              "if (wcd->dapm_held_cap || wcd->tx_port_on || wcd->tx_sruntime) {") < cds.find(
+              "wcd->cap_dmic = n;") < cds.find("mutex_unlock(&wcd->c3_lock);")
+          and "&dev_attr_cap_dmic.attr," in ptext_all
+          and "wcd->cap_dmic = 1;" in func_body("wcd9320_probe"), "DMIC1 by default (r197's route)")
     check("the TX DAI: id 1, mono capture, its ops",
           '.name = "wcd9320-slim-tx1",\n+\t\t.id = 1,' in PATCH.read_text(errors="replace")
           and ".ops = &wcd9320_tx_dai_ops," in ptext_all, "SLIM TX1")
