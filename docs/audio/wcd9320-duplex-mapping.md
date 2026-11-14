@@ -154,3 +154,43 @@ The gate runners all run those hooks with DAPM idle, so they are unaffected.
 2. The capture runner alone (`DUPLEX=0`) at `CAP_HPF=1` (75 Hz).
 3. `OUTPUT=hph ORDER=cap-first` on DMIC1, with the user wearing the headphones and counting aloud.
 4. `ORDER=out-first`.
+
+## 10. r201 result (2026-11-14): codec full duplex works in both orders
+
+**Gates:**
+- digital 83/0, MCLK ownership 90/0, vm 57/0, cache 0 mismatches. The voltmeter's new guard passes with DAPM idle.
+- Idle `capture_state` shows `prereq_owners=0`, `hpf_cut=0` and both duplex counters at 0.
+
+**Capture HPF Cut-off at 75 Hz** (`CAP_HPF=1`, capture alone): 51/51. The floor is back to −56 dBFS, with < 20 Hz at −58.9 and 20–75 Hz at −60.8, against r200's 4 Hz floor of −45, −46 and −52. The settle ended at the control's value.
+
+**Headphones + DMIC1:**
+
+| run | order | capture buffer | result |
+|---|---|---|---|
+| r201hph1 | cap-first | 960 × 4 (80 ms) | duplex correct; **2 overruns**, one at each SLIMbus RX stop |
+| r201hph2 | cap-first | 2048 × 8 (341 ms) | **PASS** 50/50 + 17/17; no zero runs in the WAV |
+| r201hph3 | out-first | 2048 × 8 | duplex correct (`capture: started beside a DAPM output (hph 1ff)`); 5 failures, all from the runner and probe (below) |
+| r201hph4 | out-first | 2048 × 8 | **PASS** 50/50 + 17/17 |
+
+- **The driver did what it was designed to.**
+  - An output started beside capture: `dapm: mclk started beside capture`, then `clk-prereq: shared -- owner 1 joins, owners now 3`, and at stop `owner 1 leaves, owners now 2 -- 0x314 stays`.
+  - Capture started beside the output: `owner 2 joins, owners now 3`.
+  - Live, `mclk_users=2` and `prereq_owners=3`. There were no refusals, and at the end everything was down and every control as found.
+- **The user** heard the beeps cleanly in the headphones while the mic recorded their counting. Speech peaked at −37 to −50 dBFS, with no leak of the beeps into the mic.
+- **The hph1 overruns.** At each RX stop (slim-stream DOWN, port disconnect) the capture stream overran its 80 ms buffer and restarted (about 140 ms lost). The WAV also held a 960-sample block of zeros at each.
+  - With a 341 ms buffer there were no overruns and no zero runs at all, so the zeros came from the overrun recovery, not from the DSP.
+  - A DSP that holds the TX data back briefly at an RX stop would explain the overrun. That is unconfirmed, but a normal sound-server buffer absorbs it. `pcm-capture` gained `-p`/`-n` (7dceac8).
+- **Runner fixes after hph3.**
+  - The capture runner's "after" check on 0x30c compares only bit 2 (CDC_CONN, capture's). A duplex run may find the outputs' class-H bit 0 set and leave it clear.
+  - The probe's out-first live snapshot now waits until the output is up again, since each back-to-back play powers the path up anew.
+
+**Playback start latency (the console).** The kernel runs with `ignore_loglevel` and `console=tty0`. Every one of the driver's info lines (about 500 in an 11 s duplex run) is drawn synchronously on the framebuffer console, with `c3_lock` held. With the console quieted at runtime (`ignore_loglevel=N`, `dmesg -n 4`, restored after; r201lat, PASS 50/50 + 17/17):
+
+| | console on | console quiet |
+|---|---|---|
+| stream open → HPH PAs up | ~2.65 s | 0.28 / 0.16 s |
+| stream open → SLIMbus RX up (audio) | ~2.76 s | **0.32 / 0.17 s** |
+| one ~1.1 s stimulus play, wall clock | 2.7–3.9 s | 1.38 / 1.24 s |
+| teardown (PA down → MCLK down) | ~0.6 s | 0.11 s |
+
+**Next for daily use:** a boot command line without `ignore_loglevel`, with a quiet console level. Then demote the driver's per-write info logging on the normal DAPM paths to debug level, keeping the evidence tools working through dynamic debug.

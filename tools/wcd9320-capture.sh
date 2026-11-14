@@ -222,9 +222,14 @@ check "live: SLIM TX$CAPN = DEC$CAPN (& 0f)" "$(hexand "$(rv "$CLIVE" sbtx)" 0x0
 check "after: capture holds nothing" "$(rv "$CPOST" cap_held)" "00"
 check "after: TX port off, stream down" "$(rv "$CPOST" tx_port_on) $(rv "$CPOST" tx_up)" "0 0"
 check "after: no MCLK user" "$(rv "$DPOST" mclk_users)" "0"
-for k in ldoh_0x110 cfilt1_0x128 cfiltk_0x129 micb gain mux txdmic dmicclk_0x304 txclk_0x30a othr_0x30c conntx_0x393 sbtx; do
+for k in ldoh_0x110 cfilt1_0x128 cfiltk_0x129 micb gain mux txdmic dmicclk_0x304 txclk_0x30a conntx_0x393 sbtx; do
 	check "after: $k as found" "$(rv "$CPOST" "$k")" "$(rv "$CPRE" "$k")"
 done
+# r201: 0x30c is shared -- capture owns bit 2 (CDC_CONN); bit 0 is the
+# outputs' class-H clock, which a duplex run may find set and leave clear
+check "after: othr_0x30c bit 2 (CDC_CONN, capture's) as found" \
+	"$(hexand "$(rv "$CPOST" othr_0x30c)" 0x04)" "$(hexand "$(rv "$CPRE" othr_0x30c)" 0x04)"
+echo "othr_0x30c: before $(rv "$CPRE" othr_0x30c), after $(rv "$CPOST" othr_0x30c) (bit 0 is class-H's)"
 # volcfg: the driver owns bit 0 (mute) only; the first r197 run saw the chip
 # set bit 3 itself during the stream, so only bit 0 is compared
 check "after: volcfg bit 0 as found" "$(hexand "$(rv "$CPOST" volcfg)" 0x01)" "$(hexand "$(rv "$CPRE" volcfg)" 0x01)"

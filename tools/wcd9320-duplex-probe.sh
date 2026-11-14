@@ -299,7 +299,19 @@ elif [ "$RUN_OK" = 1 ]; then
 			_i=$((_i + 1))
 			[ "$_i" -le "$PLAYS" ] || break
 			play_one "$_i"
-			[ -z "$CLIVE" ] && wait_capture_up && { echo "capture path up and settled at uptime $(up)"; sample_live; }
+			if [ -z "$CLIVE" ] && wait_capture_up; then
+				echo "capture path up and settled at uptime $(up)"
+				# the snapshot only once this play's output is up: the plays
+				# are back to back, but each one powers the path up again
+				_w=0
+				while [ "$_w" -lt 60 ]; do
+					out_up "$(cat "$PGD/dapm_state" 2>/dev/null)" && break
+					sleep 0.05
+					_w=$((_w + 1))
+				done
+				echo "output up again ~$((_w * 50)) ms after that"
+				sample_live
+			fi
 		done
 		[ -z "$CLIVE" ] && echo "capture was not up and settled while the output played"
 	else
