@@ -325,3 +325,37 @@ tools/build-wcd9320-kernel.sh --pkgrel 198 --version capsel-rc1 \
 ```
 
 **Test:** four tap-and-blow recordings, `CAP_DMIC=1`, 2, 3, 4, with one go for the set. Whichever line reaches near full scale carries the mic nearest the bottom edge, and the others show where the remaining mics answer.
+
+## 14. r198 result, and r199 (`capgain-rc1`, pkgrel 199): staged 2026-11-14
+
+**r198 on the phone.** The gates were green. Four tap-and-blow recordings ran, one per DMIC line (`CAP_DMIC=1..4`), and every run passed 45/45:
+
+| line | RMS while blowing and tapping | peak | strongest band |
+|---|---|---|---|
+| DMIC1 | **−69.5 dBFS** | 93 | 85% below 300 Hz (blowing) |
+| DMIC2 | −79.0 dBFS | 131 | 45% at 300 Hz–3 kHz |
+| DMIC3 | −82.7 dBFS | 86 | 46% at 3–8 kHz |
+| DMIC4 | −76.0 dBFS | 63 | 91% below 300 Hz |
+
+The idle floor is −86 dBFS on every line, with the same DC offset of −0.48.
+
+**What the runs establish:**
+- **All four lines respond to acoustic input.** DMIC1 carries the most blowing energy, so it is likely the mic nearest the bottom edge.
+- **Every line is about 40–50 dB too quiet,** so the shared-line theory is out.
+- The cause is common to the path. The candidates are a missing digital gain (the ACDB's decimator element carries **30** for DMIC_1, against 5 for the analog paths), or DMICs running outside their normal mode.
+
+**r199, "Capture Digital Volume":**
+- **The control:** 0..124 = −84..+40 dB, in 1 dB steps (downstream's DECn Volume range). The default is 84 = 0 dB, the level r197 and r198 used.
+- **How it is written:** the value is the decimator post-table's last write, so it is measured first and restored at teardown. It also moves the chip live while the decimator is up. This replaces r197's read-and-rewrite of the gain register.
+- **The runner:** `CAP_GAIN=0..124`. A live check confirms the gain register equals the control, and the control ends as found.
+- **Verification:**
+  - **Compile:** `W=1` is clean.
+  - **Pin:** unchanged at 146.
+  - **Fences:** the controls list and fence 5u's builder rows are updated, plus a new control check.
+  - **Results:** 727 checks pass. The only failure is the old r198 build's version.
+  - **Mutation test:** 4/4.
+- **Unchanged:** the card and `pcm-capture`.
+
+**Test:** DMIC1 at `CAP_GAIN=114` (+30 dB), with tap-and-blow and then the PC tone.
+- **If the gain is what was missing:** both scale up cleanly, and the tone appears.
+- **If they do not:** the mics are not in their normal mode, and the DMIC clock pin or pad mode is next.

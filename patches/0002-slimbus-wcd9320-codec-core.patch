@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-13 17:28:52.183014259 -0500
-@@ -0,0 +1,14750 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 07:51:12.402581123 -0500
+@@ -0,0 +1,14803 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2083,7 +2083,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 */
 +	u8 cap_dmic, cap_tx_port, cap_built;
 +	struct wcd9320_cap_w cap_mb_ldo_tb[2], cap_mb_bias_tb[4], cap_dmic_tb[3];
-+	struct wcd9320_cap_w cap_dec_pre_tb[4], cap_dec_post_tb[4], cap_sb_tb[1];
++	struct wcd9320_cap_w cap_dec_pre_tb[4], cap_dec_post_tb[5], cap_sb_tb[1];
++	/* r199: Capture Digital Volume, 0..124 = -84..+40 dB, 84 = 0 dB */
++	u8 cap_gain;
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -12607,6 +12609,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_A_MICB_3_CTL			0x137	/* r198: DMIC3/4's bias */
 +/* r198: decimator n's registers, 8 apart */
 +#define WCD9320_CAP_DEC_REG(reg, n)		((reg) + 8 * ((n) - 1))
++/* r199: the decimator gain, downstream's DECn Volume range */
++#define WCD9320_CAP_GAIN_STEPS			124	/* -84 .. +40 dB */
++#define WCD9320_CAP_GAIN_0DB			84
 +#define WCD9320_A_CDC_TX1_VOL_CTL_GAIN		0x221
 +#define WCD9320_A_CDC_TX1_VOL_CTL_CFG		0x222
 +#define WCD9320_A_CDC_TX1_MUX_CTL		0x223
@@ -12667,6 +12672,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->cap_dec_post_tb[1] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x08, 0x00, "decimator HPF on" };
 +	wcd->cap_dec_post_tb[2] = (struct wcd9320_cap_w){ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, dbit, dbit, "decimator clock on" };
 +	wcd->cap_dec_post_tb[3] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x00, "decimator unmute" };
++	/* r199: the gain after the decimator is enabled (taiko_codec_enable_dec POST_PMU) */
++	wcd->cap_dec_post_tb[4] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n), 0xff,
++							  (u8)(s8)((int)wcd->cap_gain - WCD9320_CAP_GAIN_0DB),
++							  "decimator gain (Capture Digital Volume)" };
 +	/* SLIM TXn = DECn */
 +	wcd->cap_sb_tb[0] = (struct wcd9320_cap_w){ WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1), 0x0f, 0x08, "SLIM TXn = DECn" };
 +	wcd->cap_built = n;
@@ -12788,8 +12797,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	const struct wcd9320_cap_w * const tbs[] = { wcd->cap_dec_pre_tb, wcd->cap_dec_post_tb };
 +	const unsigned int ns[] = { ARRAY_SIZE(wcd->cap_dec_pre_tb), ARRAY_SIZE(wcd->cap_dec_post_tb) };
 +	unsigned int n = wcd->cap_built ? wcd->cap_built : 1;
-+	u16 greg = WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n);
-+	u8 rbit = BIT(n - 1), gain;
++	u8 rbit = BIT(n - 1);
 +	int ret;
 +
 +	if (!on)
@@ -12802,14 +12810,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!ret)
 +		ret = wcd9320_c2b_write(wcd, WCD9320_A_CDC_CLK_TX_RESET_B1_CTL,
 +					rbit, 0x00, "decimator reset released");
++	/* r199: the post table ends with the gain (Capture Digital Volume) */
 +	if (!ret)
 +		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_DEC, wcd->cap_dec_post_tb,
 +					ARRAY_SIZE(wcd->cap_dec_post_tb));
-+	if (!ret)
-+		ret = wcd9320_cap_read(wcd, greg, &gain);
-+	if (!ret)
-+		ret = wcd9320_c2b_write(wcd, greg, 0xff, gain,
-+					"decimator gain rewritten (latches)");
 +	if (!ret)
 +		return 0;
 +down:
@@ -13404,6 +13408,49 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/*
++ * r199: CAPTURE DIGITAL VOLUME. Holds the gain the next capture's decimator
++ * stage writes, and moves the chip too while the decimator is up. The
++ * decimator stage measured the register before writing it, so teardown
++ * restores what was there whatever this did in between.
++ */
++static const DECLARE_TLV_DB_SCALE(wcd9320_cap_gain_tlv, -8400, 100, 0);
++
++static int wcd9320_cap_gain_get(struct snd_kcontrol *kc,
++				struct snd_ctl_elem_value *uc)
++{
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++
++	uc->value.integer.value[0] = wcd->cap_gain;
++	return 0;
++}
++
++static int wcd9320_cap_gain_put(struct snd_kcontrol *kc,
++				struct snd_ctl_elem_value *uc)
++{
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	long v = uc->value.integer.value[0];
++	unsigned int n;
++	int ret = 0;
++
++	if (v < 0 || v > WCD9320_CAP_GAIN_STEPS)
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	if (v != wcd->cap_gain) {
++		wcd->cap_gain = v;
++		ret = 1;
++		if (wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)) {
++			n = wcd->cap_built ? wcd->cap_built : 1;
++			if (wcd9320_c2b_write(wcd, WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n),
++					      0xff, (u8)(s8)((int)v - WCD9320_CAP_GAIN_0DB),
++					      "decimator gain (Capture Digital Volume, live)"))
++				ret = -EIO;
++		}
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
 +static const struct snd_kcontrol_new wcd9320_controls[] = {
 +	SOC_SINGLE_EXT("HPHL Volume", 0, 0, WCD9320_HPH_VOL_STEPS, 0,
 +		       wcd9320_hph_vol_get, wcd9320_hph_vol_put),
@@ -13434,6 +13481,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		       wcd9320_out_vol_get, wcd9320_out_vol_put),
 +	SOC_SINGLE_EXT("Lineout Select", 3, 0, WCD9320_LINE_ALL, 0,
 +		       wcd9320_out_vol_get, wcd9320_out_vol_put),
++	/* r199 */
++	SOC_SINGLE_EXT_TLV("Capture Digital Volume", 0, 0, WCD9320_CAP_GAIN_STEPS, 0,
++			   wcd9320_cap_gain_get, wcd9320_cap_gain_put,
++			   wcd9320_cap_gain_tlv),
 +};
 +
 +/* --------------------------------------------- r185: jack detection -- */
@@ -14615,6 +14666,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->ear_buck_vref = WCD9320_BUCK_VREF_2V;
 +	/* r198: capture records DMIC1 unless asked (r197's route) */
 +	wcd->cap_dmic = 1;
++	/* r199: 0 dB unless asked (r197/r198's level) */
++	wcd->cap_gain = WCD9320_CAP_GAIN_0DB;
 +	/* r195: downstream order by default (r187-r194); the runner selects */
 +	wcd->ear_order_windows = false;
 +	/* r188: the line outs at their minimum, all four selected */
@@ -15095,7 +15148,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("capsel-rc1");
++MODULE_VERSION("capgain-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

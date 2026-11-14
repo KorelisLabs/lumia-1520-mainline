@@ -1894,8 +1894,8 @@ def main():
           == ["HPHL Volume", "HPHR Volume", "RX1 Digital Volume",
               "RX2 Digital Volume", "RX7 Digital Volume", "Speaker Volume",
               "Earpiece Volume", "RX3 Digital Volume", "RX5 Digital Volume",
-              "Lineout Volume", "Lineout Select"],
-          "HPH x2, digital x5 (r187 RX7, r188 RX3/RX5), speaker, earpiece, line out x2")
+              "Lineout Volume", "Lineout Select", "Capture Digital Volume"],
+          "HPH x2, digital x5 (r187 RX7, r188 RX3/RX5), speaker, earpiece, line out x2, capture (r199)")
 
     # ---- the dispatcher: the six proven functions, nothing else --------
     want_calls = ["wcd9320_mclk_get(wcd)", "wcd9320_mclk_put(wcd)",
@@ -3227,6 +3227,7 @@ def main():
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x08, 0x00,',
         '{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, dbit, dbit,',
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x00,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n), 0xff,',
         '{ WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1), 0x0f, 0x08,']
     pos = [cb.find(r) for r in want_rows]
     check("capture builder: the mapped writes for DMIC n, in order",
@@ -3268,9 +3269,19 @@ def main():
     check("decimator n: mute, the reset pulse (outside the tables), HPF and clock, unmute, gain rewrite",
           0 <= dc.find("wcd->cap_dec_pre_tb,") < dc.find('rbit, rbit, "decimator reset asserted"')
           < dc.find('rbit, 0x00, "decimator reset released"') < dc.find("wcd->cap_dec_post_tb,")
-          < dc.find('"decimator gain rewritten (latches)"')
-          and "u8 rbit = BIT(n - 1), gain;" in dc
-          and "u16 greg = WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_GAIN, n);" in dc, "taiko_codec_enable_dec")
+          and "u8 rbit = BIT(n - 1);" in dc
+          and "(u8)(s8)((int)wcd->cap_gain - WCD9320_CAP_GAIN_0DB)," in cb
+          and cb.find('"decimator unmute" };') < cb.find('"decimator gain (Capture Digital Volume)" };'),
+          "taiko_codec_enable_dec; r199: the gain is the post table's last write")
+    cgp = func_body("wcd9320_cap_gain_put")
+    check("Capture Digital Volume: 0..124 (-84..+40 dB), 0 dB at probe, live under c3_lock while the decimator is up",
+          "if (v < 0 || v > WCD9320_CAP_GAIN_STEPS)" in cgp
+          and "#define WCD9320_CAP_GAIN_STEPS\t\t\t124" in ptext_all and "#define WCD9320_CAP_GAIN_0DB\t\t\t84" in ptext_all
+          and 0 <= cgp.find("mutex_lock(&wcd->c3_lock);") < cgp.find("if (wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)) {")
+          < cgp.find("mutex_unlock(&wcd->c3_lock);")
+          and "wcd->cap_gain = WCD9320_CAP_GAIN_0DB;" in func_body("wcd9320_probe")
+          and "static const DECLARE_TLV_DB_SCALE(wcd9320_cap_gain_tlv, -8400, 100, 0);" in ptext_all,
+          "restored at teardown by the decimator table")
     check("capture: one baseline read site, noinline",
           "static noinline int wcd9320_cap_read(struct wcd9320 *wcd, unsigned int reg," in ptext_all,
           "the pin stays exact")

@@ -21,7 +21,11 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-run}"
 SECS="${CAP_SECONDS:-5}"
-EXPECT_VERSION="${EXPECT_VERSION:-capsel-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-capgain-rc1}"
+# r199: CAP_GAIN=0..124 -- "Capture Digital Volume" for the run (-84..+40 dB,
+# 84 = 0 dB); unset leaves the control as found
+CAPG="${CAP_GAIN:-}"
+GAINCTL="Capture Digital Volume"
 # r198: CAP_DMIC=1..4 -- which DMIC the run records (cap_dmic in the codec);
 # DMIC n goes through decimator n, SLIM TXn, TX port n-1, channel 128+n-1,
 # on MICBIAS1 (1/2) or MICBIAS3 (3/4)
@@ -66,6 +70,9 @@ CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 [ "$(ctl_get "$PIN")" = "0" ] || bad="$bad pin-not-off"
 [ "$(ctl_get "$MIXER")" = "0" ] || bad="$bad mixer-not-off"
 case "$CAPN" in 1|2|3|4) ;; *) bad="$bad cap-dmic=$CAPN" ;; esac
+GPRE=$(ctl_get "$GAINCTL")
+[ -n "$GPRE" ] || bad="$bad no-capture-volume"
+case "$CAPG" in '') ;; *[!0-9]*) bad="$bad cap-gain=$CAPG" ;; *) [ "$CAPG" -le 124 ] || bad="$bad cap-gain=$CAPG" ;; esac
 [ -e "$PGD/cap_dmic" ] || bad="$bad no-cap_dmic"
 DMPRE=$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)
 PCMDEV=$(ls /dev/snd/pcmC0D*c 2>/dev/null)
@@ -90,6 +97,12 @@ RUN_OK=1
 echo "$CAPN" > "$PGD/cap_dmic" 2>/dev/null
 [ "$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)" = "$CAPN" ] || { echo "ABORT: cap_dmic did not read back $CAPN"; RUN_OK=0; }
 echo "route: $(cat "$PGD/cap_dmic" 2>/dev/null)"
+# r199: the gain for this run, set while capture is idle
+if [ -n "$CAPG" ]; then
+	ctl_set "$GAINCTL" "$CAPG" || { echo "ABORT: $GAINCTL did not read back $CAPG"; RUN_OK=0; }
+fi
+GRUN=$(ctl_get "$GAINCTL")
+echo "capture gain: control $GRUN = $(( ${GRUN:-84} - 84 )) dB"
 CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 echo "pre:  $CPRE"
 [ "$RUN_OK" = 1 ] && { ctl_set "$MIXER" 1 || { abort "the capture mixer did not read back 1"; RUN_OK=0; }; }
@@ -150,6 +163,7 @@ check "live: DEC$CAPN DMIC rate DIV_4 (& 07)" "$(hexand "$(rv "$CLIVE" txdmic)" 
 check "live: DEC$CAPN input DMIC$CAPN (0x393 field)" "$(( (0x$(rv "$CLIVE" conntx_0x393) >> FSH) & 3 ))" "1"
 check "live: DEC$CAPN DMIC sel, HPF 150 Hz on (& 39)" "$(hexand "$(rv "$CLIVE" mux)" 0x39)" "11"
 check "live: DEC$CAPN unmuted (b0)" "$(hexand "$(rv "$CLIVE" volcfg)" 0x01)" "00"
+check "live: DEC$CAPN gain = Capture Digital Volume ($(( ${GRUN:-84} - 84 )) dB)" "$(rv "$CLIVE" gain)" "$(printf '%02x' $(( (${GRUN:-84} - 84) & 0xff )))"
 check "live: DEC$CAPN clock on (0x30a bit $((CAPN - 1)))" "$(( (0x$(rv "$CLIVE" txclk_0x30a) >> (CAPN - 1)) & 1 ))" "1"
 check "live: CDC_CONN on (0x30c b2)" "$(hexand "$(rv "$CLIVE" othr_0x30c)" 0x04)" "04"
 check "live: SLIM TX$CAPN = DEC$CAPN (& 0f)" "$(hexand "$(rv "$CLIVE" sbtx)" 0x0f)" "08"
@@ -167,6 +181,9 @@ echo "volcfg: before $(rv "$CPRE" volcfg), live $(rv "$CLIVE" volcfg), after $(r
 # r198: the route back to what the run found
 [ -n "$DMPRE" ] && echo "$DMPRE" > "$PGD/cap_dmic" 2>/dev/null
 check "cap_dmic as found" "$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)" "${DMPRE:-?}"
+# r199: the gain control back to what the run found
+[ -n "$CAPG" ] && [ -n "$GPRE" ] && ctl_set "$GAINCTL" "$GPRE"
+check "Capture Digital Volume as found" "$(ctl_get "$GAINCTL")" "${GPRE:-?}"
 for k in refusals failures; do
 	check "capture $k this run" "$(( $(rv "$CPOST" "$k") - $(rv "$CPRE" "$k") ))" "0"
 done
