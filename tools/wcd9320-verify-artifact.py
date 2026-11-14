@@ -1726,9 +1726,12 @@ def main():
           "the gate checks the count")
     # The r169 switch is proven on hardware; r182 must not touch it. Pinned by
     # the sha256 of its body as extracted here, measured on r181 clshk-rc1.
-    sw_sha = hashlib.sha256(m_sw.encode()).hexdigest()
+    # r202 demoted its six messages to dev_dbg and nothing else: the pin is
+    # taken with dev_dbg( read back as dev_info(, so the same hash still
+    # proves the sequence is untouched.
+    sw_sha = hashlib.sha256(m_sw.replace("dev_dbg(", "dev_info(").encode()).hexdigest()
     check("the r169 switch body is unchanged", sw_sha == R169_SWITCH_SHA,
-          "sha256 %s" % sw_sha[:16])
+          "sha256 %s (r202: log level aside)" % sw_sha[:16])
     # The divider: board state, once.
     check("lumia_mclk_apply is called only from probe",
           ptext_all.count("lumia_mclk_apply(m)") == l_probe.count("lumia_mclk_apply(m)") == 1,
@@ -3385,6 +3388,34 @@ def main():
           and "wcd->cap_beside_out++;" in ce_
           and "out_beside_cap=%u cap_beside_out=%u" in ptext_all,
           "capture_state shows both")
+    # ---- r202: the normal path logs at debug (docs/audio/wcd9320-logging-mapping.md) ----
+    quiet_fns = """
+        wcd9320_hphl_dac_path wcd9320_clk_source_switch wcd9320_cdc_clk_prereq
+        wcd9320_rx_port_program wcd9320_clsh_lo wcd9320_dapm_event wcd9320_clsh_mode
+        wcd9320_rx_trigger wcd9320_rx_digital_path wcd9320_cap_event
+        wcd9320_hphr_dac_path __wcd9320_slim_start wcd9320_hphl_pa_path
+        wcd9320_hphr_pa_path __wcd9320_slim_stop wcd9320_rx_bias wcd9320_mclk_put
+        wcd9320_c2b_write wcd9320_run_sequence wcd9320_mclk_get wcd9320_pa_prep
+        wcd9320_spk_dac wcd9320_spk_pa wcd9320_tx_hw_params wcd9320_rx_hw_params
+        wcd9320_chip_ctl_probe wcd9320_rx_write wcd9320_cap_build
+        wcd9320_forced_write wcd9320_tx_shutdown wcd9320_logged_update
+        wcd9320_rx_hw_free wcd9320_rx_shutdown wcd9320_tx_port_program
+        wcd9320_slim_stream_down wcd9320_ear_pa wcd9320_snap_take
+        wcd9320_rx_startup wcd9320_tx_startup __wcd9320_slim_config
+        wcd9320_tx_stream_stop wcd9320_tx_trigger wcd9320_lo_dac wcd9320_lo_pa
+        wcd9320_clsh_hphr wcd9320_clk_read_control cap_dmic_store""".split()
+    loud = [f for f in quiet_fns if "dev_info(" in func_body(f) or not func_body(f)]
+    check("logging: the normal-path functions log at debug -- no dev_info in any of them",
+          not loud, "%d function(s)%s" % (len(quiet_fns), "; dev_info or missing in: %s" % loud if loud else ""))
+    keep_fns = ("wcd9320_jack_enable", "wcd9320_jack_disable", "wcd9320_jack_report",
+                "wcd9320_insert_detect_set", "wcd9320_pa_irq_sample")
+    quiet_keep = [f for f in keep_fns if "dev_info(" not in func_body(f)]
+    check("logging: the jack and the abort-path sample keep dev_info",
+          not quiet_keep, "boot and plug events, the anomaly path%s" % ("; lost in: %s" % quiet_keep if quiet_keep else ""))
+    n_info, n_dbg = ptext_all.count("dev_info("), ptext_all.count("dev_dbg(")
+    # raw text, so comments that mention dev_info( count too: 94 calls + 6 mentions
+    check("logging: 94 dev_info calls (probe, research, jack) and 99 dev_dbg",
+          (n_info, n_dbg) == (100, 99), "%d / %d in the patch text, comments included" % (n_info, n_dbg))
     cgp = func_body("wcd9320_cap_gain_put")
     check("Capture Digital Volume: 0..124 (-84..+40 dB), 0 dB at probe, live under c3_lock while the decimator is up",
           "if (v < 0 || v > WCD9320_CAP_GAIN_STEPS)" in cgp

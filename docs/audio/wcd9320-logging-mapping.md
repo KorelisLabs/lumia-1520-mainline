@@ -64,3 +64,43 @@ Most of these are shared with the research tools, which call the same mapped fun
 - The gates with debug output on (their evidence intact).
 - A duplex run.
 - A quiet check: a playback-and-capture run with debug output off must add **no** wcd9320 lines to the log.
+
+## 5. r202 (`quietlog-rc1`, pkgrel 202): staged 2026-11-14
+
+**Driver.**
+- In 47 functions, 96 `dev_info` became `dev_dbg`: the 46 normal-path functions of section 2 that are neither the jack nor the abort sample, plus `cap_dmic_store`, which the capture runner writes every run.
+- **Kept at info:** the jack's 6 and the abort-path sample. Probe, remove, IRQ setup and the research tools are untouched, and so are errors and warnings.
+- **Counts:** `dev_info` 190 → 94 calls, `dev_dbg` 3 → 99.
+- **Proof that only the levels changed:** with every `dev_dbg(` read back as `dev_info(`, r202's source is identical to r201's except for `MODULE_VERSION` (97 changed lines: 96 conversions and the version).
+
+**Tools.**
+- **`tools/wcd9320-trace-lib.sh`** is the one implementation:
+  - `wcd_trace_on` enables `module wcd9320 +p` once per run and notes the prior state;
+  - `wcd_trace_restore` disables again only if this run enabled it;
+  - `wcd_trace_state` reports on, off, partial or unavailable;
+  - `WCD_TRACE=0` skips enabling, and child runners inherit it.
+- **Who uses it:**
+  - `wcd9320-evidence-lib.sh` switches on in `find_devices()` and restores in `emit_verdict()` and `emit_invalid_setup()`, which covers every lib runner;
+  - `wcd9320-capture.sh` and `wcd9320-duplex-probe.sh` use it directly;
+  - `tools/wcd9320-trace.sh on|off|status` flips it by hand.
+- **The duplex probe** reports the codec lines it added to the kernel log. With `WCD_TRACE=0` it checks that the number is **0** (the quiet check).
+
+**Verifier.**
+- **New fences:** the 47 functions contain no `dev_info`; the jack and the abort sample keep theirs; the counts.
+- **The r169 switch-body hash** is now taken with `dev_dbg(` read back as `dev_info(`. The same pin still proves the proven sequence is untouched, and a logic change inside it is caught (mutation).
+
+**Results.**
+
+| check | result |
+|---|---|
+| Compile | `W=1` clean; no new baseline reads (pin stays 146) |
+| Verifier | 741 checks pass; the only failure is the old r201 module's version |
+| Mutation | 23/23 |
+| Selftest | 131/0 |
+
+**Test plan:**
+1. The gates. Their evidence needs the debug output on, which the library now does.
+2. A headphones + DMIC1 duplex run.
+3. The same with `WCD_TRACE=0`, which must add no codec lines.
+
+**Not in scope:** the card driver (`wcd9320-lumia-q6`) still logs about 3 info lines per stream (`BE hw_params`). That is a card change, for later.

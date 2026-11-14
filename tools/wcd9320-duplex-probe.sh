@@ -28,7 +28,11 @@
 # disarms it after the output is verified down; a signal does the same.
 #
 # Usage (as root on the phone):
-#   env EXPECT_VERSION=duplex-rc1 OUTPUT=hph ORDER=cap-first CAP_DMIC=1 \
+# r202: WCD_TRACE=0 is the quiet check -- the codec's debug messages stay off
+#   (the capture runner inherits it) and the run must add no codec lines to
+#   the kernel log. By default they are switched on for the run and back after.
+#
+#   env EXPECT_VERSION=quietlog-rc1 OUTPUT=hph ORDER=cap-first CAP_DMIC=1 \
 #       CAP_GAIN=114 DBFS=-50 HPH_VOL=20 sh wcd9320-duplex-probe.sh <tag>
 # Output: /var/log/wcd9320-duplex-<stamp>-<tag>.txt, and the capture runner's
 #         /var/log/wcd9320-capture-<stamp>-<tag>.{wav,txt}
@@ -44,7 +48,7 @@ OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-duplex}"
 OUT="$OUTDIR/wcd9320-duplex-$STAMP-$TAG.txt"
 CAPLOG="/tmp/wcd9320-duplex-$STAMP.capture"
-EXPECT_VERSION="${EXPECT_VERSION:-duplex-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-quietlog-rc1}"
 CARD_VERSION="${CARD_VERSION:-q6-card-rc12}"
 OUTPUT="${OUTPUT:-i2s}"
 ORDER="${ORDER:-cap-first}"
@@ -182,6 +186,10 @@ failsafe_arm() {
 	systemd-run --unit="$FAILSAFE" --collect --on-active="$FAILSAFE_S" \
 		sh "$TEARDOWN" "duplex-failsafe" >/dev/null 2>&1
 }
+# r202: the codec's normal-path messages are dev_dbg
+[ -f "$DIR/wcd9320-trace-lib.sh" ] && . "$DIR/wcd9320-trace-lib.sh"
+command -v wcd_trace_on >/dev/null 2>&1 && wcd_trace_on
+CODEC_LINES0=$(dmesg | grep -c 'wcd9320 217:')
 ABORTED=0
 CAPPID=""; TPID=""
 dp_abort() {	# dp_abort <reason>
@@ -402,11 +410,18 @@ check "after: the output volumes as found" "$(vols_get)" "$VOL_PRE"
 check "after: the fail-safe is not armed" "$(systemctl is-active "$FAILSAFE.timer" 2>/dev/null || true)" "inactive"
 ctl_set "Headphones Switch" "$HP_PIN_PRE" || echo "the Headphones pin did not go back to $HP_PIN_PRE"
 check "after: the Headphones pin as found" "$(ctl_get "Headphones Switch")" "$HP_PIN_PRE"
+# r202: what the run wrote to the kernel log from the codec
+CODEC_LINES=$(( $(dmesg | grep -c 'wcd9320 217:') - ${CODEC_LINES0:-0} ))
+echo "codec lines added to the kernel log this run: $CODEC_LINES (debug messages: run found them ${WCD_TRACE_WAS:-?})"
+if [ "${WCD_TRACE:-1}" = 0 ]; then
+	check "quiet: the run added no codec lines to the kernel log (WCD_TRACE=0)" "$CODEC_LINES" "0"
+fi
 echo "checks : $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ] && echo "VERDICT: PASS (wcd9320-duplex-probe)" || echo "VERDICT: FAIL (wcd9320-duplex-probe)"
 echo "wav: $CAPWAV"
 echo "capture evidence: $CAPTXT"
 } > "$OUT" 2>&1
+command -v wcd_trace_restore >/dev/null 2>&1 && wcd_trace_restore
 rm -f "$CAPLOG" /tmp/wcd9320-duplex-"$STAMP".tone*
 trap - INT TERM HUP
 grep -E '^(  FAIL|checks :|VERDICT|wav:|play [0-9]|capture path up|output (up|down)|ABORT|THE OUTPUT|capture was not)' "$OUT"

@@ -10,7 +10,7 @@
 # stimulus (or nothing, for the floor) and analyses the WAV afterwards.
 #
 # Usage (as root on the phone):
-#   EXPECT_VERSION=duplex-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
+#   EXPECT_VERSION=quietlog-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
 # r201: CAP_HPF=0|1|2 sets Capture HPF Cut-off (4/75/150 Hz) for the run;
 #       DUPLEX=1 lets the run start beside one DAPM output (the duplex probe)
 #       CAP_PERIOD=frames CAP_PERIODS=n size pcm-capture's buffer (default 960 x 4)
@@ -24,7 +24,7 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-run}"
 SECS="${CAP_SECONDS:-5}"
-EXPECT_VERSION="${EXPECT_VERSION:-duplex-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-quietlog-rc1}"
 # r199: CAP_GAIN=0..124 -- "Capture Digital Volume" for the run (-84..+40 dB,
 # 84 = 0 dB); unset leaves the control as found
 CAPG="${CAP_GAIN:-}"
@@ -100,6 +100,10 @@ if [ -n "$bad" ]; then
 	echo "INVALID SETUP:$bad -- nothing changed"
 	exit 2
 fi
+
+# r202: the codec's capture-path messages are dev_dbg; switched on for this run
+[ -f "$DIR/wcd9320-trace-lib.sh" ] && . "$DIR/wcd9320-trace-lib.sh"
+command -v wcd_trace_on >/dev/null 2>&1 && wcd_trace_on
 
 abort() {
 	echo "ABORT: $1"
@@ -255,7 +259,9 @@ dmesg | grep -E 'capture:|tx-port|tx-stream|BE hw_params \(capture\)' | tail -n 
 echo "checks : $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ] && echo "VERDICT: PASS (wcd9320-capture)" || echo "VERDICT: FAIL (wcd9320-capture)"
 echo "wav: $WAV"
+echo "codec debug messages: $(command -v wcd_trace_state >/dev/null 2>&1 && wcd_trace_state) (this run found them ${WCD_TRACE_WAS:-?})"
 } > "$OUT" 2>&1
+command -v wcd_trace_restore >/dev/null 2>&1 && wcd_trace_restore
 rm -f "$TLOG"
 grep -E 'FAIL|VERDICT|checks :|signal:|ABORT|INVALID|^wav:' "$OUT"
 echo "evidence: $OUT"

@@ -346,7 +346,7 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 11:47:36.339959509 -0500
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 13:52:25.863872848 -0500
 @@ -0,0 +1,15102 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
@@ -3132,7 +3132,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +		want = s->mask ? (s->val & s->mask) : s->val;
 +
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "%s step %2zu/%zu: reg 0x%03x (VE 0x%04x) old=%02x mask=%02x want=%02x -> read=%02x  delay=%uus  %s  [%s]\n",
 +			 label, i + 1, n, s->reg,
 +			 WCD9320_REGISTER_START_OFFSET + s->reg,
@@ -3165,7 +3165,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +	}
 +
-+	dev_info(dev, "%s: all %zu steps applied cleanly\n", label, n);
++	dev_dbg(dev, "%s: all %zu steps applied cleanly\n", label, n);
 +	return 0;
 +
 +abort:
@@ -4301,7 +4301,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	w->ret = ret;
 +	wcd->mbhc_write_n++;
 +
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "insert-detect write %u: reg 0x%03x mask=%02x old=%02x want=%02x -> read=%02x%s\n",
 +		 wcd->mbhc_write_n, reg, mask, w->old, w->want, w->got,
 +		 ret ? "  FAILED" : (w->got == w->want ? "  OK" : "  MISMATCH"));
@@ -4759,7 +4759,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->sconfig.port_mask = GENMASK(port + nch - 1, port);
 +	wcd->sconfig.direction = SNDRV_PCM_STREAM_PLAYBACK;
 +
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "slim-stream: config port %u (mask 0x%lx) channel %u x%u rate %u bps %u\n",
 +		 port, wcd->sconfig.port_mask, ch, nch, rate, bps);
 +}
@@ -4774,14 +4774,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	ret = slim_stream_prepare(wcd->sruntime, &wcd->sconfig);
 +	wcd->slim_rc_prepare = ret;
-+	dev_info(dev, "slim-stream: prepare -> %d (CONNECT_SINK to the manager)\n",
++	dev_dbg(dev, "slim-stream: prepare -> %d (CONNECT_SINK to the manager)\n",
 +		 ret);
 +	if (ret)
 +		return ret;
 +
 +	ret = slim_stream_enable(wcd->sruntime);
 +	wcd->slim_rc_enable = ret;
-+	dev_info(dev, "slim-stream: enable -> %d (SLIM_USR_MC_DEF_ACT_CHAN)\n",
++	dev_dbg(dev, "slim-stream: enable -> %d (SLIM_USR_MC_DEF_ACT_CHAN)\n",
 +		 ret);
 +	if (ret) {
 +		slim_stream_unprepare(wcd->sruntime);
@@ -4790,7 +4790,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	wcd->slim_stream_up = true;
 +	wcd->slim_stream_ups++;
-+	dev_info(dev, "slim-stream: UP port %u channel %u\n",
++	dev_dbg(dev, "slim-stream: UP port %u channel %u\n",
 +		 wcd->slim_stream_port, wcd->slim_stream_ch);
 +
 +	return 0;
@@ -4806,19 +4806,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	ret_dis = slim_stream_disable(wcd->sruntime);
 +	wcd->slim_rc_disable = ret_dis;
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "slim-stream: disable -> %d (no-op here: the NGD drops every reconfiguration message)\n",
 +		 ret_dis);
 +
 +	ret_unp = slim_stream_unprepare(wcd->sruntime);
 +	wcd->slim_rc_unprepare = ret_unp;
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "slim-stream: unprepare -> %d (DISCONNECT_PORT -- the real teardown)\n",
 +		 ret_unp);
 +
 +	wcd->slim_stream_up = false;
 +	wcd->slim_stream_downs++;
-+	dev_info(dev, "slim-stream: DOWN port %u\n", wcd->slim_stream_port);
++	dev_dbg(dev, "slim-stream: DOWN port %u\n", wcd->slim_stream_port);
 +
 +	return ret_dis ? ret_dis : ret_unp;
 +}
@@ -4903,7 +4903,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	if (!wcd->slim_stream_up || !wcd->sruntime) {
 +		mutex_unlock(&wcd->slim_stream_lock);
-+		dev_info(dev, "slim-stream: nothing is up\n");
++		dev_dbg(dev, "slim-stream: nothing is up\n");
 +		return -EINVAL;
 +	}
 +
@@ -5393,7 +5393,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return ret;
 +	}
 +
-+	dev_info(dev, "rx%u-digital: 0x%03x mask %02x want %02x -> read %02x  [%s]\n",
++	dev_dbg(dev, "rx%u-digital: 0x%03x mask %02x want %02x -> read %02x  [%s]\n",
 +		 wcd9320_rx_name(ch), reg, mask, want, got & 0xff, what);
 +
 +	if ((got & mask) != (want & mask)) {
@@ -5487,7 +5487,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			n, c->b5, fs & WCD9320_RX1_FS_MASK, WCD9320_RX1_FS_48K);
 +		return -EINVAL;
 +	}
-+	dev_info(dev, "rx%u-digital: 0x%03x = %02x, rate field %02x = 48 kHz (asserted, not written)\n",
++	dev_dbg(dev, "rx%u-digital: 0x%03x = %02x, rate field %02x = 48 kHz (asserted, not written)\n",
 +		 n, c->b5, fs & 0xff, fs & WCD9320_RX1_FS_MASK);
 +
 +	/* 1. the input mux: RXn MIX1 INP1 <- SLIM RXn (RX7: INP1 RX1, INP2 RX2) */
@@ -5549,7 +5549,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	*on = true;
 +	(*ens)++;
-+	dev_info(dev, "rx%u-digital: PATH ENABLED, %u write(s) total\n",
++	dev_dbg(dev, "rx%u-digital: PATH ENABLED, %u write(s) total\n",
 +		 n, *writes);
 +	return 0;
 +
@@ -5568,7 +5568,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (*on) {
 +		*on = false;
 +		(*dis)++;
-+		dev_info(dev, "rx%u-digital: PATH DISABLED, %u write(s) total\n",
++		dev_dbg(dev, "rx%u-digital: PATH DISABLED, %u write(s) total\n",
 +			 n, *writes);
 +	}
 +
@@ -6035,7 +6035,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return ret;
 +	}
 +
-+	dev_info(dev, "c2b: 0x%03x mask %02x want %02x -> chip %02x  [%s]\n",
++	dev_dbg(dev, "c2b: 0x%03x mask %02x want %02x -> chip %02x  [%s]\n",
 +		 reg, mask, want, got & 0xff, what);
 +
 +	if ((got & mask) != (want & mask)) {
@@ -6065,7 +6065,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +				"c2b: 0x%03x cache drop failed: %d -- the cache now disagrees with the chip and a retry may be silently skipped\n",
 +				reg, drop);
 +		else
-+			dev_info(dev,
++			dev_dbg(dev,
 +				 "c2b: 0x%03x dropped from the cache after the refused write\n",
 +				 reg);
 +		return -EIO;
@@ -6604,7 +6604,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return -EBUSY;
 +	}
 +
-+	dev_info(dev, "clsh: %s enable, from downstream %s\n",
++	dev_dbg(dev, "clsh: %s enable, from downstream %s\n",
 +		 ear ? "EAR" : "HPHL", ear ? "state_ear()" : "state_hph_l()");
 +
 +	ret = wcd9320_clsh_apply(wcd, wcd9320_clsh_cfg,
@@ -6705,7 +6705,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->clsh_on = true;
 +	wcd->clsh_enables++;
 +	regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
-+	dev_info(dev, "clsh: ENABLED, %u write(s), B1_CTL = %02x (predicted a7)\n",
++	dev_dbg(dev, "clsh: ENABLED, %u write(s), B1_CTL = %02x (predicted a7)\n",
 +		 wcd->clsh_writes, b1 & 0xff);
 +	return 0;
 +
@@ -6740,7 +6740,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->clsh_on = false;
 +		wcd->clsh_disables++;
 +		regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "clsh: DISABLED, %u write(s), B1_CTL = %02x (predicted a6)\n",
 +			 wcd->clsh_writes, b1 & 0xff);
 +	}
@@ -6819,7 +6819,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->lo_clsh_base[i] = v & 0xff;
 +	}
 +	wcd->lo_clsh_saved = true;
-+	dev_info(dev, "clsh-lo: LO enable (state_lo, 2.15 V buck), saved %02x %02x %02x %02x %02x\n",
++	dev_dbg(dev, "clsh-lo: LO enable (state_lo, 2.15 V buck), saved %02x %02x %02x %02x %02x\n",
 +		 wcd->lo_clsh_base[0], wcd->lo_clsh_base[1],
 +		 wcd->lo_clsh_base[2], wcd->lo_clsh_base[3],
 +		 wcd->lo_clsh_base[4]);
@@ -6854,7 +6854,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		goto unwind;
 +	wcd->clsh_lo_on = true;
 +	wcd->clsh_enables++;
-+	dev_info(dev, "clsh-lo: ENABLED\n");
++	dev_dbg(dev, "clsh-lo: ENABLED\n");
 +	return 0;
 +
 +unwind:
@@ -6880,12 +6880,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			}
 +		}
 +		wcd->lo_clsh_saved = false;
-+		dev_info(dev, "clsh-lo: five registers restored to their pre-enable values\n");
++		dev_dbg(dev, "clsh-lo: five registers restored to their pre-enable values\n");
 +	}
 +	if (wcd->clsh_lo_on) {
 +		wcd->clsh_lo_on = false;
 +		wcd->clsh_disables++;
-+		dev_info(dev, "clsh-lo: DISABLED\n");
++		dev_dbg(dev, "clsh-lo: DISABLED\n");
 +	}
 +	return enable ? (ret ? ret : -EIO) : 0;
 +}
@@ -6996,7 +6996,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			if (ret)
 +				wcd->rx_bias_refs--;
 +		} else {
-+			dev_info(dev, "c2b: RX bias already held, refs now %u\n",
++			dev_dbg(dev, "c2b: RX bias already held, refs now %u\n",
 +				 wcd->rx_bias_refs);
 +		}
 +		return ret;
@@ -7012,7 +7012,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +					WCD9320_RX_BIAS_ENABLE, 0,
 +					"RX bias off (refs 1 -> 0)");
 +	else
-+		dev_info(dev, "c2b: RX bias still held, refs now %u\n",
++		dev_dbg(dev, "c2b: RX bias still held, refs now %u\n",
 +			 wcd->rx_bias_refs);
 +
 +	return ret;
@@ -7294,7 +7294,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		out[i] = val & 0xff;
 +
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "clk-src: positive control 0x%03x %-14s = %02x (want %02x) %s\n",
 +			 c->reg, c->name, out[i], c->por, when);
 +
@@ -7361,7 +7361,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		((after & WCD9320_CHIP_CTL_MCLK_RATE_MASK) ==
 +		 (want & WCD9320_CHIP_CTL_MCLK_RATE_MASK)) ? 1 : 0;
 +
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "chip-ctl: 0x000 mask %02x want %02x : %02x -> %02x (predicted %02x)  %s  [%s]\n",
 +		 WCD9320_CHIP_CTL_MCLK_RATE_MASK, want,
 +		 before & 0xff, after & 0xff, wcd->chip_ctl_expected,
@@ -7475,7 +7475,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			return ret;
 +		wcd->chip_ctl_pre = chipctl & 0xff;
 +		wcd->chip_ctl_pre_valid = true;
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "clk-src: CHIP_CTL measured %02x before the switch (not written yet)\n",
 +			 chipctl & 0xff);
 +
@@ -7503,7 +7503,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		if (ret)
 +			goto restore;
 +		if (rcosc & WCD9320_RC_OSC_ENABLE) {
-+			dev_info(dev,
++			dev_dbg(dev,
 +				 "clk-src: RC_OSC_FREQ = %02x, shutting the RC oscillator down (config_mode 0)\n",
 +				 rcosc & 0xff);
 +			ret = wcd9320_run_sequence(wcd, wcd9320_clk_rco_shutdown,
@@ -7512,7 +7512,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			if (ret)
 +				goto restore;
 +		} else {
-+			dev_info(dev,
++			dev_dbg(dev,
 +				 "clk-src: RC_OSC_FREQ = %02x, oscillator already down, config_mode skipped\n",
 +				 rcosc & 0xff);
 +		}
@@ -7535,7 +7535,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->clk_ctrl_post_valid = true;
 +		wcd->cdc_alive = alive;
 +
-+		dev_info(dev, "clk-src: SWITCHED to MCLK, CDC block %s\n",
++		dev_dbg(dev, "clk-src: SWITCHED to MCLK, CDC block %s\n",
 +			 alive ? "RESPONDING (a clock is arriving)"
 +			       : "DARK (no clock is arriving -- this run says nothing about 0x30d/0x314)");
 +
@@ -7550,7 +7550,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd9320_chip_ctl_probe(wcd, WCD9320_CHIP_CTL_MCLK_9P6MHZ,
 +					       "rate 9.6 MHz, retried ON MCLK");
 +		else
-+			dev_info(dev,
++			dev_dbg(dev,
 +				 "clk-src: CDC dark, CHIP_CTL probe skipped -- it would read 00 either way\n");
 +
 +		wcd9320_pa_guard(wcd, "after the switch to MCLK");
@@ -7628,7 +7628,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->clk_ctrl_post_valid = true;
 +	wcd->cdc_alive = alive;
 +
-+	dev_info(dev, "clk-src: RESTORED to RCO, CDC block %s\n",
++	dev_dbg(dev, "clk-src: RESTORED to RCO, CDC block %s\n",
 +		 alive ? "RESPONDING" : "DARK -- the codec did not come back");
 +
 +	wcd9320_pa_guard(wcd, "after the restore to RCO");
@@ -7686,7 +7686,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	if (wcd->mclk_users) {
 +		wcd->mclk_users++;
-+		dev_info(dev, "mclk: get, users now %u (already on MCLK, no switch)\n",
++		dev_dbg(dev, "mclk: get, users now %u (already on MCLK, no switch)\n",
 +			 wcd->mclk_users);
 +		return 0;
 +	}
@@ -7712,7 +7712,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	wcd->mclk_users = 1;
-+	dev_info(dev, "mclk: get, users 0 -> 1, codec on MCLK (cdc_alive %d)\n",
++	dev_dbg(dev, "mclk: get, users 0 -> 1, codec on MCLK (cdc_alive %d)\n",
 +		 wcd->cdc_alive);
 +	return 0;
 +}
@@ -7732,7 +7732,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	if (--wcd->mclk_users) {
-+		dev_info(dev, "mclk: put, users now %u (staying on MCLK)\n",
++		dev_dbg(dev, "mclk: put, users now %u (staying on MCLK)\n",
 +			 wcd->mclk_users);
 +		return 0;
 +	}
@@ -7746,7 +7746,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * codec that is no longer being driven.
 +	 */
 +	clk_disable_unprepare(wcd->mclk);
-+	dev_info(dev, "mclk: put, users 1 -> 0, codec %s, vote released\n",
++	dev_dbg(dev, "mclk: put, users 1 -> 0, codec %s, vote released\n",
 +		 ret ? "restore FAILED -- see above" : "back on RCO");
 +	return ret;
 +}
@@ -7941,7 +7941,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +	wcd->forced_n++;
 +
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "forced: 0x%03x mask %02x <- %02x  WRITE ISSUED; resulting register state not directly observable by readback (chip reads %02x) [%s]\n",
 +		 reg, mask, val, got & 0xff, what);
 +
@@ -8497,7 +8497,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		if (wcd->clk_prereq_owners) {
 +			wcd->clk_prereq_owners |= owner;
-+			dev_info(dev, "clk-prereq: shared -- owner %x joins, owners now %x, 0x314 already issued\n",
++			dev_dbg(dev, "clk-prereq: shared -- owner %x joins, owners now %x, 0x314 already issued\n",
 +				 owner, wcd->clk_prereq_owners);
 +			return 0;
 +		}
@@ -8517,7 +8517,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		wcd->clk_power_pre = val & 0xff;
 +		wcd->clk_power_pre_valid = true;
-+		dev_info(dev, "clk-prereq: 0x314 measured %02x before any write\n",
++		dev_dbg(dev, "clk-prereq: 0x314 measured %02x before any write\n",
 +			 val & 0xff);
 +
 +		/*
@@ -8532,7 +8532,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +		wcd->clk_prereq_owners = owner;
 +		wcd->clk_prereq_on = true;
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "clk-prereq: ISSUED 0x314 = %02x; chip reads %02x, which this part cannot verify either way\n",
 +			 WCD9320_CLK_POWER_MASK, wcd->unver_read[0]);
 +		return 0;
@@ -8544,7 +8544,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +	if (wcd->clk_prereq_owners & ~owner) {
 +		wcd->clk_prereq_owners &= ~owner;
-+		dev_info(dev, "clk-prereq: owner %x leaves, owners now %x -- 0x314 stays\n",
++		dev_dbg(dev, "clk-prereq: owner %x leaves, owners now %x -- 0x314 stays\n",
 +			 owner, wcd->clk_prereq_owners);
 +		return 0;
 +	}
@@ -8567,7 +8567,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	wcd->clk_prereq_owners = 0;
 +	wcd->clk_prereq_on = false;
-+	dev_info(dev, "clk-prereq: RESTORED to %02x\n",
++	dev_dbg(dev, "clk-prereq: RESTORED to %02x\n",
 +		 wcd->clk_power_pre & WCD9320_CLK_POWER_MASK);
 +	return 0;
 +}
@@ -8935,7 +8935,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +				WCD9320_HPHL_GAIN_CHECK, wcd->pa_gain_field);
 +			return -EAGAIN;
 +		}
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "c2b: register gain source verified on the chip, 0x1ae = %02x\n",
 +			 lgain & 0xff);
 +	}
@@ -8980,11 +8980,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			"c2b: the 0x314 prerequisite has not been issued -- run cdc_clk_prereq first\n");
 +		return -EAGAIN;
 +	}
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "c2b: 0x314 reads %02x; issued but unverifiable on this part, continuing by design\n",
 +		 clkp & 0xff);
 +
-+	dev_info(dev, "c2b: HPHL DAC enable, map stages 3-7 (0x314 = %02x)\n",
++	dev_dbg(dev, "c2b: HPHL DAC enable, map stages 3-7 (0x314 = %02x)\n",
 +		 clkp & 0xff);
 +
 +	/* 3 and 4: the CLASS_H_DSM mux and its ZOH, wcd9320_dsm_route() */
@@ -9028,7 +9028,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * deliberate acts; a single 0xc0 mask would hide the one that matters.
 +	 */
 +	if (!power_dac) {
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "c2b: stages 3-6 complete, DAC deliberately NOT powered (0x1b1 untouched)\n");
 +		wcd->hphl_dac_on = true;
 +		wcd->hphl_dac_enables++;
@@ -9053,7 +9053,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->hphl_dac_on = true;
 +	wcd->hphl_dac_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_DAC_CTL, &dac);
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "c2b: HPHL DAC ENABLED, %u chip-verified write(s), 0x1b1 = %02x (predicted c0)\n",
 +		 wcd->c2b_writes, dac & 0xff);
 +	return 0;
@@ -9114,7 +9114,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->hphl_dac_disables++;
 +		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_L_DAC_CTL,
 +				     &dac);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "c2b: HPHL DAC DISABLED, %u chip-verified write(s), 0x1b1 = %02x (predicted 00)\n",
 +			 wcd->c2b_writes, dac & 0xff);
 +	}
@@ -9379,7 +9379,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +					  "C3a prep restored to its measured baseline");
 +		}
 +		wcd->pa_prep_on = false;
-+		dev_info(dev, "c3a: prep restored to the measured baseline\n");
++		dev_dbg(dev, "c3a: prep restored to the measured baseline\n");
 +		return 0;
 +	}
 +
@@ -9442,7 +9442,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return ret;
 +
 +	wcd->pa_prep_on = true;
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "c3a: prep applied - register gain at the mapped minimum and the compander-OFF pop/click pairing\n");
 +	return 0;
 +}
@@ -9591,7 +9591,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		return ret;
 +
-+	dev_info(dev, "c3a: HPHL PA enable, map steps 9-11 (settle %u us)\n",
++	dev_dbg(dev, "c3a: HPHL PA enable, map steps 9-11 (settle %u us)\n",
 +		 wcd->pa_settle_us);
 +
 +	/* 9. the widget's own write: 0x1ab bit 5. HPHL ALONE. */
@@ -9641,7 +9641,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->hphl_pa_on = true;
 +	wcd->hphl_pa_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
-+	dev_info(dev,
++	dev_dbg(dev,
 +		 "c3a: HPHL PA ENABLED, 0x1ab = %02x (predicted a0), HPHR bit 4 clear\n",
 +		 pa & 0xff);
 +	return 0;
@@ -9692,7 +9692,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->hphl_pa_on = false;
 +		wcd->hphl_pa_disables++;
 +		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "c3a: HPHL PA DISABLED, 0x1ab = %02x (predicted 80)\n",
 +			 pa & 0xff);
 +	}
@@ -9745,7 +9745,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->clsh_r_on = false;
 +	}
 +	regmap_read(wcd->regmap, WCD9320_A_CDC_CLSH_B1_CTL, &b1);
-+	dev_info(dev, "clsh: HPHR %s, B1_CTL = %02x\n",
++	dev_dbg(dev, "clsh: HPHR %s, B1_CTL = %02x\n",
 +		 join ? "JOINED" : "LEFT", b1 & 0xff);
 +	return 0;
 +}
@@ -9820,7 +9820,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		return ret;
 +
-+	dev_info(dev, "hphr: DAC enable, 0x1b4 = %02x verified on the chip\n",
++	dev_dbg(dev, "hphr: DAC enable, 0x1b4 = %02x verified on the chip\n",
 +		 rgain & 0xff);
 +
 +	/* the RX_BIAS supply, refcounted with HPHL's */
@@ -9860,7 +9860,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->hphr_dac_on = true;
 +	wcd->hphr_dac_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL, &dac);
-+	dev_info(dev, "hphr: DAC ENABLED, 0x1b7 = %02x (predicted c0)\n",
++	dev_dbg(dev, "hphr: DAC ENABLED, 0x1b7 = %02x (predicted c0)\n",
 +		 dac & 0xff);
 +	return 0;
 +
@@ -9889,7 +9889,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->hphr_dac_disables++;
 +		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_R_DAC_CTL,
 +				     &dac);
-+		dev_info(dev, "hphr: DAC DISABLED, 0x1b7 = %02x (predicted 00)\n",
++		dev_dbg(dev, "hphr: DAC DISABLED, 0x1b7 = %02x (predicted 00)\n",
 +			 dac & 0xff);
 +	}
 +
@@ -9965,7 +9965,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		return ret;
 +
-+	dev_info(dev, "hphr: PA enable (settle %u us)\n", wcd->pa_settle_us);
++	dev_dbg(dev, "hphr: PA enable (settle %u us)\n", wcd->pa_settle_us);
 +
 +	/* the widget's own write: 0x1ab bit 4. HPHR ALONE. */
 +	ret = wcd9320_c2b_write(wcd, WCD9320_A_RX_HPH_CNP_EN,
@@ -10001,7 +10001,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->hphr_pa_on = true;
 +	wcd->hphr_pa_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
-+	dev_info(dev, "hphr: PA ENABLED, 0x1ab = %02x (predicted b0)\n",
++	dev_dbg(dev, "hphr: PA ENABLED, 0x1ab = %02x (predicted b0)\n",
 +		 pa & 0xff);
 +	return 0;
 +
@@ -10026,7 +10026,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->hphr_pa_on = false;
 +		wcd->hphr_pa_disables++;
 +		regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_HPH_CNP_EN, &pa);
-+		dev_info(dev, "hphr: PA DISABLED, 0x1ab = %02x\n", pa & 0xff);
++		dev_dbg(dev, "hphr: PA DISABLED, 0x1ab = %02x\n", pa & 0xff);
 +	}
 +
 +	return enable ? (ret ? ret : -EIO) : 0;
@@ -10207,10 +10207,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +	wcd->spk_dac_on = true;
 +	if (wcd->spkdrv)
-+		dev_info(&wcd->sdev->dev, "spk: DAC up (RX bias held; VDD_SPKDRV on, %d uV)\n",
++		dev_dbg(&wcd->sdev->dev, "spk: DAC up (RX bias held; VDD_SPKDRV on, %d uV)\n",
 +			 regulator_get_voltage(wcd->spkdrv));
 +	else
-+		dev_info(&wcd->sdev->dev, "spk: DAC up (RX bias held; no VDD_SPKDRV regulator)\n");
++		dev_dbg(&wcd->sdev->dev, "spk: DAC up (RX bias held; no VDD_SPKDRV regulator)\n");
 +	return 0;
 +
 +teardown:
@@ -10253,7 +10253,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->spk_pa_on = true;
 +	wcd->spk_pa_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_SPKR_DRV_EN, &en);
-+	dev_info(&wcd->sdev->dev, "spk: PA ENABLED, 0x1df = %02x, gain field %u\n",
++	dev_dbg(&wcd->sdev->dev, "spk: PA ENABLED, 0x1df = %02x, gain field %u\n",
 +		 en & 0xff, wcd->spk_gain_field);
 +	return 0;
 +
@@ -10429,7 +10429,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	usleep_range(WCD9320_EAR_SETTLE_US, WCD9320_EAR_SETTLE_US + 100);
 +	wcd->ear_pa_on = true;
 +	wcd->ear_pa_enables++;
-+	dev_info(&wcd->sdev->dev, "ear: PA ENABLED, gain field %u\n",
++	dev_dbg(&wcd->sdev->dev, "ear: PA ENABLED, gain field %u\n",
 +		 wcd->ear_gain_field);
 +	return 0;
 +
@@ -10559,7 +10559,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			goto teardown;
 +	}
 +	wcd->lo_dac_on = true;
-+	dev_info(dev, "lo: DACs up, mask %x (RX bias held, class-H LO)\n",
++	dev_dbg(dev, "lo: DACs up, mask %x (RX bias held, class-H LO)\n",
 +		 wcd->lo_on_mask);
 +	return 0;
 +
@@ -10615,7 +10615,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->lo_pa_on = true;
 +	wcd->lo_pa_enables++;
 +	regmap_read_bypassed(wcd->regmap, WCD9320_A_RX_LINE_CNP_EN, &en);
-+	dev_info(&wcd->sdev->dev, "lo: PA ENABLED, 0x1ca = %02x, mask %x, gain field %u\n",
++	dev_dbg(&wcd->sdev->dev, "lo: PA ENABLED, 0x1ca = %02x, mask %x, gain field %u\n",
 +		 en & 0xff, wcd->lo_on_mask, wcd->lo_gain_field);
 +	return 0;
 +
@@ -11085,7 +11085,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->snap_armed = false;
 +	wcd->snap_valid = true;
 +	wcd->snap_takes++;
-+	dev_info(&wcd->sdev->dev,
++	dev_dbg(&wcd->sdev->dev,
 +		 "snap: %s PA on, %u registers from the chip in %lld us, %u unreadable\n",
 +		 label, k, wcd->snap_us, err);
 +}
@@ -12691,13 +12691,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->dapm_ups++;
 +		if (stage == 0 && wcd->dapm_held_cap) {
 +			wcd->out_beside_cap++;
-+			dev_info(dev, "dapm: %s started beside capture (capture holds %02x)\n",
++			dev_dbg(dev, "dapm: %s started beside capture (capture holds %02x)\n",
 +				 name, wcd->dapm_held_cap);
 +		}
-+		dev_info(dev, "dapm: %s up, path holds %03x\n", name, *held);
++		dev_dbg(dev, "dapm: %s up, path holds %03x\n", name, *held);
 +	} else {
 +		if (!(*held & BIT(stage))) {
-+			dev_info(dev, "dapm: %s not held by DAPM -- nothing to undo\n",
++			dev_dbg(dev, "dapm: %s not held by DAPM -- nothing to undo\n",
 +				 name);
 +			goto out;
 +		}
@@ -12714,7 +12714,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->dapm_held_ear &= ~WCD9320_DO_ABORTED;
 +			wcd->dapm_held_lo &= ~WCD9320_DO_ABORTED;
 +		} else {
-+			dev_info(dev, "dapm: %s down, path holds %03x\n",
++			dev_dbg(dev, "dapm: %s down, path holds %03x\n",
 +				 name, *held);
 +		}
 +	}
@@ -12817,7 +12817,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	/* SLIM TXn = DECn */
 +	wcd->cap_sb_tb[0] = (struct wcd9320_cap_w){ WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1), 0x0f, 0x08, "SLIM TXn = DECn" };
 +	wcd->cap_built = n;
-+	dev_info(&wcd->sdev->dev,
++	dev_dbg(&wcd->sdev->dev,
 +		 "capture: built for DMIC%u -- MICBIAS%u, DEC%u, SLIM TX%u, TX port %u, channel %u\n",
 +		 n, p34 ? 3 : 1, n, n, n - 1, WCD9320_SLIM_TX1_CH + n - 1);
 +}
@@ -13146,11 +13146,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		    (wcd->dapm_held || wcd->dapm_held_spk || wcd->dapm_held_ear ||
 +		     wcd->dapm_held_lo)) {
 +			wcd->cap_beside_out++;
-+			dev_info(dev, "capture: started beside a DAPM output (hph %03x spk %02x ear %02x lo %02x)\n",
++			dev_dbg(dev, "capture: started beside a DAPM output (hph %03x spk %02x ear %02x lo %02x)\n",
 +				 wcd->dapm_held, wcd->dapm_held_spk, wcd->dapm_held_ear,
 +				 wcd->dapm_held_lo);
 +		}
-+		dev_info(dev, "capture: %s up, capture holds %02x\n",
++		dev_dbg(dev, "capture: %s up, capture holds %02x\n",
 +			 wcd9320_cap_name[stage], wcd->dapm_held_cap);
 +	} else {
 +		if (!(wcd->dapm_held_cap & BIT(stage)))
@@ -13160,7 +13160,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->cap_downs++;
 +		if (ret)
 +			wcd->cap_failures++;
-+		dev_info(dev, "capture: %s down (%d), capture holds %02x\n",
++		dev_dbg(dev, "capture: %s down (%d), capture holds %02x\n",
 +			 wcd9320_cap_name[stage], ret, wcd->dapm_held_cap);
 +	}
 +out:
@@ -13403,7 +13403,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		ret = -EBUSY;
 +	} else {
 +		wcd->cap_dmic = n;
-+		dev_info(dev, "capture: DMIC%u selected for the next capture\n", n);
++		dev_dbg(dev, "capture: DMIC%u selected for the next capture\n", n);
 +		ret = 0;
 +	}
 +	mutex_unlock(&wcd->c3_lock);
@@ -14240,7 +14240,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			goto fail_ch;
 +		wcd->rx_port_writes++;
 +		ret = regmap_read(ifd->regmap, ch_reg, &got);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "rx-port %u: multi-channel 0x%03x want %02x -> read %02x%s\n",
 +			 port, ch_reg, ch_mask, ret ? 0 : got,
 +			 ret ? " (readback failed)" : "");
@@ -14250,7 +14250,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			goto fail_cfg;
 +		wcd->rx_port_writes++;
 +		ret = regmap_read(ifd->regmap, cfg_reg, &got);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "rx-port %u: config 0x%03x want %02x -> read %02x%s\n",
 +			 port, cfg_reg, cfg_val, ret ? 0 : got,
 +			 ret ? " (readback failed)" : "");
@@ -14266,7 +14266,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			goto fail_cfg;
 +		wcd->rx_port_writes++;
 +		ret = regmap_read(ifd->regmap, cfg_reg, &got);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "rx-port %u: config 0x%03x want %02x -> read %02x%s\n",
 +			 port, cfg_reg, cfg_val, ret ? 0 : got,
 +			 ret ? " (readback failed)" : "");
@@ -14276,7 +14276,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			goto fail_ch;
 +		wcd->rx_port_writes++;
 +		ret = regmap_read(ifd->regmap, ch_reg, &got);
-+		dev_info(dev,
++		dev_dbg(dev,
 +			 "rx-port %u: multi-channel 0x%03x want 00 -> read %02x%s\n",
 +			 port, ch_reg, ret ? 0 : got,
 +			 ret ? " (readback failed)" : "");
@@ -14287,7 +14287,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->have_ifd_teardown = true;
 +	}
 +
-+	dev_info(dev, "rx-port %u: %s, %u write(s) total\n",
++	dev_dbg(dev, "rx-port %u: %s, %u write(s) total\n",
 +		 port, enable ? "PROGRAMMED" : "TORN DOWN", wcd->rx_port_writes);
 +	ret = 0;
 +	goto out;
@@ -14425,7 +14425,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * hook drove it" in the evidence -- the milestone's entire claim.
 +	 */
 +	wcd->rx_port_origin = "asoc-hw_params";
-+	dev_info(&wcd->sdev->dev,
++	dev_dbg(&wcd->sdev->dev,
 +		 "RX path invocation: ASoC hw_params (dai %s, rate %u, ch %u, fmt %u)\n",
 +		 dai->name, params_rate(params), params_channels(params),
 +		 (unsigned int)params_format(params));
@@ -14463,7 +14463,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return 0;
 +
 +	wcd->rx_port_origin = "asoc-hw_free";
-+	dev_info(&wcd->sdev->dev, "RX path invocation: ASoC hw_free (dai %s)\n",
++	dev_dbg(&wcd->sdev->dev, "RX path invocation: ASoC hw_free (dai %s)\n",
 +		 dai->name);
 +
 +	return wcd9320_rx_ports_program(wcd, wcd->rx_port_n ? wcd->rx_port_n : 1,
@@ -14537,7 +14537,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	ret = __wcd9320_slim_alloc(wcd);
 +	mutex_unlock(&wcd->slim_stream_lock);
 +
-+	dev_info(&wcd->sdev->dev, "slim-stream: ASoC startup (dai %s) -> %d\n",
++	dev_dbg(&wcd->sdev->dev, "slim-stream: ASoC startup (dai %s) -> %d\n",
 +		 dai->name, ret);
 +
 +	return ret;
@@ -14562,7 +14562,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	__wcd9320_slim_release(wcd);
 +	mutex_unlock(&wcd->slim_stream_lock);
 +
-+	dev_info(&wcd->sdev->dev, "slim-stream: ASoC shutdown (dai %s)\n",
++	dev_dbg(&wcd->sdev->dev, "slim-stream: ASoC shutdown (dai %s)\n",
 +		 dai->name);
 +}
 +
@@ -14582,12 +14582,12 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case SNDRV_PCM_TRIGGER_RESUME:
 +	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 +		wcd->slim_stream_origin = "asoc-trigger";
-+		dev_info(&wcd->sdev->dev,
++		dev_dbg(&wcd->sdev->dev,
 +			 "slim-stream: ASoC trigger START (dai %s)\n",
 +			 dai->name);
 +		if (wcd->slim_transport_off) {
 +			wcd->slim_transport_suppressed++;
-+			dev_info(&wcd->sdev->dev,
++			dev_dbg(&wcd->sdev->dev,
 +				 "slim-stream: SUPPRESSED by the negative control -- no prepare, no enable\n");
 +		} else {
 +			ret = __wcd9320_slim_start(wcd);
@@ -14597,7 +14597,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case SNDRV_PCM_TRIGGER_SUSPEND:
 +	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 +		wcd->slim_stream_origin = "asoc-trigger";
-+		dev_info(&wcd->sdev->dev,
++		dev_dbg(&wcd->sdev->dev,
 +			 "slim-stream: ASoC trigger STOP (dai %s)\n",
 +			 dai->name);
 +		/*
@@ -14686,7 +14686,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regmap_read(ifd->regmap, WCD9320_IFD_TX_CFG(port), &cfg);
 +	regmap_read(ifd->regmap, WCD9320_IFD_TX_CH0(port), &ch);
 +	mutex_unlock(&wcd9320_ifd_lock);
-+	dev_info(dev, "tx-port %u: %s -> %d, config 0x%03x = %02x, channels 0x%03x = %02x\n",
++	dev_dbg(dev, "tx-port %u: %s -> %d, config 0x%03x = %02x, channels 0x%03x = %02x\n",
 +		 port, enable ? "enable" : "disable", ret,
 +		 WCD9320_IFD_TX_CFG(port), cfg & 0xff,
 +		 WCD9320_IFD_TX_CH0(port), ch & 0xff);
@@ -14711,7 +14711,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +	}
 +	mutex_unlock(&wcd->slim_stream_lock);
-+	dev_info(&wcd->sdev->dev, "tx-stream: ASoC startup (dai %s) -> %d\n",
++	dev_dbg(&wcd->sdev->dev, "tx-stream: ASoC startup (dai %s) -> %d\n",
 +		 dai->name, ret);
 +	return ret;
 +}
@@ -14741,7 +14741,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->tx_sconfig.port_mask = BIT(wcd->cap_tx_port);
 +	wcd->tx_sconfig.direction = SNDRV_PCM_STREAM_CAPTURE;
 +	mutex_unlock(&wcd->slim_stream_lock);
-+	dev_info(&wcd->sdev->dev,
++	dev_dbg(&wcd->sdev->dev,
 +		 "tx-stream: config port %u channel %u rate %u bps %u (CAPTURE)\n",
 +		 wcd->cap_tx_port, wcd->tx_chs[0], params_rate(params),
 +		 params_width(params));
@@ -14767,7 +14767,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	ret = wcd->tx_rc_disable ? wcd->tx_rc_disable : wcd->tx_rc_unprepare;
 +	wcd->tx_stream_up = false;
 +	wcd->tx_stream_downs++;
-+	dev_info(&wcd->sdev->dev, "tx-stream: DOWN (disable %d, unprepare %d)\n",
++	dev_dbg(&wcd->sdev->dev, "tx-stream: DOWN (disable %d, unprepare %d)\n",
 +		 wcd->tx_rc_disable, wcd->tx_rc_unprepare);
 +	return ret;
 +}
@@ -14801,7 +14801,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			wcd->tx_stream_up = true;
 +			wcd->tx_stream_ups++;
 +		}
-+		dev_info(&wcd->sdev->dev, "tx-stream: START -> prepare %d, enable %d (CONNECT_SOURCE)\n",
++		dev_dbg(&wcd->sdev->dev, "tx-stream: START -> prepare %d, enable %d (CONNECT_SOURCE)\n",
 +			 wcd->tx_rc_prepare, wcd->tx_rc_enable);
 +		break;
 +	case SNDRV_PCM_TRIGGER_STOP:
@@ -14832,7 +14832,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		wcd->tx_sruntime = NULL;
 +	}
 +	mutex_unlock(&wcd->slim_stream_lock);
-+	dev_info(&wcd->sdev->dev, "tx-stream: ASoC shutdown (dai %s)\n", dai->name);
++	dev_dbg(&wcd->sdev->dev, "tx-stream: ASoC shutdown (dai %s)\n", dai->name);
 +}
 +
 +/* The capture DAI's physical channel: SLIM TX1 on channel 128, nothing received. */
@@ -15447,7 +15447,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("duplex-rc1");
++MODULE_VERSION("quietlog-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

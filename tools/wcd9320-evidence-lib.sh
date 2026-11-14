@@ -164,6 +164,12 @@ require_module_version() {
 
 # --------------------------------------------------------------- discovery --
 
+# r202: the codec's normal-path messages are dev_dbg. Every run that finds the
+# codec through find_devices() switches them on, and the verdict puts the
+# setting back (wcd9320-trace-lib.sh).
+_wtl="${DIR:-$(dirname "$0")}/wcd9320-trace-lib.sh"
+[ -f "$_wtl" ] && . "$_wtl"
+
 find_devices() {
 	PGD=""
 	IFD=""
@@ -182,6 +188,7 @@ find_devices() {
 	fi
 	PGD_NAME=$(basename "$PGD")
 	if [ -n "$IFD" ]; then IFD_NAME=$(basename "$IFD"); else IFD_NAME="(none)"; fi
+	command -v wcd_trace_on >/dev/null 2>&1 && wcd_trace_on
 }
 
 # ----------------------------------------------------------------- parsing --
@@ -408,6 +415,7 @@ check_sequence_complete() {	# check_sequence_complete <label>
 # ------------------------------------------------------------------ verdict --
 
 emit_verdict() {
+	command -v wcd_trace_restore >/dev/null 2>&1 && wcd_trace_restore
 	hdr "verdict"
 	say "mode   : $MODE"
 	say "checks : $PASS_N passed, $FAIL_N failed"
@@ -423,6 +431,7 @@ emit_verdict() {
 # a black mark against rc2 for something rc2 never did. Distinct verdict,
 # distinct exit code, distinct filename.
 emit_invalid_setup() {	# emit_invalid_setup <one-line reason>
+	command -v wcd_trace_restore >/dev/null 2>&1 && wcd_trace_restore
 	hdr "verdict"
 	say "mode   : $MODE"
 	say "reason : $1"
