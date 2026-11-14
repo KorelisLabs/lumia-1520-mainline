@@ -1,0 +1,358 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] firmware: qcom: scm: SSD decrypt calls, and a probe that uses them
+
+The Lumia 1520's Windows Phone modem images are encrypted with Qualcomm
+SSD ("Secure Software Download"): XML metadata followed by AES-128-CBC
+ciphertext whose key is wrapped to one only TrustZone holds. The Hexagon
+boot ROM cannot run the MBA as shipped, and this TrustZone offers no PAS
+for the modem (PAS ids 1, 6, 7, 9 only), so Linux has to have TrustZone
+decrypt the images first -- docs/msm8974-modem-mapping.md, sections 9-12.
+
+This adds two SCM calls, as Qualcomm's LK implements them and Windows'
+loader uses them (svc 0x07): qcom_scm_ssd_parse_md() (cmd 0x06) and
+qcom_scm_ssd_decrypt_img_frag() (cmd 0x07), with the SCM clocks and
+bandwidth on around each, like the PAS calls. The keystore is already in
+TrustZone on this device (the same key decrypts the ADSP inside PAS), so no
+keystore call is added.
+
+And a default-off module, qcom_ssd_probe, that decrypts one image in a
+DMA buffer of its own and reports only the structure of the result; the
+buffer is zeroed and freed before it returns. Not upstream material: the
+probe is a bring-up instrument.
+
+---
+
+diff -uNr orig/drivers/firmware/qcom/Kconfig new/drivers/firmware/qcom/Kconfig
+--- a/drivers/firmware/qcom/Kconfig	2026-11-14 17:48:49.115304805 -0500
++++ b/drivers/firmware/qcom/Kconfig	2026-11-14 17:48:49.192289477 -0500
+@@ -74,4 +74,17 @@
+ 	  Select Y here to provide access to EFI variables on the aforementioned
+ 	  platforms.
+ 
++config QCOM_SSD_PROBE
++	tristate "Qualcomm SSD decryption probe (developers only)"
++	depends on QCOM_SCM && FW_LOADER
++	default n
++	help
++	  Bring-up instrument. When loaded, asks TrustZone to parse and
++	  decrypt an SSD-encrypted firmware image (Qualcomm "Secure Software
++	  Download") in a buffer of its own, and reports only the structure
++	  of the result. Nothing is loaded into a subsystem or started.
++
++	  Say N unless you are bringing up firmware that ships SSD-encrypted.
++	  If unsure, say N.
++
+ endmenu
+diff -uNr orig/drivers/firmware/qcom/Makefile new/drivers/firmware/qcom/Makefile
+--- a/drivers/firmware/qcom/Makefile	2026-11-14 17:48:49.131553374 -0500
++++ b/drivers/firmware/qcom/Makefile	2026-11-14 17:48:49.192416669 -0500
+@@ -8,3 +8,4 @@
+ obj-$(CONFIG_QCOM_TZMEM)	+= qcom_tzmem.o
+ obj-$(CONFIG_QCOM_QSEECOM)	+= qcom_qseecom.o
+ obj-$(CONFIG_QCOM_QSEECOM_UEFISECAPP) += qcom_qseecom_uefisecapp.o
++obj-$(CONFIG_QCOM_SSD_PROBE)	+= qcom_ssd_probe.o
+diff -uNr orig/drivers/firmware/qcom/qcom_scm.c new/drivers/firmware/qcom/qcom_scm.c
+--- a/drivers/firmware/qcom/qcom_scm.c	2026-11-14 17:48:49.060135767 -0500
++++ b/drivers/firmware/qcom/qcom_scm.c	2026-11-14 17:48:49.187334904 -0500
+@@ -798,6 +798,104 @@
+ }
+ EXPORT_SYMBOL_GPL(qcom_scm_pas_supported);
+ 
++/*
++ * SSD ("Secure Software Download"): images encrypted with AES under a key
++ * wrapped to one only TrustZone holds. Interface as in Qualcomm's LK
++ * (platform/msm_shared/scm.c). Buffers are physical addresses of memory the
++ * caller owns (physically contiguous); TrustZone reads the metadata from it
++ * and decrypts the ciphertext in place. Crypto engine 1 does the work, so
++ * the SCM clocks and bandwidth are on around each call.
++ */
++static int qcom_scm_ssd_call(struct qcom_scm_desc *desc, struct qcom_scm_res *res)
++{
++	int ret;
++
++	ret = qcom_scm_clk_enable();
++	if (ret)
++		return ret;
++	ret = qcom_scm_bw_enable();
++	if (ret)
++		goto disable_clk;
++	ret = qcom_scm_call(__scm->dev, desc, res);
++	qcom_scm_bw_disable();
++disable_clk:
++	qcom_scm_clk_disable();
++	return ret;
++}
++
++/**
++ * qcom_scm_ssd_parse_md() - parse an SSD image's metadata
++ * @md_phys:	physical address of the metadata (the image's start)
++ * @md_len:	bytes of it TrustZone may read; grow it while TrustZone
++ *		answers "parsing incomplete" (6)
++ * @status:	TrustZone's answer: 0 encrypted, 1 not encrypted, 3 no
++ *		metadata, 4 busy, 5 bad pointer or length, 6 incomplete,
++ *		7 parsing failed, 8 cipher setup failed
++ * @ctx_id:	the decryption context, when @status is 0
++ * @md_end:	physical address where the metadata ends, when @status is 0
++ *
++ * Return: 0 when TrustZone answered (see @status), negative on a call error.
++ */
++int qcom_scm_ssd_parse_md(phys_addr_t md_phys, u32 md_len, u32 *status,
++			  u32 *ctx_id, u32 *md_end)
++{
++	struct qcom_scm_desc desc = {
++		.svc = QCOM_SCM_SVC_SSD,
++		.cmd = QCOM_SCM_SSD_PARSE_MD,
++		.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_VAL, QCOM_SCM_RW),
++		.args[0] = md_len,
++		.args[1] = md_phys,
++		.owner = ARM_SMCCC_OWNER_SIP,
++	};
++	struct qcom_scm_res res;
++	int ret;
++
++	ret = qcom_scm_ssd_call(&desc, &res);
++	if (ret)
++		return ret;
++	*status = res.result[0];
++	*ctx_id = res.result[1];
++	*md_end = res.result[2];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_ssd_parse_md);
++
++/**
++ * qcom_scm_ssd_decrypt_img_frag() - decrypt one fragment of an SSD image
++ * @ctx_id:	the context qcom_scm_ssd_parse_md() returned
++ * @last_frag:	1 for the image's last (or only) fragment
++ * @frag_phys:	physical address of the ciphertext, decrypted in place
++ * @frag_len:	its length in bytes
++ * @status:	TrustZone's answer, 0 on success
++ *
++ * Return: 0 when TrustZone answered (see @status), negative on a call error.
++ */
++int qcom_scm_ssd_decrypt_img_frag(u32 ctx_id, u32 last_frag,
++				  phys_addr_t frag_phys, u32 frag_len,
++				  u32 *status)
++{
++	struct qcom_scm_desc desc = {
++		.svc = QCOM_SCM_SVC_SSD,
++		.cmd = QCOM_SCM_SSD_DECRYPT_IMG_FRAG,
++		.arginfo = QCOM_SCM_ARGS(4, QCOM_SCM_VAL, QCOM_SCM_VAL,
++					 QCOM_SCM_VAL, QCOM_SCM_RW),
++		.args[0] = ctx_id,
++		.args[1] = last_frag,
++		.args[2] = frag_len,
++		.args[3] = frag_phys,
++		.owner = ARM_SMCCC_OWNER_SIP,
++	};
++	struct qcom_scm_res res;
++	int ret;
++
++	ret = qcom_scm_ssd_call(&desc, &res);
++	if (ret)
++		return ret;
++	*status = res.result[0];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_ssd_decrypt_img_frag);
++
+ static int __qcom_scm_pas_mss_reset(struct device *dev, bool reset)
+ {
+ 	struct qcom_scm_desc desc = {
+diff -uNr orig/drivers/firmware/qcom/qcom_scm.h new/drivers/firmware/qcom/qcom_scm.h
+--- a/drivers/firmware/qcom/qcom_scm.h	2026-11-14 17:48:49.077462657 -0500
++++ b/drivers/firmware/qcom/qcom_scm.h	2026-11-14 17:48:49.186318342 -0500
+@@ -113,6 +113,10 @@
+ #define QCOM_SCM_SVC_INFO		0x06
+ #define QCOM_SCM_INFO_IS_CALL_AVAIL	0x01
+ 
++#define QCOM_SCM_SVC_SSD		0x07	/* Secure Software Download */
++#define QCOM_SCM_SSD_PARSE_MD		0x06
++#define QCOM_SCM_SSD_DECRYPT_IMG_FRAG	0x07
++
+ #define QCOM_SCM_SVC_MP				0x0c
+ #define QCOM_SCM_MP_RESTORE_SEC_CFG		0x02
+ #define QCOM_SCM_MP_IOMMU_SECURE_PTBL_SIZE	0x03
+diff -uNr orig/drivers/firmware/qcom/qcom_ssd_probe.c new/drivers/firmware/qcom/qcom_ssd_probe.c
+--- a/drivers/firmware/qcom/qcom_ssd_probe.c	1969-12-31 19:00:00.000000000 -0500
++++ b/drivers/firmware/qcom/qcom_ssd_probe.c	2026-11-14 17:48:49.199475562 -0500
+@@ -0,0 +1,164 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * qcom_ssd_probe -- does TrustZone decrypt an SSD image for Linux?
++ *
++ * A bring-up instrument for the Lumia 1520 (docs/msm8974-modem-mapping.md,
++ * section 12, step E1). Its Windows Phone MBA (modem boot authenticator) is
++ * encrypted with Qualcomm SSD ("Secure Software Download"): XML metadata,
++ * then AES-128-CBC ciphertext whose key only TrustZone can unwrap. This
++ * module loads the MBA (/lib/firmware/mba.b00 by default) into a DMA buffer
++ * of its own, asks TrustZone to parse the metadata (growing the length
++ * while TrustZone reports "parsing incomplete", as Qualcomm's LK does) and
++ * to decrypt the payload in place, and reports STRUCTURE ONLY: TrustZone's
++ * status codes, the metadata and payload lengths, the MBN header fields of
++ * the result (where it loads, its code / signature / certificate sizes) and
++ * how many DER certificates it carries. The plaintext never leaves kernel
++ * memory: the buffer is zeroed and freed before the module's init returns.
++ *
++ * Nothing is loaded into the modem, started or reset. The worst case is a
++ * TrustZone refusal (reported) or a TrustZone fault.
++ *
++ * Not upstream material: this is a bring-up instrument.
++ */
++#include <linux/dma-mapping.h>
++#include <linux/firmware.h>
++#include <linux/firmware/qcom/qcom_scm.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/string.h>
++
++#define SSD_MD_FIRST		128	/* LK's SSD_HEADER_MIN_SIZE */
++#define SSD_MD_MAX		16384
++#define SSD_PMD_ENCRYPTED	0
++#define SSD_PMD_INCOMPLETE	6
++
++static char *fw_name = "mba.b00";
++module_param(fw_name, charp, 0444);
++MODULE_PARM_DESC(fw_name, "the SSD-encrypted image to try (default mba.b00)");
++
++static char result[192] = "not run";
++module_param_string(result, result, sizeof(result), 0444);
++MODULE_PARM_DESC(result, "what TrustZone answered and what came out");
++
++static unsigned int count_der_certs(const u8 *p, size_t n)
++{
++	unsigned int c = 0;
++	size_t i;
++
++	for (i = 0; i + 6 <= n; i++)
++		if (p[i] == 0x30 && p[i + 1] == 0x82 && p[i + 4] == 0x30 && p[i + 5] == 0x82)
++			c++;
++	return c;
++}
++
++static int qcom_ssd_try(struct device *dev)
++{
++	const struct firmware *fw;
++	u32 status = ~0u, ctx = 0, md_end = 0, dstatus = ~0u, md_len;
++	u32 payload_off, payload_len, h[10];
++	unsigned int zeros = 0, certs;
++	dma_addr_t phys;
++	void *buf;
++	size_t i;
++	int ret;
++
++	ret = request_firmware(&fw, fw_name, dev);
++	if (ret) {
++		scnprintf(result, sizeof(result), "no firmware %s (%d)", fw_name, ret);
++		return ret;
++	}
++	buf = dma_alloc_coherent(dev, fw->size, &phys, GFP_KERNEL);
++	if (!buf) {
++		release_firmware(fw);
++		scnprintf(result, sizeof(result), "no DMA buffer for %zu bytes", fw->size);
++		return -ENOMEM;
++	}
++	memcpy(buf, fw->data, fw->size);
++	pr_info("qcom_ssd_probe: %s, %zu bytes, in a DMA buffer at %pad\n",
++		fw_name, fw->size, &phys);
++
++	/* parse the metadata: 128 bytes, doubled while TZ says "incomplete" */
++	for (md_len = min_t(size_t, SSD_MD_FIRST, fw->size); ; md_len *= 2) {
++		md_len = min_t(size_t, md_len, fw->size);
++		ret = qcom_scm_ssd_parse_md(phys, md_len, &status, &ctx, &md_end);
++		pr_info("qcom_ssd_probe: parse_md(len %u) -> ret %d status %u ctx %u md_end 0x%08x\n",
++			md_len, ret, status, ctx, md_end);
++		if (ret || status != SSD_PMD_INCOMPLETE || md_len >= fw->size ||
++		    md_len >= SSD_MD_MAX)
++			break;
++	}
++	if (ret || status != SSD_PMD_ENCRYPTED) {
++		scnprintf(result, sizeof(result), "parse_md: ret %d status %u (0 = encrypted)", ret, status);
++		goto out;
++	}
++	if (md_end < phys || md_end >= phys + fw->size) {
++		scnprintf(result, sizeof(result), "parse_md: md_end 0x%08x outside the buffer", md_end);
++		ret = -ERANGE;
++		goto out;
++	}
++	payload_off = md_end - phys;
++	payload_len = fw->size - payload_off;
++	pr_info("qcom_ssd_probe: metadata %u bytes, ciphertext %u bytes (%s a multiple of 16)\n",
++		payload_off, payload_len, payload_len % 16 ? "NOT" : "");
++
++	/* decrypt in place, one fragment, the last */
++	ret = qcom_scm_ssd_decrypt_img_frag(ctx, 1, md_end, payload_len, &dstatus);
++	pr_info("qcom_ssd_probe: decrypt_img_frag(ctx %u, last 1, len %u) -> ret %d status %u\n",
++		ctx, payload_len, ret, dstatus);
++	if (ret || dstatus) {
++		scnprintf(result, sizeof(result), "parse ok (md %u), decrypt: ret %d status %u",
++			  payload_off, ret, dstatus);
++		goto out;
++	}
++
++	/* structure only: the MBN header of the plaintext, zeros, certificates */
++	memcpy(h, buf + payload_off, sizeof(h));
++	for (i = payload_off; i < fw->size; i++)
++		zeros += !((u8 *)buf)[i];
++	certs = count_der_certs(buf + payload_off, payload_len);
++	pr_info("qcom_ssd_probe: plaintext MBN header: image_id 0x%x vsn %u dest 0x%08x image_size 0x%x code 0x%x sig 0x%x@0x%08x certs 0x%x@0x%08x\n",
++		h[0], h[1], h[3], h[4], h[5], h[7], h[6], h[9], h[8]);
++	pr_info("qcom_ssd_probe: plaintext: %u zero bytes of %u, %u DER certificate start(s)\n",
++		zeros, payload_len, certs);
++	scnprintf(result, sizeof(result),
++		  "DECRYPTED: md %u, payload %u, mbn id 0x%x vsn %u dest 0x%08x code 0x%x sig 0x%x certs 0x%x (%u DER)",
++		  payload_off, payload_len, h[0], h[1], h[3], h[5], h[7], h[9], certs);
++	ret = 0;
++out:
++	memzero_explicit(buf, fw->size);
++	dma_free_coherent(dev, fw->size, buf, phys);
++	release_firmware(fw);
++	return ret;
++}
++
++static int __init qcom_ssd_probe_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	if (!qcom_scm_is_available()) {
++		scnprintf(result, sizeof(result), "scm unavailable");
++		return -ENODEV;
++	}
++	pdev = platform_device_register_simple("qcom_ssd_probe", -1, NULL, 0);
++	if (IS_ERR(pdev))
++		return PTR_ERR(pdev);
++	ret = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
++	if (!ret)
++		qcom_ssd_try(&pdev->dev);
++	else
++		scnprintf(result, sizeof(result), "no 32-bit DMA mask (%d)", ret);
++	pr_info("qcom_ssd_probe: %s\n", result);
++	platform_device_unregister(pdev);
++	return 0;
++}
++module_init(qcom_ssd_probe_init);
++
++static void __exit qcom_ssd_probe_exit(void)
++{
++}
++module_exit(qcom_ssd_probe_exit);
++
++MODULE_DESCRIPTION("Qualcomm SSD decryption probe (bring-up instrument)");
++MODULE_LICENSE("GPL");
+diff -uNr orig/include/linux/firmware/qcom/qcom_scm.h new/include/linux/firmware/qcom/qcom_scm.h
+--- a/include/linux/firmware/qcom/qcom_scm.h	2026-11-14 17:48:49.097534733 -0500
++++ b/include/linux/firmware/qcom/qcom_scm.h	2026-11-14 17:48:49.192136236 -0500
+@@ -79,6 +79,11 @@
+ int qcom_scm_pas_auth_and_reset(u32 peripheral);
+ int qcom_scm_pas_shutdown(u32 peripheral);
+ bool qcom_scm_pas_supported(u32 peripheral);
++int qcom_scm_ssd_parse_md(phys_addr_t md_phys, u32 md_len, u32 *status,
++			  u32 *ctx_id, u32 *md_end);
++int qcom_scm_ssd_decrypt_img_frag(u32 ctx_id, u32 last_frag,
++				  phys_addr_t frag_phys, u32 frag_len,
++				  u32 *status);
+ 
+ int qcom_scm_io_readl(phys_addr_t addr, unsigned int *val);
+ int qcom_scm_io_writel(phys_addr_t addr, unsigned int val);

@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=204
+pkgrel=205
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -42,6 +42,7 @@ source="
 	0004-qdsp6-service-inventory-diagnostic-probe.patch
 	0005-asoc-qcom-lumia1520-q6-sndcard.patch
 	0006-remoteproc-qcom-pas-support-probe.patch
+	0007-firmware-qcom-scm-ssd-decrypt-calls-and-probe.patch
 "
 builddir="$srcdir/linux-${_tag#v}"
 
@@ -85,7 +86,7 @@ package() {
 
 sha512sums="
 6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-$_tag.tar.gz
-447da97253bcc760b104c18bd4e2bf520335f32a8ed1dbaca47a5e42b78fd4c90bf4c4bdf4207888025c62a3312ebd86b216dff3fd00c2436edcd332df2eac8c  config-postmarketos-qcom-msm8974.armv7
+18cc988935f2fff40cf31d8fd0c66d7db6538d5d8675c4a71e4a1fa426d5ca7817ae713756f1df7d74e129110029f3359c18606ee8ea9daf29acfc048671b14a  config-postmarketos-qcom-msm8974.armv7
 a3b467644799e0df829f0f074df849207834e9f05c40858807c9c0f6a6142e7fb6de5ddc397001864564f83c1bc5e8eb9bb6bac2f6fdf890f9f9b1c210786d72  qcom-msm8974-microsoft-common.dtsi
 8a15728e5d4bfaae2cbc5fcc8266a040c11f51a4509f1b7c67c03f0096d29fe66bcbfbe74693fd3c701e0db64add20a4518b1d5f0b5590ee15d850781c9dade0  qcom-msm8974-microsoft-rm940.dts
 1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
@@ -94,4 +95,5 @@ ad96107feffcbe19fdcc5223f15dca7410daef7ac630a63837cfdcf5564a45f56e80b09b72a6e6ab
 db5f2718bb05f659fb9d356ba14dc7be6040b301c459fcb255431c57cb10faa8720b8fb818ed4b2debbd42d5929452059e0a32ca7ba19ac11a77feaec647e0c8  0004-qdsp6-service-inventory-diagnostic-probe.patch
 8b119d4e2d91820bae619d2e45b94379e3dd167195d48069cc54ecaa271363e2636702cc92b6c9c0cde1c8516dc9d7749287c30dc72d24b9488819c350578924  0005-asoc-qcom-lumia1520-q6-sndcard.patch
 ce2840e21264ab7efe7768b29a88560f01adf7094d41c8affb2654abee32c3c42b2722675c827cd1f254b68d4725bbbea7e60ffcf5b7b98e18d6c6b9bd8d3900  0006-remoteproc-qcom-pas-support-probe.patch
+83d66a0d7ae91968d8f57f96b42443ca35c0ed2ecbfde912e6522824963b530e8b653ef54c3aafe8fc0cb0c5714378b3f26419b006951331dc299d12846b4d69  0007-firmware-qcom-scm-ssd-decrypt-calls-and-probe.patch
 "
