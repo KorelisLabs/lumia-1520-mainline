@@ -185,3 +185,48 @@ qcom_pas_probe: 4 of 16 ids supported (supported: 1 6 7 9)
 - **The interface:** TrustZone's SSD service. Qualcomm's open-source LK (`platform/msm_shared/scm.c`) carries the calls: protect the keystore, parse the metadata, decrypt image fragments. Windows' `qcpil8974.sys` can confirm the ids (analysis only).
 - **The keystore:** where it comes from. The 16 KB `SSD` partition, backed up in M0, is the candidate, which is what LK loads.
 - **The Linux shape:** decrypt the MBA and each modem segment in place before the normal MSA path. That means new `qcom_scm` SSD calls and a decrypt step in the MSS loader; physically contiguous buffers are handed to TrustZone.
+
+## 12. The SSD route, mapped (2026-11-14)
+
+### The TrustZone interface (service 0x07, legacy 32-bit calls)
+
+Taken from Qualcomm's LK in lk2nd (`platform/msm_shared/scm.c`, `include/scm.h`, `target/msm8974/init.c`) and confirmed in Windows' `qcpil8974.sys` (analysis only). Windows builds the same legacy command buffers, `{len, buf_offset, resp_hdr_offset, id}` + request + response:
+
+| call | id (`svc<<10 \| cmd`) | request (32-bit words) | response | LK | Windows |
+|---|---|---|---|---|---|
+| protect keystore | 0x1C05 | `{keystore_ptr, keystore_len}` | `{status}` | yes, msm8974 reads 8 KB of `ssd` | **never** |
+| parse metadata | 0x1C06 | `{md_len, md_ptr}` | `{status, md_ctx_id, md_end_ptr}` | yes | yes (len 0x30, req 0x10, resp 0x18) |
+| decrypt image fragment | 0x1C07 | `{md_ctx_id, last_frag, frag_len, frag_ptr}` | `{status}` | yes | yes (req 0x10..0x20) |
+| decrypt ELF segment fragment (name inferred) | 0x1C08 | **6 words** (req 0x10..0x28) | `{status}` | no | yes |
+
+- **Parse metadata** is called with a growing `md_len`: 128, then doubled while TrustZone answers `SSD_PMD_PARSING_INCOMPLETE` (6). It answers `SSD_PMD_ENCRYPTED` (0) with a context and a pointer to the end of the metadata, where the ciphertext starts.
+- **Decrypt** works in place.
+- **The other status codes:** not encrypted 1, no metadata 3, busy 4, bad pointer 5, parsing failed 7, cipher setup failed 8.
+
+**0x1C08.** Windows picks it in place of 0x1C07 when a flag on the image object is 1, which is most likely "an ELF image" (the modem); the flat MBA takes 0x1C07. Its 6 words, from the disassembly:
+- word 0: the context id;
+- words 4 and 5: the fragment length and address, as for 0x1C07;
+- word 1: a third field of the fragment descriptor (probably the segment number);
+- word 2: the caller's last argument (probably a last-segment or last-fragment flag);
+- word 3: not written by that function.
+
+No public header defines it: the downstream `smcmod.h` has only the metadata and image-fragment requests, which match LK. Pinning its exact semantics needs a look at its callers in `qcpil8974.sys`, or an experiment.
+
+### The keystore is already in TrustZone
+
+- The MBA, the modem and the ADSP all carry the same image-key id (`0iWmeuUN…`) and the same signing key (`P8stssAu…`).
+- TrustZone decrypts the ADSP under Linux today, so it already holds that key. The Windows Phone UEFI presumably protects the keystore at boot, and Windows never sends 0x1C05.
+- The `SSD` partition (backed up in M0, private) is a 2 128-byte keystore blob: version word 1, then ciphertext. It should not be needed.
+
+### Clocks
+
+The SSD service uses crypto engine 1. The msm8974 `scm` node already lists `GCC_CE1_CLK`, `GCC_CE1_AXI_CLK` and `GCC_CE1_AHB_CLK`, and `qcom_scm.c`'s `qcom_scm_clk_enable()` / `qcom_scm_bw_enable()` switch them on around the PAS calls. So the SSD calls belong in `qcom_scm.c`, written like `qcom_scm_pas_init_image()`: a physically contiguous DMA buffer, clocks and bandwidth on, the call, off. A legacy response carries up to 3 words, exactly parse-metadata's.
+
+### Proposed experiments
+
+| step | what | proves |
+|---|---|---|
+| **E1** | patch: `qcom_scm_ssd_parse_md()` and `qcom_scm_ssd_decrypt_img_frag()` in `qcom_scm.c`, and a default-off probe that decrypts `mba.b00` in a DMA buffer and reports **structure only** (TrustZone's status codes, the metadata and payload lengths, whether the plaintext starts with an MBN header loading at 0x0D1xxxxx and carries a DER certificate chain). No plaintext leaves kernel memory | TrustZone does SSD for Linux; the MBA decrypts |
+| **E2** | the MSS loader decrypts the MBA before loading it | the MBA boots ("MBA booted ..., loading mpss") |
+| **E3** | pin 0x1C08 (its callers in `qcpil8974.sys`, or an experiment) and decrypt each modem segment before loading | the modem authenticates and starts |
+| then | M4 (rmtfs), M5 (QMI without a SIM) | |
