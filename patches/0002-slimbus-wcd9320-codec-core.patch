@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 10:57:23.440001790 -0500
-@@ -0,0 +1,14902 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 11:47:36.339959509 -0500
+@@ -0,0 +1,15102 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2091,6 +2091,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	 * WCD9320_CAP_HPF_SETTLE_MS, disarmed at teardown; all under c3_lock.
 +	 */
 +	struct delayed_work cap_hpf_work;
++	/* r201: Capture HPF Cut-off, 0 = 4 Hz, 1 = 75 Hz, 2 = 150 Hz: where the settle ends */
++	u8 cap_hpf_cut;
 +	unsigned long cap_hpf_due;
 +	bool cap_hpf_armed;
 +	u8 cap_hpf_found;
@@ -2146,6 +2148,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	/* ---- the RDAC clock prerequisite experiment (r165) ---- */
 +	bool clk_prereq_on;
++	/* r201: who holds the prereq (WCD9320_PRQ_*); clk_prereq_on = owners != 0 */
++	unsigned int clk_prereq_owners;
++	/* r201: duplex starts -- an output beside capture, capture beside an output */
++	unsigned int out_beside_cap, cap_beside_out;
 +	bool clk_power_pre_valid;
 +	u8 clk_power_pre;              /* 0x314 as measured before any write */
 +	unsigned int rdac_probes;
@@ -8288,6 +8294,37 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	  "0x30d bits 1+2 together (diagnostic)" },
 +};
 +
++/*
++ * r201: THE RESEARCH GUARD. The hooks below write codec registers outside the
++ * ownership model (the prereq owners, the MCLK count), so they refuse while
++ * DAPM holds any output or capture. The masks change only under c3_lock; a
++ * hook that does not run under it takes the lock for the check alone.
++ */
++static bool wcd9320_dapm_any(struct wcd9320 *wcd)
++{
++	return wcd->dapm_held || wcd->dapm_held_spk || wcd->dapm_held_ear ||
++	       wcd->dapm_held_lo || wcd->dapm_held_cap;
++}
++
++static int wcd9320_research_refuse(struct wcd9320 *wcd, const char *who,
++				   bool locked)
++{
++	bool busy;
++
++	if (!locked)
++		mutex_lock(&wcd->c3_lock);
++	busy = wcd9320_dapm_any(wcd);
++	if (!locked)
++		mutex_unlock(&wcd->c3_lock);
++	if (!busy)
++		return 0;
++	dev_err(&wcd->sdev->dev,
++		"%s: refusing -- DAPM holds an output or capture (hph %03x spk %02x ear %02x lo %02x cap %02x)\n",
++		who, wcd->dapm_held, wcd->dapm_held_spk, wcd->dapm_held_ear,
++		wcd->dapm_held_lo, wcd->dapm_held_cap);
++	return -EBUSY;
++}
++
 +static int wcd9320_writability_run(struct wcd9320 *wcd)
 +{
 +	struct device *dev = &wcd->sdev->dev;
@@ -8301,6 +8338,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "wr: codec not ready\n");
 +		return -EAGAIN;
 +	}
++	ret = wcd9320_research_refuse(wcd, "wr", false);
++	if (ret)
++		return ret;
 +
 +	ret = wcd9320_pa_guard(wcd, "before the writability characterisation");
 +	if (ret)
@@ -8425,7 +8465,19 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 + * that table is sixty-odd registers including MAD, buck and MCLK-rate entries,
 + * and applying it wholesale would answer nothing while changing everything.
 + */
-+static int wcd9320_cdc_clk_prereq(struct wcd9320 *wcd, bool enable)
++/*
++ * r201: THE PREREQ HAS OWNERS. Downstream writes 0x314 = 03 once, in its
++ * init table, and never clears it. Here it is held while anything needs it,
++ * and capture and one output can need it at once: the first owner measures
++ * and writes it, the last restores what was measured, and an owner in
++ * between changes only the mask. Every caller names itself.
++ */
++#define WCD9320_PRQ_OUT		BIT(0)	/* a DAPM output path */
++#define WCD9320_PRQ_CAP		BIT(1)	/* the DAPM capture path */
++#define WCD9320_PRQ_RES		BIT(2)	/* the research attribute and its runners */
++
++static int wcd9320_cdc_clk_prereq(struct wcd9320 *wcd, unsigned int owner,
++				  bool enable)
 +{
 +	struct device *dev = &wcd->sdev->dev;
 +	unsigned int val;
@@ -8439,9 +8491,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +
 +	if (enable) {
-+		if (wcd->clk_prereq_on) {
-+			dev_err(dev, "clk-prereq: already applied\n");
++		if (wcd->clk_prereq_owners & owner) {
++			dev_err(dev, "clk-prereq: already applied by owner %x\n", owner);
 +			return -EBUSY;
++		}
++		if (wcd->clk_prereq_owners) {
++			wcd->clk_prereq_owners |= owner;
++			dev_info(dev, "clk-prereq: shared -- owner %x joins, owners now %x, 0x314 already issued\n",
++				 owner, wcd->clk_prereq_owners);
++			return 0;
 +		}
 +		/*
 +		 * Measure before touching it. The teardown restores what was
@@ -8472,6 +8530,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		if (ret)
 +			return ret;
 +
++		wcd->clk_prereq_owners = owner;
 +		wcd->clk_prereq_on = true;
 +		dev_info(dev,
 +			 "clk-prereq: ISSUED 0x314 = %02x; chip reads %02x, which this part cannot verify either way\n",
@@ -8479,8 +8538,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return 0;
 +	}
 +
-+	if (!wcd->clk_prereq_on) {
-+		dev_warn(dev, "clk-prereq: not applied, nothing to restore\n");
++	if (!(wcd->clk_prereq_owners & owner)) {
++		dev_warn(dev, "clk-prereq: not applied by owner %x, nothing to restore\n", owner);
++		return 0;
++	}
++	if (wcd->clk_prereq_owners & ~owner) {
++		wcd->clk_prereq_owners &= ~owner;
++		dev_info(dev, "clk-prereq: owner %x leaves, owners now %x -- 0x314 stays\n",
++			 owner, wcd->clk_prereq_owners);
 +		return 0;
 +	}
 +
@@ -8500,6 +8565,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (ret)
 +		return ret;
 +
++	wcd->clk_prereq_owners = 0;
 +	wcd->clk_prereq_on = false;
 +	dev_info(dev, "clk-prereq: RESTORED to %02x\n",
 +		 wcd->clk_power_pre & WCD9320_CLK_POWER_MASK);
@@ -8530,6 +8596,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "rdac-probe: codec not ready\n");
 +		return -EAGAIN;
 +	}
++	ret = wcd9320_research_refuse(wcd, "rdac-probe", false);
++	if (ret)
++		return ret;
 +
 +	ret = wcd9320_pa_guard(wcd, "before the RDAC probe");
 +	if (ret)
@@ -8590,9 +8659,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +
 +	mutex_lock(&wcd->c3_lock);
 +	if (sysfs_streq(buf, "on"))
-+		ret = wcd9320_cdc_clk_prereq(wcd, true);
++		ret = wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, true);
 +	else if (sysfs_streq(buf, "off"))
-+		ret = wcd9320_cdc_clk_prereq(wcd, false);
++		ret = wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, false);
 +	else
 +		ret = -EINVAL;
 +	mutex_unlock(&wcd->c3_lock);
@@ -8651,6 +8720,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "chip-ctl: codec not ready\n");
 +		return -EAGAIN;
 +	}
++	ret = wcd9320_research_refuse(wcd, "chip-ctl", false);
++	if (ret)
++		return ret;
 +
 +	if (sysfs_streq(buf, "on")) {
 +		if (wcd->chip_ctl_pre_valid) {
@@ -10684,7 +10756,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd9320_spk_dac(wcd, false);
 +	wcd9320_ear_dac(wcd, false);
 +	wcd9320_lo_dac(wcd, false);
-+	wcd9320_cdc_clk_prereq(wcd, false);
++	/* r201: the outputs' and research's ownership -- never capture's */
++	wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, false);
++	wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, false);
 +	wcd9320_pa_prep(wcd, false);
 +	wcd9320_spk_prep(wcd, false);
 +	wcd9320_ear_prep(wcd, false);
@@ -11501,6 +11575,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "vm: refusing -- insert detection is on\n");
 +		return -EBUSY;
 +	}
++	/* r201: never beside DAPM -- it writes LDO_H and CFILT1, capture's mic bias */
++	if (wcd9320_research_refuse(wcd, "vm", true)) {
++		wcd->vm_refusals++;
++		return -EBUSY;
++	}
 +	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_MASK0, masks,
 +			       WCD9320_NUM_IRQ_REGS);
 +	if (ret || memcmp(masks, wcd9320_irq_mask_all, WCD9320_NUM_IRQ_REGS)) {
@@ -11982,6 +12061,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		dev_err(dev, "zdet: refusing -- insert detection is on\n");
 +		return -EBUSY;
 +	}
++	/* r201: never beside DAPM */
++	if (wcd9320_research_refuse(wcd, "zdet", true)) {
++		wcd->zd_refusals++;
++		return -EBUSY;
++	}
 +	ret = regmap_bulk_read(wcd->regmap, WCD9320_A_INTR_MASK0, masks,
 +			       WCD9320_NUM_IRQ_REGS);
 +	if (ret || memcmp(masks, wcd9320_irq_mask_all, WCD9320_NUM_IRQ_REGS)) {
@@ -12398,10 +12482,10 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	(BIT(WCD9320_DO_PREP) | BIT(WCD9320_DO_PREREQ) | \
 +	 BIT(WCD9320_DO_DAC) | BIT(WCD9320_DO_PA))
 +
-+/* Nothing on any output path is up, and nobody holds the clock. */
-+static bool wcd9320_dapm_idle(struct wcd9320 *wcd)
++/* r201: every output flag off -- dapm_idle without the clock and the prereq */
++static bool wcd9320_out_flags_idle(struct wcd9320 *wcd)
 +{
-+	return !wcd->mclk_users && !wcd->pa_prep_on && !wcd->clk_prereq_on &&
++	return !wcd->pa_prep_on &&
 +	       !wcd->rx1_digital_on && !wcd->hphl_dac_on && !wcd->hphl_pa_on &&
 +	       !wcd->rx2_digital_on && !wcd->hphr_dac_on && !wcd->hphr_pa_on &&
 +	       !wcd->comp1_on && !wcd->clsh_on && !wcd->clsh_r_on &&
@@ -12413,6 +12497,35 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	       !wcd->lo_prep_on && !wcd->lo_dac_on && !wcd->lo_pa_on &&
 +	       !wcd->clsh_lo_on;
 +}
++
++/* Nothing on any output path is up, and nobody holds the clock. */
++static bool wcd9320_dapm_idle(struct wcd9320 *wcd)
++{
++	return !wcd->mclk_users && !wcd->clk_prereq_on &&
++	       wcd9320_out_flags_idle(wcd);
++}
++
++/*
++ * r201: capture may start beside ONE DAPM output. Every MCLK reference must
++ * be an output path's own first stage and the prereq the outputs' alone --
++ * anything more is a research path, and capture refuses it. With no output
++ * up this is dapm_idle.
++ */
++static bool wcd9320_idle_but_outputs(struct wcd9320 *wcd)
++{
++	unsigned int out_mclk = !!(wcd->dapm_held & BIT(WCD9320_DS_MCLK)) +
++				!!(wcd->dapm_held_spk & BIT(WCD9320_DO_MCLK)) +
++				!!(wcd->dapm_held_ear & BIT(WCD9320_DO_MCLK)) +
++				!!(wcd->dapm_held_lo & BIT(WCD9320_DO_MCLK));
++
++	if (!out_mclk)
++		return wcd9320_dapm_idle(wcd);
++	return wcd->mclk_users == out_mclk &&
++	       !(wcd->clk_prereq_owners & ~WCD9320_PRQ_OUT);
++}
++
++/* r201: defined with the capture stages, below */
++static bool wcd9320_idle_but_capture(struct wcd9320 *wcd);
 +
 +/* r188: the RX3+RX5 stage -- both chains or neither */
 +static int wcd9320_lo_rx(struct wcd9320 *wcd, bool on)
@@ -12444,7 +12557,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		case WCD9320_DO_PREP:
 +			return wcd9320_spk_prep(wcd, on);
 +		case WCD9320_DO_PREREQ:
-+			return wcd9320_cdc_clk_prereq(wcd, on);
++			return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on);
 +		case WCD9320_DO_RX:
 +			return wcd9320_rx_digital_path(wcd, 2, on);
 +		case WCD9320_DO_DAC:
@@ -12461,7 +12574,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		case WCD9320_DO_PREP:
 +			return wcd9320_lo_prep(wcd, on);
 +		case WCD9320_DO_PREREQ:
-+			return wcd9320_cdc_clk_prereq(wcd, on);
++			return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on);
 +		case WCD9320_DO_RX:
 +			return wcd9320_lo_rx(wcd, on);
 +		case WCD9320_DO_DAC:
@@ -12478,7 +12591,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		case WCD9320_DO_PREP:
 +			return wcd9320_ear_prep(wcd, on);
 +		case WCD9320_DO_PREREQ:
-+			return wcd9320_cdc_clk_prereq(wcd, on);
++			return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on);
 +		case WCD9320_DO_RX:
 +			return wcd9320_rx_digital_path(wcd, 0, on);
 +		case WCD9320_DO_DAC:
@@ -12495,7 +12608,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case WCD9320_DS_PREP:
 +		return wcd9320_pa_prep(wcd, on);
 +	case WCD9320_DS_PREREQ:
-+		return wcd9320_cdc_clk_prereq(wcd, on);
++		return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on);
 +	case WCD9320_DS_RX1:
 +		return wcd9320_rx_digital_path(wcd, 0, on);
 +	case WCD9320_DS_RX2:
@@ -12548,7 +12661,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			ret = -EAGAIN;
 +			goto out;
 +		}
-+		if (stage == 0 && !wcd9320_dapm_idle(wcd)) {
++		/* r201: one output at a time, but capture may be up */
++		if (stage == 0 && !wcd9320_idle_but_capture(wcd)) {
 +			wcd->dapm_refusals++;
 +			dev_err(dev,
 +				"dapm: %s REFUSED -- another output or a research path holds the codec (mclk_users=%u prep=%d/%d/%d prereq=%d rx=%d/%d/%d pa=%d/%d/%d/%d clsh=%d)\n",
@@ -12575,6 +12689,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		*held |= BIT(stage);
 +		wcd->dapm_ups++;
++		if (stage == 0 && wcd->dapm_held_cap) {
++			wcd->out_beside_cap++;
++			dev_info(dev, "dapm: %s started beside capture (capture holds %02x)\n",
++				 name, wcd->dapm_held_cap);
++		}
 +		dev_info(dev, "dapm: %s up, path holds %03x\n", name, *held);
 +	} else {
 +		if (!(*held & BIT(stage))) {
@@ -12628,6 +12747,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +#define WCD9320_CAP_HPF_MASK			0x30
 +#define WCD9320_CAP_HPF_150HZ			0x20
 +#define WCD9320_CAP_HPF_SETTLE_MS		300	/* taiko tx_hpf_work */
++/* r201: the Capture HPF Cut-off control's item as the field value */
++#define WCD9320_CAP_HPF_VAL(cut)		((cut) << 4)
 +#define WCD9320_A_CDC_TX1_VOL_CTL_GAIN		0x221
 +#define WCD9320_A_CDC_TX1_VOL_CTL_CFG		0x222
 +#define WCD9320_A_CDC_TX1_MUX_CTL		0x223
@@ -12813,7 +12934,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +{
 +	wcd->cap_hpf_found = wcd->cap_base[WCD9320_CAP_DEC][ARRAY_SIZE(wcd->cap_dec_pre_tb)] &
 +			     WCD9320_CAP_HPF_MASK;
-+	if (wcd->cap_hpf_found == WCD9320_CAP_HPF_150HZ)
++	/*
++	 * r201: the settle ends at the Capture HPF Cut-off control, as
++	 * downstream's tx_hpf_work ends at its TX HPF cut off control; at 150 Hz
++	 * there is nothing to end. The measured value is still what teardown
++	 * restores.
++	 */
++	if (WCD9320_CAP_HPF_VAL(wcd->cap_hpf_cut) == WCD9320_CAP_HPF_150HZ)
 +		return;
 +	wcd->cap_hpf_due = jiffies + msecs_to_jiffies(WCD9320_CAP_HPF_SETTLE_MS);
 +	wcd->cap_hpf_armed = true;
@@ -12850,8 +12977,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	}
 +	n = wcd->cap_built ? wcd->cap_built : 1;
 +	if (wcd9320_c2b_write(wcd, WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n),
-+			      WCD9320_CAP_HPF_MASK, wcd->cap_hpf_found,
-+			      "decimator HPF cut-off back as found, the settle done"))
++			      WCD9320_CAP_HPF_MASK, WCD9320_CAP_HPF_VAL(wcd->cap_hpf_cut),
++			      "decimator HPF cut-off to Capture HPF Cut-off, the settle done"))
 +		wcd->cap_hpf_errors++;
 +	else
 +		wcd->cap_hpf_settles++;
@@ -12930,7 +13057,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	case WCD9320_CAP_MCLK:
 +		return on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd);
 +	case WCD9320_CAP_PREREQ:
-+		return wcd9320_cdc_clk_prereq(wcd, on);
++		return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_CAP, on);
 +	case WCD9320_CAP_MB:
 +		return wcd9320_cap_mb(wcd, on);
 +	case WCD9320_CAP_DMIC:
@@ -12941,6 +13068,20 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return wcd9320_cap_slim(wcd, on);
 +	}
 +	return -EINVAL;
++}
++
++/*
++ * r201: an output may start beside capture. Idle but for exactly what the
++ * capture path holds: its MCLK reference (once its first stage is up) and
++ * its prereq ownership. Outputs stay exclusive with each other.
++ */
++static bool wcd9320_idle_but_capture(struct wcd9320 *wcd)
++{
++	unsigned int cap_mclk = !!(wcd->dapm_held_cap & BIT(WCD9320_CAP_MCLK));
++
++	return wcd->mclk_users == cap_mclk &&
++	       !(wcd->clk_prereq_owners & ~WCD9320_PRQ_CAP) &&
++	       wcd9320_out_flags_idle(wcd);
 +}
 +
 +/* Take down whatever capture holds, top stage first. Under c3_lock. */
@@ -12980,10 +13121,11 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +			ret = -EAGAIN;
 +			goto out;
 +		}
-+		if (stage == WCD9320_CAP_MCLK && !wcd9320_dapm_idle(wcd)) {
++		/* r201: beside one DAPM output, never beside a research path */
++		if (stage == WCD9320_CAP_MCLK && !wcd9320_idle_but_outputs(wcd)) {
 +			wcd->cap_refusals++;
-+			dev_err(dev, "capture: REFUSED -- an output or a research path holds the codec (mclk_users=%u)\n",
-+				wcd->mclk_users);
++			dev_err(dev, "capture: REFUSED -- a research path holds the codec (mclk_users=%u prereq owners %x)\n",
++				wcd->mclk_users, wcd->clk_prereq_owners);
 +			ret = -EBUSY;
 +			goto out;
 +		}
@@ -13000,6 +13142,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		}
 +		wcd->dapm_held_cap |= BIT(stage);
 +		wcd->cap_ups++;
++		if (stage == WCD9320_CAP_MCLK &&
++		    (wcd->dapm_held || wcd->dapm_held_spk || wcd->dapm_held_ear ||
++		     wcd->dapm_held_lo)) {
++			wcd->cap_beside_out++;
++			dev_info(dev, "capture: started beside a DAPM output (hph %03x spk %02x ear %02x lo %02x)\n",
++				 wcd->dapm_held, wcd->dapm_held_spk, wcd->dapm_held_ear,
++				 wcd->dapm_held_lo);
++		}
 +		dev_info(dev, "capture: %s up, capture holds %02x\n",
 +			 wcd9320_cap_name[stage], wcd->dapm_held_cap);
 +	} else {
@@ -13198,14 +13348,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regs[nr].reg = WCD9320_CDC_CLK_OTHR_CTL; regs[nr++].key = "othr_0x30c";
 +	regs[nr].reg = WCD9320_A_CDC_CONN_TX_B1_CTL; regs[nr++].key = "conntx_0x393";
 +	regs[nr].reg = WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1); regs[nr++].key = "sbtx";
-+	k = sysfs_emit(buf, "cap_dmic=%u tx_port=%u cap_held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u prereq=%d tx_port_on=%u tx_up=%u tx_ups=%u tx_downs=%u tx_rc_prepare=%d tx_rc_enable=%d tx_port_writes=%u hpf_armed=%d hpf_found=%02x hpf_settles=%u hpf_errors=%u\n",
++	k = sysfs_emit(buf, "cap_dmic=%u tx_port=%u cap_held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u prereq=%d tx_port_on=%u tx_up=%u tx_ups=%u tx_downs=%u tx_rc_prepare=%d tx_rc_enable=%d tx_port_writes=%u hpf_armed=%d hpf_found=%02x hpf_settles=%u hpf_errors=%u hpf_cut=%u prereq_owners=%x out_beside_cap=%u cap_beside_out=%u\n",
 +		       n, n - 1, wcd->dapm_held_cap, wcd->cap_ups, wcd->cap_downs,
 +		       wcd->cap_refusals, wcd->cap_failures, wcd->mclk_users,
 +		       wcd->clk_prereq_on, wcd->tx_port_on, wcd->tx_stream_up,
 +		       wcd->tx_stream_ups, wcd->tx_stream_downs,
 +		       wcd->tx_rc_prepare, wcd->tx_rc_enable, wcd->tx_port_writes,
 +		       wcd->cap_hpf_armed, wcd->cap_hpf_found, wcd->cap_hpf_settles,
-+		       wcd->cap_hpf_errors);
++		       wcd->cap_hpf_errors, wcd->cap_hpf_cut, wcd->clk_prereq_owners,
++		       wcd->out_beside_cap, wcd->cap_beside_out);
 +	for (i = 0; i < nr; i++) {
 +		if (regmap_read_bypassed(wcd->regmap, regs[i].reg, &v))
 +			k += sysfs_emit_at(buf, k, "%s=-- ", regs[i].key);
@@ -13540,6 +13691,50 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	return ret;
 +}
 +
++/*
++ * r201: CAPTURE HPF CUT-OFF -- where the decimator's high-pass ends up after
++ * the 150 Hz settle (TXn_MUX_CTL [5:4], downstream's "TX HPF cut off"). 4 Hz
++ * is the reset value and the default; voice wants 75 or 150 Hz (the UCM's
++ * choice). While a settle is armed the work picks the new value up; after
++ * it, the chip moves at once.
++ */
++static const char * const wcd9320_cap_hpf_text[] = { "4 Hz", "75 Hz", "150 Hz" };
++static SOC_ENUM_SINGLE_EXT_DECL(wcd9320_cap_hpf_enum, wcd9320_cap_hpf_text);
++
++static int wcd9320_cap_hpf_get(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++
++	uc->value.enumerated.item[0] = wcd->cap_hpf_cut;
++	return 0;
++}
++
++static int wcd9320_cap_hpf_put(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *uc)
++{
++	struct wcd9320 *wcd = wcd9320_kc_wcd(kc);
++	unsigned int v = uc->value.enumerated.item[0], n;
++	int ret = 0;
++
++	if (v >= ARRAY_SIZE(wcd9320_cap_hpf_text))
++		return -EINVAL;
++	mutex_lock(&wcd->c3_lock);
++	if (v != wcd->cap_hpf_cut) {
++		wcd->cap_hpf_cut = v;
++		ret = 1;
++		if ((wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)) && !wcd->cap_hpf_armed) {
++			n = wcd->cap_built ? wcd->cap_built : 1;
++			if (wcd9320_c2b_write(wcd, WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n),
++					      WCD9320_CAP_HPF_MASK, WCD9320_CAP_HPF_VAL(v),
++					      "decimator HPF cut-off (Capture HPF Cut-off, live)"))
++				ret = -EIO;
++		}
++	}
++	mutex_unlock(&wcd->c3_lock);
++	return ret;
++}
++
 +static const struct snd_kcontrol_new wcd9320_controls[] = {
 +	SOC_SINGLE_EXT("HPHL Volume", 0, 0, WCD9320_HPH_VOL_STEPS, 0,
 +		       wcd9320_hph_vol_get, wcd9320_hph_vol_put),
@@ -13574,6 +13769,9 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	SOC_SINGLE_EXT_TLV("Capture Digital Volume", 0, 0, WCD9320_CAP_GAIN_STEPS, 0,
 +			   wcd9320_cap_gain_get, wcd9320_cap_gain_put,
 +			   wcd9320_cap_gain_tlv),
++	/* r201 */
++	SOC_ENUM_EXT("Capture HPF Cut-off", wcd9320_cap_hpf_enum,
++		     wcd9320_cap_hpf_get, wcd9320_cap_hpf_put),
 +};
 +
 +/* --------------------------------------------- r185: jack detection -- */
@@ -14757,6 +14955,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->cap_dmic = 1;
 +	/* r199: 0 dB unless asked (r197/r198's level) */
 +	wcd->cap_gain = WCD9320_CAP_GAIN_0DB;
++	/* r201: the settle ends at 4 Hz unless asked (the reset value, downstream's default) */
++	wcd->cap_hpf_cut = 0;
 +	/* r195: downstream order by default (r187-r194); the runner selects */
 +	wcd->ear_order_windows = false;
 +	/* r188: the line outs at their minimum, all four selected */
@@ -15247,7 +15447,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("hpfsettle-rc1");
++MODULE_VERSION("duplex-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

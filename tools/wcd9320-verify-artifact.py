@@ -1067,7 +1067,7 @@ def main():
     # mapped order and reaches all four.
     ORDER = ("wcd9320_hphl_pa_path(wcd, false)",   # PA off, settle, class-H
              "wcd9320_hphl_dac_path(wcd, false",   # DAC, then forced 0x30d
-             "wcd9320_cdc_clk_prereq(wcd, false)", # forced 0x314 inverse
+             "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, false)", # forced 0x314 inverse (r201: the outputs' owner)
              "wcd9320_pa_prep(wcd, false)")        # gain and pop/click back
     pos, ordered = -1, True
     for tok in ORDER:
@@ -1780,7 +1780,8 @@ def main():
     print("=== 5i. the r184 DAPM fence ===")
     d_ev = func_body("wcd9320_dapm_event")
     d_call = func_body("wcd9320_dapm_stage_call")
-    d_idle = func_body("wcd9320_dapm_idle")
+    # r201: the output flags moved into wcd9320_out_flags_idle, which dapm_idle calls
+    d_idle = func_body("wcd9320_dapm_idle") + func_body("wcd9320_out_flags_idle")
     for nm, bd in (("wcd9320_dapm_event", d_ev),
                    ("wcd9320_dapm_stage_call", d_call),
                    ("wcd9320_dapm_idle", d_idle)):
@@ -1890,16 +1891,17 @@ def main():
           "wcd9320_soc_component")
     ctl = array_body("static const struct snd_kcontrol_new wcd9320_controls[]")
     check("the controls are exactly the mapped ones",
-          re.findall(r'SOC_SINGLE_EXT(?:_TLV)?\(\s*"([^"]+)"', ctl)
+          re.findall(r'SOC_(?:SINGLE_EXT(?:_TLV)?|ENUM_EXT)\(\s*"([^"]+)"', ctl)  # r201: and the enum
           == ["HPHL Volume", "HPHR Volume", "RX1 Digital Volume",
               "RX2 Digital Volume", "RX7 Digital Volume", "Speaker Volume",
               "Earpiece Volume", "RX3 Digital Volume", "RX5 Digital Volume",
-              "Lineout Volume", "Lineout Select", "Capture Digital Volume"],
-          "HPH x2, digital x5 (r187 RX7, r188 RX3/RX5), speaker, earpiece, line out x2, capture (r199)")
+              "Lineout Volume", "Lineout Select", "Capture Digital Volume",
+              "Capture HPF Cut-off"],
+          "HPH x2, digital x5 (r187 RX7, r188 RX3/RX5), speaker, earpiece, line out x2, capture (r199, r201)")
 
     # ---- the dispatcher: the six proven functions, nothing else --------
     want_calls = ["wcd9320_mclk_get(wcd)", "wcd9320_mclk_put(wcd)",
-                  "wcd9320_pa_prep(wcd, on)", "wcd9320_cdc_clk_prereq(wcd, on)",
+                  "wcd9320_pa_prep(wcd, on)", "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on)",
                   "wcd9320_rx_digital_path(wcd, 0, on)",
                   "wcd9320_rx_digital_path(wcd, 1, on)",
                   "wcd9320_hphl_dac_path(wcd, on, true,",
@@ -1910,7 +1912,7 @@ def main():
     # the earpiece reuses RX1 (2); each output function is called once.
     # r188: four paths now share MCLK and the prereq.
     want_n = {"wcd9320_mclk_get(wcd)": 4, "wcd9320_mclk_put(wcd)": 4,
-              "wcd9320_cdc_clk_prereq(wcd, on)": 4,
+              "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on)": 4,
               "wcd9320_rx_digital_path(wcd, 0, on)": 2}
     want_calls += ["wcd9320_rx_digital_path(wcd, 2, on)",
                    "wcd9320_spk_prep(wcd, on)", "wcd9320_spk_dac(wcd, on)",
@@ -1961,8 +1963,8 @@ def main():
     check("power-up requires DAPM to hold exactly the stages below",
           0 <= d_ev.find("*held != below") < i_on, "checked before the call, per path (r187)")
     check("the first stage requires an idle codec",
-          0 <= d_ev.find("stage == 0 && !wcd9320_dapm_idle(wcd)") < i_on,
-          "checked before the call -- one output at a time")
+          0 <= d_ev.find("stage == 0 && !wcd9320_idle_but_capture(wcd)") < i_on,
+          "checked before the call -- one output at a time; r201: capture may be up")
     up_branch = d_ev[i_on:d_ev.find("} else {", i_on)] if i_on >= 0 else ""
     check("a failed power-up runs the full C3 abort",
           "wcd9320_c3_abort(wcd);" in up_branch
@@ -2381,7 +2383,7 @@ def main():
                 "wcd9320_hphl_pa_path(wcd, false)", "wcd9320_hphl_dac_path(wcd, false",
                 "wcd9320_spk_dac(wcd, false)", "wcd9320_ear_dac(wcd, false)",
                 "wcd9320_lo_dac(wcd, false)",
-                "wcd9320_cdc_clk_prereq(wcd, false)", "wcd9320_pa_prep(wcd, false)",
+                "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, false)", "wcd9320_pa_prep(wcd, false)",
                 "wcd9320_spk_prep(wcd, false)", "wcd9320_ear_prep(wcd, false)",
                 "wcd9320_lo_prep(wcd, false)"):
         nxt = abort_body.find(tok, pos + 1)
@@ -3199,7 +3201,7 @@ def main():
     i_on = ce_.find("ret = wcd9320_cap_stage_call(wcd, stage, true);")
     check("capture event: refusal, then the idle check, then the stage, under c3_lock",
           0 <= ce_.find("mutex_lock(&wcd->c3_lock);") < ce_.find("if (wcd->dapm_held_cap != below) {")
-          < ce_.find("if (stage == WCD9320_CAP_MCLK && !wcd9320_dapm_idle(wcd)) {") < i_on
+          < ce_.find("if (stage == WCD9320_CAP_MCLK && !wcd9320_idle_but_outputs(wcd)) {") < i_on
           and ce_.count("mutex_unlock(&wcd->c3_lock);") == 1, "one path at a time")
     check("capture event: a failed stage unwinds capture",
           0 <= i_on < ce_.find("wcd9320_cap_unwind(wcd);") and "wcd->cap_failures++;" in ce_,
@@ -3207,7 +3209,7 @@ def main():
     cs_ = func_body("wcd9320_cap_stage_call")
     check("capture stages: the proven MCLK and prereq, and the four new ones",
           all(c in cs_ for c in ("on ? wcd9320_mclk_get(wcd) : wcd9320_mclk_put(wcd)",
-                                 "return wcd9320_cdc_clk_prereq(wcd, on);",
+                                 "return wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_CAP, on);",
                                  "return wcd9320_cap_mb(wcd, on);", "return wcd9320_cap_dmic_clk(wcd, on);",
                                  "return wcd9320_cap_dec(wcd, on);", "return wcd9320_cap_slim(wcd, on);")),
           "nothing else")
@@ -3279,13 +3281,13 @@ def main():
     hd = func_body("wcd9320_cap_hpf_disarm")
     hw = func_body("wcd9320_cap_hpf_work")
     pb = func_body("wcd9320_probe")
-    check("decimator HPF: a true 150 Hz for the settle, the found cut-off back after 300 ms (tx_hpf_work)",
+    check("decimator HPF: a true 150 Hz for the settle, the Capture HPF Cut-off after 300 ms (tx_hpf_work)",
           "#define WCD9320_CAP_HPF_MASK\t\t\t0x30" in ptext_all
           and "#define WCD9320_CAP_HPF_150HZ\t\t\t0x20" in ptext_all
           and "#define WCD9320_CAP_HPF_SETTLE_MS\t\t300" in ptext_all
           and "WCD9320_CAP_HPF_150HZ, \"decimator HPF cut-off 150 Hz while it settles\" };" in cb
           and "wcd->cap_base[WCD9320_CAP_DEC][ARRAY_SIZE(wcd->cap_dec_pre_tb)] &" in ha
-          and "if (wcd->cap_hpf_found == WCD9320_CAP_HPF_150HZ)" in ha
+          and "if (WCD9320_CAP_HPF_VAL(wcd->cap_hpf_cut) == WCD9320_CAP_HPF_150HZ)" in ha
           and 0 <= ha.find("wcd->cap_hpf_armed = true;") < ha.find("mod_delayed_work(system_wq, &wcd->cap_hpf_work,")
           and 0 <= dc.find("wcd->cap_dec_post_tb,") < dc.find("wcd9320_cap_hpf_arm(wcd);") < dc.find("down:")
           < dc.find("wcd9320_cap_hpf_disarm(wcd);") < dc.find("wcd9320_cap_restore(wcd, WCD9320_CAP_DEC, tbs, ns, 2);"),
@@ -3294,7 +3296,7 @@ def main():
           0 <= hw.find("mutex_lock(&wcd->c3_lock);")
           < hw.find("if (!wcd->cap_hpf_armed || !(wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)))")
           < hw.find("left = (long)(wcd->cap_hpf_due - jiffies);") < hw.find("if (left > 0) {")
-          < hw.find("WCD9320_CAP_HPF_MASK, wcd->cap_hpf_found,") < hw.find("wcd->cap_hpf_armed = false;")
+          < hw.find("WCD9320_CAP_HPF_MASK, WCD9320_CAP_HPF_VAL(wcd->cap_hpf_cut),") < hw.find("wcd->cap_hpf_armed = false;")
           < hw.find("mutex_unlock(&wcd->c3_lock);")
           and hw.count("mutex_unlock(&wcd->c3_lock);") == 1,
           "a stale run reschedules to the new deadline")
@@ -3307,6 +3309,82 @@ def main():
           < pb.find("ret = devm_add_action_or_reset(dev, wcd9320_cap_hpf_teardown, wcd);")
           < pb.find("ret = devm_snd_soc_register_component(dev, &wcd9320_soc_component,"),
           "unwinds after the component, before power and the regmap")
+    # ---- r201: full duplex (docs/audio/wcd9320-duplex-mapping.md) ----
+    pq = func_body("wcd9320_cdc_clk_prereq")
+    i_dis = pq.find("if (!(wcd->clk_prereq_owners & owner)) {")
+    check("prereq owners: per-owner refusal, later owners only join, the first writes 0x314",
+          "#define WCD9320_PRQ_OUT\t\tBIT(0)" in ptext_all and "#define WCD9320_PRQ_CAP\t\tBIT(1)" in ptext_all
+          and "#define WCD9320_PRQ_RES\t\tBIT(2)" in ptext_all
+          and "static int wcd9320_cdc_clk_prereq(struct wcd9320 *wcd, unsigned int owner,\n\t\t\t\t  bool enable)" in ptext_all
+          and 0 <= pq.find("if (wcd->clk_prereq_owners & owner) {") < pq.find("if (wcd->clk_prereq_owners) {")
+          < pq.find("wcd->clk_prereq_owners |= owner;") < pq.find('"CDC_CLK_POWER_CTL = 0x03"')
+          < pq.find("wcd->clk_prereq_owners = owner;") < i_dis,
+          "downstream writes 0x314 once at init")
+    check("prereq owners: an owner leaving with others still in changes only the mask; the last restores",
+          0 <= i_dis < pq.find("if (wcd->clk_prereq_owners & ~owner) {") < pq.find("wcd->clk_prereq_owners &= ~owner;")
+          < pq.find('"CDC_CLK_POWER_CTL restored (mandatory)"') < pq.find("wcd->clk_prereq_owners = 0;"),
+          "measured at the first owner, restored at the last")
+    ab = func_body("wcd9320_c3_abort")
+    pcs = func_body("cdc_clk_prereq_store")
+    check("prereq owners: every caller names itself; the C3 abort never releases capture's",
+          ptext_all.count("wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, on)") == 4
+          and ptext_all.count("wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_CAP, on)") == 1
+          and "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, true)" in pcs
+          and "wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, false)" in pcs
+          and 0 <= ab.find("wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_OUT, false);")
+          < ab.find("wcd9320_cdc_clk_prereq(wcd, WCD9320_PRQ_RES, false);")
+          and "WCD9320_PRQ_CAP" not in ab
+          and ptext_all.count("wcd9320_cdc_clk_prereq(wcd,") == 9,
+          "outputs 4, capture 1, research 2, abort 2")
+    ibc = func_body("wcd9320_idle_but_capture")
+    check("duplex: an output starts beside capture -- idle but capture's MCLK and prereq",
+          "unsigned int cap_mclk = !!(wcd->dapm_held_cap & BIT(WCD9320_CAP_MCLK));" in ibc
+          and "return wcd->mclk_users == cap_mclk &&" in ibc
+          and "!(wcd->clk_prereq_owners & ~WCD9320_PRQ_CAP) &&" in ibc
+          and "wcd9320_out_flags_idle(wcd);" in ibc
+          and "static bool wcd9320_idle_but_capture(struct wcd9320 *wcd);" in ptext_all,
+          "outputs stay exclusive with each other")
+    ibo = func_body("wcd9320_idle_but_outputs")
+    check("duplex: capture starts beside one DAPM output, never beside a research path",
+          all(s in ibo for s in ("!!(wcd->dapm_held & BIT(WCD9320_DS_MCLK))",
+                                 "!!(wcd->dapm_held_spk & BIT(WCD9320_DO_MCLK))",
+                                 "!!(wcd->dapm_held_ear & BIT(WCD9320_DO_MCLK))",
+                                 "!!(wcd->dapm_held_lo & BIT(WCD9320_DO_MCLK))"))
+          and 0 <= ibo.find("if (!out_mclk)\n\t\treturn wcd9320_dapm_idle(wcd);")
+          < ibo.find("return wcd->mclk_users == out_mclk &&")
+          < ibo.find("!(wcd->clk_prereq_owners & ~WCD9320_PRQ_OUT);")
+          and "return !wcd->mclk_users && !wcd->clk_prereq_on &&\n\t       wcd9320_out_flags_idle(wcd);"
+          in func_body("wcd9320_dapm_idle"),
+          "every MCLK reference an output's first stage, the prereq the outputs' alone")
+    da = func_body("wcd9320_dapm_any")
+    rr = func_body("wcd9320_research_refuse")
+    check("research hooks refuse while DAPM holds an output or capture",
+          all(m in da for m in ("wcd->dapm_held ||", "wcd->dapm_held_spk", "wcd->dapm_held_ear",
+                                "wcd->dapm_held_lo", "wcd->dapm_held_cap"))
+          and 0 <= rr.find("if (!locked)\n\t\tmutex_lock(&wcd->c3_lock);") < rr.find("busy = wcd9320_dapm_any(wcd);")
+          < rr.find("if (!locked)\n\t\tmutex_unlock(&wcd->c3_lock);") < rr.find("return -EBUSY;")
+          and 'wcd9320_research_refuse(wcd, "wr", false)' in func_body("wcd9320_writability_run")
+          and 'wcd9320_research_refuse(wcd, "rdac-probe", false)' in func_body("wcd9320_rdac_probe")
+          and 'wcd9320_research_refuse(wcd, "chip-ctl", false)' in func_body("chip_ctl_test_store")
+          and 'wcd9320_research_refuse(wcd, "vm", true)' in func_body("wcd9320_hphl_vm")
+          and 'wcd9320_research_refuse(wcd, "zdet", true)' in func_body("wcd9320_hphl_zdet"),
+          "vm, zdet, rdac_probe, writability, chip_ctl -- under c3_lock or taking it")
+    hp = func_body("wcd9320_cap_hpf_put")
+    check("Capture HPF Cut-off: 4/75/150 Hz, 4 Hz at probe, where the settle ends, live only after it",
+          'static const char * const wcd9320_cap_hpf_text[] = { "4 Hz", "75 Hz", "150 Hz" };' in ptext_all
+          and "#define WCD9320_CAP_HPF_VAL(cut)\t\t((cut) << 4)" in ptext_all
+          and "if (v >= ARRAY_SIZE(wcd9320_cap_hpf_text))" in hp
+          and 0 <= hp.find("mutex_lock(&wcd->c3_lock);")
+          < hp.find("if ((wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)) && !wcd->cap_hpf_armed) {")
+          < hp.find("mutex_unlock(&wcd->c3_lock);")
+          and "wcd->cap_hpf_cut = 0;" in func_body("wcd9320_probe")
+          and 'SOC_ENUM_EXT("Capture HPF Cut-off", wcd9320_cap_hpf_enum,' in ptext_all,
+          "downstream's TX HPF cut off; the UCM picks the voice corner")
+    check("duplex starts are counted: an output beside capture, capture beside an output",
+          "if (stage == 0 && wcd->dapm_held_cap) {\n\t\t\twcd->out_beside_cap++;" in d_ev
+          and "wcd->cap_beside_out++;" in ce_
+          and "out_beside_cap=%u cap_beside_out=%u" in ptext_all,
+          "capture_state shows both")
     cgp = func_body("wcd9320_cap_gain_put")
     check("Capture Digital Volume: 0..124 (-84..+40 dB), 0 dB at probe, live under c3_lock while the decimator is up",
           "if (v < 0 || v > WCD9320_CAP_GAIN_STEPS)" in cgp

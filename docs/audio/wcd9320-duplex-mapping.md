@@ -102,3 +102,55 @@ The recording:
 - **What it is:** the r200 settle restores the reset cut-off (4 Hz), as downstream does, so room and handling rumble below 75 Hz now passes. The audible band is unchanged.
 - **How downstream handles it:** the restored value is whatever its "TX HPF cut off" control holds, so the use-case configuration picks the corner.
 - **Proposed for r201:** a "Capture HPF Cut-off" control (4 / 75 / 150 Hz) that the settle restores to. The driver default stays at the measured value, and the UCM picks 75 or 150 Hz for voice.
+
+## 9. r201 (`duplex-rc1`, pkgrel 201): staged 2026-11-14
+
+**The prereq has owners.**
+- `WCD9320_PRQ_OUT` (a DAPM output), `_CAP` (capture) and `_RES` (the research attribute and runners).
+- The first owner measures 0x314 and writes 03. A later owner only joins the mask, and an owner leaving while others remain only leaves it. The last owner restores the measured value.
+- A second enable by the same owner still returns -EBUSY.
+- Every caller names itself: outputs 4, capture 1, research 2. The signature change made the compiler find every call site.
+- `wcd9320_c3_abort()` releases `OUT` and `RES` and never `CAP`, so an output failure mid-call leaves capture running.
+
+**The idle checks split.**
+- **`wcd9320_out_flags_idle()`:** every output flag off. `wcd9320_dapm_idle()` is that plus no MCLK user and no prereq, unchanged in meaning.
+- **An output's first stage** uses `wcd9320_idle_but_capture()`: MCLK users equal capture's own reference (0 or 1), the prereq owners are a subset of `CAP`, and every output flag is off. Outputs stay exclusive with each other.
+- **Capture's first stage** uses `wcd9320_idle_but_outputs()`. Every MCLK reference must be an output path's own first stage, and the prereq the outputs' alone, so a research path's MCLK or prereq refuses capture. With no output up it is `dapm_idle()`.
+- **Counters** in `capture_state`: `out_beside_cap` and `cap_beside_out` count each kind of duplex start. `prereq_owners` shows the mask.
+
+**The research guard.** `wcd9320_research_refuse()` refuses while DAPM holds any output or capture. It applies to every hook that writes outside the ownership model:
+- the voltmeter and zdet, which run under `c3_lock`;
+- `rdac_probe`, `writability_test` and `chip_ctl_test`, which take the lock for the check alone.
+
+The gate runners all run those hooks with DAPM idle, so they are unaffected.
+
+**Capture HPF Cut-off.**
+- An enum control (4 / 75 / 150 Hz) that the r200 settle ends at, as downstream's `tx_hpf_work` ends at its "TX HPF cut off" control.
+- The default at probe is 4 Hz, the reset value. While a settle is armed, a change is picked up by the work; after the settle, the chip moves at once.
+- Teardown still restores the measured value.
+
+**Runners.**
+- **`wcd9320-capture.sh`:**
+  - `CAP_HPF` sets the control for the run, and the settle check now expects the control's value.
+  - `DUPLEX=1` relaxes the preflight and the live checks to exactly one output beside capture: MCLK 1–2, prereq owners 2–3.
+  - Not in duplex mode, it checks that capture alone owns the prereq.
+- **`wcd9320-duplex-probe.sh`:**
+  - `OUTPUT=hph|i2s` and `ORDER=cap-first|out-first`.
+  - For the headphones it checks, live: the nine stages, both PAs, `mclk_users=2` and `prereq_owners=3`.
+  - It also checks the duplex counter for the order, no refusals, everything down after and every control as found.
+
+**Verification.**
+
+| check | result |
+|---|---|
+| Compile | `W=1` clean; no new baseline reads (pin stays 146) |
+| Verifier | 738 checks pass; the only failure is the old r200 module's version |
+| Fences | moved to the new call forms, plus nine new r201 fences |
+| Mutation | 19/19: r199's 4, r200's 6 and r201's 9 |
+| Selftest | 131/0 |
+
+**Test plan:**
+1. The gates.
+2. The capture runner alone (`DUPLEX=0`) at `CAP_HPF=1` (75 Hz).
+3. `OUTPUT=hph ORDER=cap-first` on DMIC1, with the user wearing the headphones and counting aloud.
+4. `ORDER=out-first`.

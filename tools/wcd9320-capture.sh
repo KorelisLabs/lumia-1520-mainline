@@ -10,7 +10,9 @@
 # stimulus (or nothing, for the floor) and analyses the WAV afterwards.
 #
 # Usage (as root on the phone):
-#   EXPECT_VERSION=hpfsettle-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
+#   EXPECT_VERSION=duplex-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
+# r201: CAP_HPF=0|1|2 sets Capture HPF Cut-off (4/75/150 Hz) for the run;
+#       DUPLEX=1 lets the run start beside one DAPM output (the duplex probe)
 # Output: /var/log/wcd9320-capture-<stamp>-<tag>.wav and .txt
 # Exit: 0 PASS, 1 FAIL, 2 refused before anything changed.
 
@@ -21,11 +23,15 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-run}"
 SECS="${CAP_SECONDS:-5}"
-EXPECT_VERSION="${EXPECT_VERSION:-hpfsettle-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-duplex-rc1}"
 # r199: CAP_GAIN=0..124 -- "Capture Digital Volume" for the run (-84..+40 dB,
 # 84 = 0 dB); unset leaves the control as found
 CAPG="${CAP_GAIN:-}"
 GAINCTL="Capture Digital Volume"
+# r201: where the HPF settle ends, and whether an output may be up
+CAPH="${CAP_HPF:-}"
+HPFCTL="Capture HPF Cut-off"
+DUPLEX="${DUPLEX:-0}"
 # r198: CAP_DMIC=1..4 -- which DMIC the run records (cap_dmic in the codec);
 # DMIC n goes through decimator n, SLIM TXn, TX port n-1, channel 128+n-1,
 # on MICBIAS1 (1/2) or MICBIAS3 (3/4)
@@ -63,8 +69,13 @@ CARDV=$(cat /sys/module/snd_soc_lumia1520_q6/version 2>/dev/null)
 [ "$CARDV" = "$CARD_VERSION" ] || bad="$bad card=$CARDV"
 DPRE=$(cat "$PGD/dapm_state" 2>/dev/null)
 CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
-[ "$(rv "$DPRE" held)$(rv "$DPRE" spk_held)$(rv "$DPRE" ear_held)$(rv "$DPRE" lo_held)" = "000000000" ] || bad="$bad outputs-held"
-[ "$(rv "$DPRE" mclk_users)" = "0" ] || bad="$bad mclk-users"
+# r201: DUPLEX=1 -- one DAPM output may be up; the driver itself refuses
+# anything more (a research path, a second output)
+case "$DUPLEX" in 0|1) ;; *) bad="$bad duplex=$DUPLEX" ;; esac
+if [ "$DUPLEX" != 1 ]; then
+	[ "$(rv "$DPRE" held)$(rv "$DPRE" spk_held)$(rv "$DPRE" ear_held)$(rv "$DPRE" lo_held)" = "000000000" ] || bad="$bad outputs-held"
+	[ "$(rv "$DPRE" mclk_users)" = "0" ] || bad="$bad mclk-users"
+fi
 [ "$(rv "$CPRE" cap_held)" = "00" ] || bad="$bad capture-held"
 [ "$(rv "$CPRE" tx_port_on)" = "0" ] || bad="$bad tx-port-on"
 [ "$(ctl_get "$PIN")" = "0" ] || bad="$bad pin-not-off"
@@ -72,6 +83,9 @@ CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 case "$CAPN" in 1|2|3|4) ;; *) bad="$bad cap-dmic=$CAPN" ;; esac
 GPRE=$(ctl_get "$GAINCTL")
 [ -n "$GPRE" ] || bad="$bad no-capture-volume"
+HPRE=$(ctl_get "$HPFCTL")
+[ -n "$HPRE" ] || bad="$bad no-capture-hpf"
+case "$CAPH" in ''|0|1|2) ;; *) bad="$bad cap-hpf=$CAPH" ;; esac
 case "$CAPG" in '') ;; *[!0-9]*) bad="$bad cap-gain=$CAPG" ;; *) [ "$CAPG" -le 124 ] || bad="$bad cap-gain=$CAPG" ;; esac
 [ -e "$PGD/cap_dmic" ] || bad="$bad no-cap_dmic"
 DMPRE=$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)
@@ -102,6 +116,12 @@ if [ -n "$CAPG" ]; then
 	ctl_set "$GAINCTL" "$CAPG" || { echo "ABORT: $GAINCTL did not read back $CAPG"; RUN_OK=0; }
 fi
 GRUN=$(ctl_get "$GAINCTL")
+# r201: the HPF cut-off for this run, set while capture is idle
+if [ -n "$CAPH" ]; then
+	ctl_set "$HPFCTL" "$CAPH" || { echo "ABORT: $HPFCTL did not read back $CAPH"; RUN_OK=0; }
+fi
+HRUN=$(ctl_get "$HPFCTL")
+echo "capture HPF cut-off: control $HRUN (0 = 4 Hz, 1 = 75 Hz, 2 = 150 Hz)"
 echo "capture gain: control $GRUN = $(( ${GRUN:-84} - 84 )) dB"
 CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 echo "pre:  $CPRE"
@@ -155,8 +175,17 @@ check "no overruns" "$(rv "$T" xruns)" "0"
 check "geometry 48000 Hz mono" "$(rv "$T" actual_rate) $(rv "$T" actual_channels)" "48000 1"
 # live: the six stages, the TX port and stream, and every field as mapped
 check "live: capture holds all six stages" "$(rv "$CLIVE" cap_held)" "3f"
-check "live: no output held" "$(rv "$DLIVE" held)$(rv "$DLIVE" ear_held)" "00000"
-check "live: one MCLK user, prereq on" "$(rv "$CLIVE" mclk_users) $(rv "$CLIVE" prereq)" "1 1"
+if [ "$DUPLEX" = 1 ]; then
+	# r201: capture's own MCLK reference and prereq ownership, plus at most one output's
+	echo "live outputs: hph $(rv "$DLIVE" held) spk $(rv "$DLIVE" spk_held) ear $(rv "$DLIVE" ear_held) lo $(rv "$DLIVE" lo_held), mclk_users $(rv "$CLIVE" mclk_users), prereq owners $(rv "$CLIVE" prereq_owners)"
+	_mu=$(rv "$CLIVE" mclk_users); _po=$(rv "$CLIVE" prereq_owners)
+	check "live: capture's MCLK reference (1, or 2 beside an output)" "$([ "$_mu" = 1 ] || [ "$_mu" = 2 ] && echo ok)" "ok"
+	check "live: capture owns the prereq (2, or 3 beside an output)" "$([ "$_po" = 2 ] || [ "$_po" = 3 ] && echo ok)" "ok"
+else
+	check "live: no output held" "$(rv "$DLIVE" held)$(rv "$DLIVE" ear_held)" "00000"
+	check "live: one MCLK user, prereq on" "$(rv "$CLIVE" mclk_users) $(rv "$CLIVE" prereq)" "1 1"
+	check "live: capture alone owns the prereq" "$(rv "$CLIVE" prereq_owners)" "2"
+fi
 check "live: TX port 0 on, SLIMbus TX stream up" "$(rv "$CLIVE" tx_port_on) $(rv "$CLIVE" tx_up)" "1 1"
 check "live: LDO_H on at 3.0 V (0x110 & 8c)" "$(hexand "$(rv "$CLIVE" ldoh_0x110)" 0x8c)" "8c"
 check "live: CFILT1 k 24 = 1.8 V (0x129 & fc)" "$(hexand "$(rv "$CLIVE" cfiltk_0x129)" 0xfc)" "60"
@@ -170,11 +199,11 @@ check "live: the pair's clock DIV_4 and on (0x304 & ${CKM#0x})" "$(hexand "$(rv 
 check "live: DEC$CAPN DMIC rate DIV_4 (& 07)" "$(hexand "$(rv "$CLIVE" txdmic)" 0x07)" "02"
 check "live: DEC$CAPN input DMIC$CAPN (0x393 field)" "$(( (0x$(rv "$CLIVE" conntx_0x393) >> FSH) & 3 ))" "1"
 check "live: DEC$CAPN DMIC sel, HPF on (& 09)" "$(hexand "$(rv "$CLIVE" mux)" 0x09)" "01"
-# r200: 150 Hz (0x20) only while the decimator settles, then the cut-off the
-# run found; r197-r199 wrote 0x10 (75 Hz) here and called it 150 Hz
-HPFPRE=$(hexand "$(rv "$CPRE" mux)" 0x30)
-check "live: DEC$CAPN HPF cut-off back as found after the settle (& 30)" "$(hexand "$(rv "$CLIVE" mux)" 0x30)" "$HPFPRE"
-if [ "$HPFPRE" = "20" ]; then HPFN=0; else HPFN=1; fi
+# r200: 150 Hz (0x20) only while the decimator settles; r201: then the
+# Capture HPF Cut-off value (r200 restored the found value, 4 Hz at boot)
+HPFWANT=$(printf '%02x' $(( ${HRUN:-0} << 4 )))
+check "live: DEC$CAPN HPF cut-off = Capture HPF Cut-off after the settle (& 30)" "$(hexand "$(rv "$CLIVE" mux)" 0x30)" "$HPFWANT"
+if [ "$HPFWANT" = "20" ]; then HPFN=0; else HPFN=1; fi
 HS0=$(rv "$CPRE" hpf_settles); HS1=$(rv "$CLIVE" hpf_settles)
 HE0=$(rv "$CPRE" hpf_errors); HE1=$(rv "$CLIVE" hpf_errors)
 check "live: the HPF settle ran $HPFN time(s), disarmed, no errors" \
@@ -201,6 +230,9 @@ check "cap_dmic as found" "$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)" "${D
 # r199: the gain control back to what the run found
 [ -n "$CAPG" ] && [ -n "$GPRE" ] && ctl_set "$GAINCTL" "$GPRE"
 check "Capture Digital Volume as found" "$(ctl_get "$GAINCTL")" "${GPRE:-?}"
+# r201: the HPF control back to what the run found
+[ -n "$CAPH" ] && [ -n "$HPRE" ] && ctl_set "$HPFCTL" "$HPRE"
+check "Capture HPF Cut-off as found" "$(ctl_get "$HPFCTL")" "${HPRE:-?}"
 for k in refusals failures; do
 	check "capture $k this run" "$(( $(rv "$CPOST" "$k") - $(rv "$CPRE" "$k") ))" "0"
 done

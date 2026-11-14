@@ -1,35 +1,35 @@
 #!/bin/sh
 #
-# DUPLEX PROBE 0: the mic records while the loudspeaker plays -- the
-# speakerphone case, with no codec output involved.
-# docs/audio/wcd9320-duplex-mapping.md, sections 6 and 7.
+# DUPLEX PROBE: the mic records while an output plays.
+# docs/audio/wcd9320-duplex-mapping.md, sections 6-8.
 #
-# The loudspeaker is the card's own I2S output (SEC_MI2S -> TAS2552). It
-# holds no codec MCLK and no prereq, so on r200 the codec holds capture and
-# nothing else for the whole run. This checks that two Q6 streams run at once
-# (MultiMedia1 -> SEC_MI2S_RX, SLIMBUS_0_TX -> MultiMedia2) and gives the mic
-# a known acoustic source -- the PC speakers were too quiet at the phone.
+# OUTPUT=i2s (probe 0, r200): the loudspeaker -- the card's own I2S output
+#   (SEC_MI2S -> TAS2552), which holds nothing in the codec. Speakerphone.
+# OUTPUT=hph (r201): the headphones -- a codec output. Both paths share the
+#   codec's MCLK (counted, r182) and the 0x314 prereq (owners, r201): live,
+#   mclk_users is 2 and the prereq owners are 3 (output | capture).
 #
-# One run:
-#   preflight (everything idle, versions, tools) -> the I2S route and the
-#   Loudspeaker Volume set -> the capture runner records in the background
-#   -> once its path is up and the HPF has settled: the fail-safe armed, the
-#   Loudspeaker pin on, the 1 kHz stimulus played PLAYS times (tone/silence/
-#   tone/silence, ~1.1 s each, 1 s apart) -> pin off, the I2S path verified
-#   down, the fail-safe disarmed -> the capture runner's own checks, then
-#   this runner's -> every control back as found.
+# ORDER=cap-first: capture comes up, then the output plays PLAYS stimuli
+#   (1 s apart); the driver counts the output starting beside capture.
+# ORDER=out-first: the output starts, and capture comes up while it plays
+#   (PLAYS stimuli back to back); the driver counts capture starting beside
+#   the output.
 #
-# SAFETY: the level is -60, -50 or -40 dBFS only -- there is no escalation
-# path here. A transient systemd timer runs wcd9320-dapm-teardown.sh (every
-# pin off, the player killed, the VISA amplifier to standby, the C3 abort) if
-# the run does not disarm it; a signal does the same at once. NOTE: the
-# teardown's C3 abort also drops the codec prereq that capture holds (the
-# mapping's section 4) -- on an abort the capture runner's checks will fail,
-# which is the right outcome for an aborted run.
+# The capture runner records in the background with DUPLEX=1 (its checks
+# accept exactly one output beside it); this runner checks both paths live
+# at once, the driver's duplex counters, no refusals, everything down after
+# and every control as found.
+#
+# SAFETY: -60, -50 or -40 dBFS only -- no escalation path here. HPH_VOL is the
+# HPHL/HPHR Volume (0..20, the r186 runs used 20 at -40 dBFS), RX1/RX2 at
+# 0 dB digital. A transient systemd timer runs wcd9320-dapm-teardown.sh
+# (every pin off, the player killed, the VISA amplifier to standby, the C3
+# abort -- which since r201 leaves capture's prereq alone) unless the run
+# disarms it after the output is verified down; a signal does the same.
 #
 # Usage (as root on the phone):
-#   env EXPECT_VERSION=hpfsettle-rc1 CAP_DMIC=4 CAP_GAIN=114 DBFS=-40 \
-#       sh wcd9320-duplex-probe.sh <tag>
+#   env EXPECT_VERSION=duplex-rc1 OUTPUT=hph ORDER=cap-first CAP_DMIC=1 \
+#       CAP_GAIN=114 DBFS=-50 HPH_VOL=20 sh wcd9320-duplex-probe.sh <tag>
 # Output: /var/log/wcd9320-duplex-<stamp>-<tag>.txt, and the capture runner's
 #         /var/log/wcd9320-capture-<stamp>-<tag>.{wav,txt}
 # Exit: 0 PASS, 1 FAIL, 2 refused before anything changed, 3 aborted.
@@ -44,22 +44,24 @@ OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-duplex}"
 OUT="$OUTDIR/wcd9320-duplex-$STAMP-$TAG.txt"
 CAPLOG="/tmp/wcd9320-duplex-$STAMP.capture"
-EXPECT_VERSION="${EXPECT_VERSION:-hpfsettle-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-duplex-rc1}"
 CARD_VERSION="${CARD_VERSION:-q6-card-rc12}"
-CAPN="${CAP_DMIC:-4}"			# Windows' speakerphone mic
+OUTPUT="${OUTPUT:-i2s}"
+ORDER="${ORDER:-cap-first}"
+CAPN="${CAP_DMIC:-4}"
 CAPG="${CAP_GAIN:-114}"			# +30 dB, the r199 level
 CAPS="${CAP_SECONDS:-8}"
 DBFS="${DBFS:--40}"
 PLAYS="${PLAYS:-2}"
 SPK_GAIN_RAW="${SPK_GAIN_RAW:-22}"	# Loudspeaker Volume, the r193 runs' level
+HPH_VOL="${HPH_VOL:-20}"
+HPH_DIG=84				# RX1/RX2 Digital Volume, 0 dB
 PCMDEV_P="${PCMDEV_P:-/dev/snd/pcmC0D0p}"
 FAILSAFE="${DUPLEX_FAILSAFE:-wcd9320-duplex-failsafe}"
 FAILSAFE_S="${FAILSAFE_S:-30}"
 TEARDOWN="$DIR/wcd9320-dapm-teardown.sh"
 I2S_MIXER="SEC_MI2S_RX Audio Mixer MultiMedia1"
 SLIM_MIXER="SLIMBUS_0_RX Audio Mixer MultiMedia1"
-SPK_PIN="Loudspeaker Switch"
-SPK_VOL="Loudspeaker Volume"
 
 rv() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n1; }
 SETCTL=""
@@ -69,20 +71,51 @@ for c in "${PCM_TONE:-}" "$DIR/pcm-tone"; do [ -n "$c" ] && [ -x "$c" ] && { TON
 ctl_get() { "$SETCTL" -D "$CTLDEV" --get "$1" 2>/dev/null | sed -n 's/^readback=//p' | head -n1; }
 ctl_set() { [ "$("$SETCTL" -D "$CTLDEV" --set "$1" "$2" 2>/dev/null | sed -n 's/^readback=//p' | head -n1)" = "$2" ]; }
 i2s_state() { _f=$(ls /sys/bus/platform/drivers/lumia1520-i2s-spk/*/i2s_spk_state 2>/dev/null | head -n1); [ -n "$_f" ] && cat "$_f" 2>/dev/null; }
+cap_state() { cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' '; }
 up() { cut -d' ' -f1 /proc/uptime; }
+held4() { printf '%s%s%s%s' "$(rv "$1" held)" "$(rv "$1" spk_held)" "$(rv "$1" ear_held)" "$(rv "$1" lo_held)"; }
 
 PASS=0; FAIL=0
 check() {	# check <name> <got> <want>
-	if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); printf '  PASS  %-56s %s\n' "$1" "$2"
-	else FAIL=$((FAIL + 1)); printf '  FAIL  %-56s %s (want %s)\n' "$1" "$2" "$3"; fi
+	if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); printf '  PASS  %-60s %s\n' "$1" "$2"
+	else FAIL=$((FAIL + 1)); printf '  FAIL  %-60s %s (want %s)\n' "$1" "$2" "$3"; fi
+}
+
+# the output: its mixer, pin, volume controls and what "up" means
+case "$OUTPUT" in
+i2s)	MIXER="$I2S_MIXER"; OTHER_MIXER="$SLIM_MIXER"; OUT_PIN="Loudspeaker Switch"
+	VOLS="Loudspeaker Volume"; VOLV="$SPK_GAIN_RAW" ;;
+hph)	MIXER="$SLIM_MIXER"; OTHER_MIXER="$I2S_MIXER"; OUT_PIN="Headphones Switch"
+	VOLS="HPHL Volume|HPHR Volume|RX1 Digital Volume|RX2 Digital Volume"
+	VOLV="$HPH_VOL|$HPH_VOL|$HPH_DIG|$HPH_DIG" ;;
+*)	echo "INVALID SETUP: OUTPUT=$OUTPUT (i2s or hph) -- nothing changed"; exit 2 ;;
+esac
+out_up() {	# out_up <dapm_state> -> 0 when the output's whole path is up
+	if [ "$OUTPUT" = i2s ]; then
+		_o=$(i2s_state)
+		[ "$(rv "$_o" supply_on) $(rv "$_o" pins_active) $(rv "$_o" bclk_on)" = "1 1 1" ]
+	else
+		[ "$(rv "$1" held) $(rv "$1" pa_on) $(rv "$1" pa_r_on)" = "1ff 1 1" ]
+	fi
+}
+out_down() {	# out_down <dapm_state> -> 0 when the output's path is down
+	if [ "$OUTPUT" = i2s ]; then
+		_o=$(i2s_state)
+		[ "$(rv "$_o" supply_on) $(rv "$_o" bclk_on)" = "0 0" ]
+	else
+		[ "$(rv "$1" held) $(rv "$1" pa_on) $(rv "$1" pa_r_on)" = "000 0 0" ]
+	fi
 }
 
 # ------------------------------------------------------------- preflight --
 bad=""
 case "$DBFS" in -60|-50|-40) ;; *) bad="$bad dbfs=$DBFS(-60/-50/-40-only)" ;; esac
+case "$ORDER" in cap-first|out-first) ;; *) bad="$bad order=$ORDER" ;; esac
 case "$PLAYS" in 1|2|3) ;; *) bad="$bad plays=$PLAYS" ;; esac
+case "$CAPN" in 1|2|3|4) ;; *) bad="$bad cap-dmic=$CAPN" ;; esac
 case "$CAPS" in ''|*[!0-9]*) bad="$bad seconds" ;; *) [ "$CAPS" -ge 4 ] && [ "$CAPS" -le 20 ] || bad="$bad seconds" ;; esac
 case "$SPK_GAIN_RAW" in ''|*[!0-9]*) bad="$bad spk-gain" ;; *) [ "$SPK_GAIN_RAW" -le 22 ] || bad="$bad spk-gain" ;; esac
+case "$HPH_VOL" in ''|*[!0-9]*) bad="$bad hph-vol" ;; *) [ "$HPH_VOL" -le 20 ] || bad="$bad hph-vol" ;; esac
 [ -n "$SETCTL" ] || bad="$bad no-alsa-setctl"
 [ -n "$TONE" ] || bad="$bad no-pcm-tone"
 [ -x "$DIR/pcm-capture" ] || bad="$bad no-pcm-capture"
@@ -94,25 +127,48 @@ CARDV=$(cat /sys/module/snd_soc_lumia1520_q6/version 2>/dev/null)
 [ "$CODECV" = "$EXPECT_VERSION" ] || bad="$bad codec=$CODECV"
 [ "$CARDV" = "$CARD_VERSION" ] || bad="$bad card=$CARDV"
 DPRE=$(cat "$PGD/dapm_state" 2>/dev/null)
-CPRE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
+CPRE=$(cap_state)
 IPRE=$(i2s_state)
-[ "$(rv "$DPRE" held)$(rv "$DPRE" spk_held)$(rv "$DPRE" ear_held)$(rv "$DPRE" lo_held)" = "000000000" ] || bad="$bad outputs-held"
+[ "$(held4 "$DPRE")" = "000000000" ] || bad="$bad outputs-held"
 [ "$(rv "$DPRE" mclk_users)" = "0" ] || bad="$bad mclk-users"
 [ "$(rv "$CPRE" cap_held)" = "00" ] || bad="$bad capture-held"
+[ -n "$(rv "$CPRE" prereq_owners)" ] || bad="$bad no-prereq-owners(not-r201)"
+[ "$(rv "$CPRE" prereq_owners)" = "0" ] || bad="$bad prereq-owned"
 [ -n "$IPRE" ] || bad="$bad no-i2s_spk_state"
 [ "$(rv "$IPRE" supply_on) $(rv "$IPRE" bclk_on)" = "0 0" ] || bad="$bad i2s-up"
-for _p in "$SPK_PIN" "Headphones Switch" "Speaker Switch" "Earpiece Switch" "Lineout Switch" "Handset Mic Switch"; do
+# r185: jack detection may hold the Headphones pin on; this run takes it
+HP_PIN_PRE=$(ctl_get "Headphones Switch")
+for _p in "Loudspeaker Switch" "Speaker Switch" "Earpiece Switch" "Lineout Switch" "Handset Mic Switch"; do
 	[ "$(ctl_get "$_p")" = "0" ] || bad="$bad pin-on:$(printf '%s' "$_p" | tr ' ' '_')"
 done
 pgrep -x pcm-tone >/dev/null 2>&1 && bad="$bad pcm-tone-running"
 pgrep -x pcm-capture >/dev/null 2>&1 && bad="$bad pcm-capture-running"
 systemctl is-active --quiet "$FAILSAFE.timer" 2>/dev/null && bad="$bad failsafe-already-armed"
-I2S_MIX_PRE=$(ctl_get "$I2S_MIXER"); SLIM_MIX_PRE=$(ctl_get "$SLIM_MIXER"); SPK_VOL_PRE=$(ctl_get "$SPK_VOL")
-[ -n "$I2S_MIX_PRE" ] && [ -n "$SLIM_MIX_PRE" ] && [ -n "$SPK_VOL_PRE" ] || bad="$bad controls-missing"
+MIX_PRE=$(ctl_get "$MIXER"); OMIX_PRE=$(ctl_get "$OTHER_MIXER")
+[ -n "$MIX_PRE" ] && [ -n "$OMIX_PRE" ] || bad="$bad mixers-missing"
+VOL_PRE=""
+_ifs=$IFS; IFS='|'
+for _v in $VOLS; do
+	_g=$(ctl_get "$_v"); [ -n "$_g" ] || bad="$bad no-control:$(printf '%s' "$_v" | tr ' ' '_')"
+	VOL_PRE="$VOL_PRE${VOL_PRE:+|}$_g"
+done
+IFS=$_ifs
 if [ -n "$bad" ]; then
 	echo "INVALID SETUP:$bad -- nothing changed"
 	exit 2
 fi
+
+vols_set() {	# vols_set "<v1|v2|...>" -> 0 when every control read back
+	_ok=0; _vals="$1"; _ifs=$IFS; IFS='|'
+	set -- $_vals
+	for _v in $VOLS; do
+		ctl_set "$_v" "$1" || { echo "$_v did not read back $1"; _ok=1; }
+		shift
+	done
+	IFS=$_ifs
+	return $_ok
+}
+vols_get() { _r=""; _ifs=$IFS; IFS='|'; for _v in $VOLS; do _r="$_r${_r:+|}$(ctl_get "$_v")"; done; IFS=$_ifs; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------- the fail-safe --
 failsafe_disarm() {
@@ -138,136 +194,201 @@ dp_abort() {	# dp_abort <reason>
 }
 trap 'dp_abort signal; exit 3' INT TERM HUP
 
-# ------------------------------------------------------------------ run --
-{
-echo "================ wcd9320 duplex probe 0 $STAMP ($TAG) ================"
-echo "codec $CODECV, card $CARDV; DMIC$CAPN at Capture Digital Volume $CAPG ($((CAPG - 84)) dB), $CAPS s;"
-echo "loudspeaker: Loudspeaker Volume $SPK_GAIN_RAW ($((SPK_GAIN_RAW - 7)) dB), 1 kHz stimulus at $DBFS dBFS x $PLAYS"
-echo "pre i2s:  $IPRE"
-echo "pre cap:  $CPRE"
-RUN_OK=1
-TONE_RCS=""
-# the playback route: the I2S mixer only (r189: one front-end route at a time)
-ctl_set "$SLIM_MIXER" 0 || { echo "the SLIMbus playback mixer would not go off"; RUN_OK=0; }
-[ "$RUN_OK" = 1 ] && { ctl_set "$I2S_MIXER" 1 || { echo "the I2S mixer would not go on"; RUN_OK=0; }; }
-[ "$RUN_OK" = 1 ] && { ctl_set "$SPK_VOL" "$SPK_GAIN_RAW" || { echo "Loudspeaker Volume would not read back $SPK_GAIN_RAW"; RUN_OK=0; }; }
-
-if [ "$RUN_OK" = 1 ]; then
-	T0=$(up)
+start_capture() {
 	env EXPECT_VERSION="$EXPECT_VERSION" CARD_VERSION="$CARD_VERSION" CAP_DMIC="$CAPN" \
-		CAP_GAIN="$CAPG" CAP_SECONDS="$CAPS" sh "$DIR/wcd9320-capture.sh" "$TAG" > "$CAPLOG" 2>&1 &
+		CAP_GAIN="$CAPG" CAP_SECONDS="$CAPS" DUPLEX=1 \
+		sh "$DIR/wcd9320-capture.sh" "$TAG" > "$CAPLOG" 2>&1 &
 	CAPPID=$!
-	# the capture path up and the HPF settled (r200), up to 6 s
+}
+wait_capture_up() {	# up to 6 s for all six stages, the stream and the HPF settle
 	_w=0
 	while [ "$_w" -lt 60 ]; do
-		CUP=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
-		[ "$(rv "$CUP" cap_held) $(rv "$CUP" tx_up) $(rv "$CUP" hpf_armed)" = "3f 1 0" ] && break
-		kill -0 "$CAPPID" 2>/dev/null || break
+		CUP=$(cap_state)
+		[ "$(rv "$CUP" cap_held) $(rv "$CUP" tx_up) $(rv "$CUP" hpf_armed)" = "3f 1 0" ] && return 0
+		kill -0 "$CAPPID" 2>/dev/null || return 1
 		sleep 0.1
 		_w=$((_w + 1))
 	done
-	T1=$(up)
-	echo "capture path up and settled after ~$((_w * 100)) ms (uptime $T0 -> $T1)"
-	[ "$(rv "$CUP" cap_held) $(rv "$CUP" tx_up) $(rv "$CUP" hpf_armed)" = "3f 1 0" ] ||
-		{ echo "the capture path never came up -- no playback"; RUN_OK=0; }
+	return 1
+}
+sample_live() {
+	DLIVE=$(cat "$PGD/dapm_state" 2>/dev/null)
+	CLIVE=$(cap_state)
+	ILIVE=$(i2s_state)
+}
+play_one() {	# play_one <n> -- in the background, TPID set
+	echo "play $1: start at uptime $(up)"
+	"$TONE" -D "$PCMDEV_P" --dbfs "$DBFS" --side B > "/tmp/wcd9320-duplex-$STAMP.tone$1" 2>&1 &
+	TPID=$!
+}
+play_wait() {	# play_wait <n>
+	wait "$TPID"; TONE_RCS="$TONE_RCS$?"; TPID=""
+	echo "play $1: end at uptime $(up)"
+}
+
+# ------------------------------------------------------------------ run --
+{
+echo "================ wcd9320 duplex probe $STAMP ($TAG) ================"
+echo "codec $CODECV, card $CARDV; output $OUTPUT, order $ORDER"
+echo "capture: DMIC$CAPN at Capture Digital Volume $CAPG ($((CAPG - 84)) dB), $CAPS s"
+echo "output: $VOLS = $VOLV; 1 kHz stimulus at $DBFS dBFS x $PLAYS"
+echo "pre dapm: $DPRE"
+echo "pre cap:  $CPRE"
+echo "pre i2s:  $IPRE"
+echo "Headphones pin as found: $HP_PIN_PRE (jack: $(cat "$PGD/jack_detect" 2>/dev/null | cut -c1-60))"
+RUN_OK=1
+TONE_RCS=""
+DLIVE=""; CLIVE=""; ILIVE=""
+DREF0=$(rv "$DPRE" refusals); CREF0=$(rv "$CPRE" refusals)
+OBC0=$(rv "$CPRE" out_beside_cap); CBO0=$(rv "$CPRE" cap_beside_out)
+
+ctl_set "Headphones Switch" 0 || { echo "the Headphones pin would not go off"; RUN_OK=0; }
+[ "$RUN_OK" = 1 ] && { ctl_set "$OTHER_MIXER" 0 || { echo "$OTHER_MIXER would not go off"; RUN_OK=0; }; }
+[ "$RUN_OK" = 1 ] && { ctl_set "$MIXER" 1 || { echo "$MIXER would not go on"; RUN_OK=0; }; }
+[ "$RUN_OK" = 1 ] && { vols_set "$VOLV" || RUN_OK=0; }
+if [ "$RUN_OK" = 1 ]; then
+	if failsafe_arm; then echo "fail-safe armed: $FAILSAFE_S s"; else echo "the fail-safe could not be armed"; RUN_OK=0; fi
 fi
 
-ILIVE=""; CLIVE=""; DLIVE=""
-if [ "$RUN_OK" = 1 ]; then
-	sleep 0.5			# a stretch of floor before the first tone
-	if failsafe_arm; then
-		echo "fail-safe armed: $FAILSAFE_S s"
+if [ "$RUN_OK" = 1 ] && [ "$ORDER" = cap-first ]; then
+	start_capture
+	if wait_capture_up; then
+		echo "capture path up and settled at uptime $(up)"
+		sleep 0.5		# a stretch of floor before the first tone
+		if ctl_set "$OUT_PIN" 1; then
+			_i=1
+			while [ "$_i" -le "$PLAYS" ]; do
+				play_one "$_i"
+				if [ "$_i" = 1 ]; then
+					# poll, don't sleep: the HPH PAs ramp; up to 1 s for the whole path
+					_w=0
+					while [ "$_w" -lt 20 ]; do
+						out_up "$(cat "$PGD/dapm_state" 2>/dev/null)" && break
+						sleep 0.05
+						_w=$((_w + 1))
+					done
+					echo "output up after ~$((_w * 50)) ms beside capture"
+					sample_live
+				fi
+				play_wait "$_i"
+				_i=$((_i + 1))
+				[ "$_i" -le "$PLAYS" ] && sleep 1
+			done
+		else
+			echo "the $OUT_PIN pin did not read back 1"; RUN_OK=0
+		fi
 	else
-		echo "the fail-safe could not be armed -- no playback"; RUN_OK=0
+		echo "the capture path never came up -- no playback"; RUN_OK=0
+	fi
+elif [ "$RUN_OK" = 1 ]; then
+	# out-first: the output up, then capture beside it; the stimuli back to back
+	if ctl_set "$OUT_PIN" 1; then
+		play_one 1
+		_w=0
+		while [ "$_w" -lt 20 ]; do
+			out_up "$(cat "$PGD/dapm_state" 2>/dev/null)" && break
+			sleep 0.05
+			_w=$((_w + 1))
+		done
+		echo "output up after ~$((_w * 50)) ms; capture starts beside it at uptime $(up)"
+		start_capture
+		_i=1
+		while :; do
+			play_wait "$_i"
+			_i=$((_i + 1))
+			[ "$_i" -le "$PLAYS" ] || break
+			play_one "$_i"
+			[ -z "$CLIVE" ] && wait_capture_up && { echo "capture path up and settled at uptime $(up)"; sample_live; }
+		done
+		[ -z "$CLIVE" ] && echo "capture was not up and settled while the output played"
+	else
+		echo "the $OUT_PIN pin did not read back 1"; RUN_OK=0
 	fi
 fi
-if [ "$RUN_OK" = 1 ]; then
-	if ctl_set "$SPK_PIN" 1; then
-		_i=1
-		while [ "$_i" -le "$PLAYS" ]; do
-			echo "play $_i: start at uptime $(up)"
-			"$TONE" -D "$PCMDEV_P" --dbfs "$DBFS" --side B > "/tmp/wcd9320-duplex-$STAMP.tone$_i" 2>&1 &
-			TPID=$!
-			sleep 0.4
-			# live, mid-stimulus: both paths up at once
-			if [ "$_i" = 1 ]; then
-				ILIVE=$(i2s_state)
-				CLIVE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
-				DLIVE=$(cat "$PGD/dapm_state" 2>/dev/null)
-			fi
-			wait "$TPID"; TONE_RCS="$TONE_RCS$?"; TPID=""
-			echo "play $_i: end at uptime $(up)"
-			_i=$((_i + 1))
-			[ "$_i" -le "$PLAYS" ] && sleep 1
-		done
-	else
-		echo "the Loudspeaker pin did not read back 1"; RUN_OK=0
-	fi
-	ctl_set "$SPK_PIN" 0 || echo "the Loudspeaker pin did not read back 0"
-	# the I2S path down (pin off takes the rail; the stream end takes BCLK)
+
+if [ "$RUN_OK" = 1 ] || [ -n "$TONE_RCS" ]; then
+	ctl_set "$OUT_PIN" 0 || echo "the $OUT_PIN pin did not read back 0"
 	_d=0
 	while [ "$_d" -lt 20 ]; do
-		IPOST=$(i2s_state)
-		[ "$(rv "$IPOST" supply_on) $(rv "$IPOST" bclk_on)" = "0 0" ] && break
+		DPOST=$(cat "$PGD/dapm_state" 2>/dev/null)
+		out_down "$DPOST" && break
 		sleep 0.1
 		_d=$((_d + 1))
 	done
-	if [ "$(rv "$IPOST" supply_on) $(rv "$IPOST" bclk_on)" = "0 0" ]; then
+	if out_down "$DPOST"; then
 		failsafe_disarm
-		echo "I2S path down after ~$((_d * 100)) ms; fail-safe disarmed"
+		echo "output down after ~$((_d * 100)) ms; fail-safe disarmed"
 	else
-		echo "THE I2S PATH IS NOT DOWN -- teardown"
-		dp_abort i2s-not-down
+		echo "THE OUTPUT IS NOT DOWN -- teardown"
+		dp_abort output-not-down
 	fi
+else
+	failsafe_disarm
 fi
 
 # the capture runner finishes on its own clock
-if [ -n "$CAPPID" ]; then
-	wait "$CAPPID"; CAPRC=$?
-else
-	CAPRC=skipped
-fi
+if [ -n "$CAPPID" ]; then wait "$CAPPID"; CAPRC=$?; else CAPRC=skipped; fi
 echo "---- capture runner (exit $CAPRC)"
 cat "$CAPLOG" 2>/dev/null
 CAPTXT=$(ls -t "$OUTDIR"/wcd9320-capture-*-"$TAG".txt 2>/dev/null | head -n1)
 CAPWAV=$(ls -t "$OUTDIR"/wcd9320-capture-*-"$TAG".wav 2>/dev/null | head -n1)
 
-# every control back as found
-ctl_set "$SPK_VOL" "$SPK_VOL_PRE" || echo "Loudspeaker Volume did not go back to $SPK_VOL_PRE"
-ctl_set "$I2S_MIXER" "$I2S_MIX_PRE" || echo "the I2S mixer did not go back to $I2S_MIX_PRE"
-ctl_set "$SLIM_MIXER" "$SLIM_MIX_PRE" || echo "the SLIMbus mixer did not go back to $SLIM_MIX_PRE"
-IEND=$(i2s_state)
+# every control back as found (the Headphones pin last, after the checks)
+vols_set "$VOL_PRE" >/dev/null || echo "an output volume did not go back"
+ctl_set "$MIXER" "$MIX_PRE" || echo "$MIXER did not go back to $MIX_PRE"
+ctl_set "$OTHER_MIXER" "$OMIX_PRE" || echo "$OTHER_MIXER did not go back to $OMIX_PRE"
 DEND=$(cat "$PGD/dapm_state" 2>/dev/null)
-CEND=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
-echo "live i2s: $ILIVE"
-echo "live cap: $CLIVE"
+CEND=$(cap_state)
+IEND=$(i2s_state)
 echo "live dapm: $DLIVE"
-echo "end i2s:  $IEND"
-echo "end cap:  $CEND"
+echo "live cap:  $CLIVE"
+echo "live i2s:  $ILIVE"
+echo "end dapm:  $DEND"
+echo "end cap:   $CEND"
+echo "end i2s:   $IEND"
 for _n in 1 2 3; do [ -f "/tmp/wcd9320-duplex-$STAMP.tone$_n" ] && { echo "---- pcm-tone play $_n"; cat "/tmp/wcd9320-duplex-$STAMP.tone$_n"; }; done
+echo "---- dmesg (duplex)"
+dmesg | grep -E 'beside|clk-prereq|REFUSED|capture: cap mclk|dapm: mclk|mclk: get|mclk: put' | tail -n 24
 
 echo "---- checks"
-check "the run was not aborted" "$ABORTED$RUN_OK" "01"
 ZEROS=""; _z=0; while [ "$_z" -lt "$PLAYS" ]; do ZEROS="${ZEROS}0"; _z=$((_z + 1)); done
+check "the run was not aborted" "$ABORTED$RUN_OK" "01"
 check "every stimulus played (pcm-tone exit 0 each)" "$TONE_RCS" "$ZEROS"
-check "live: the loudspeaker path up (rail, pins, BCLK)" \
-	"$(rv "$ILIVE" supply_on) $(rv "$ILIVE" pins_active) $(rv "$ILIVE" bclk_on)" "1 1 1"
-check "live: capture holds all six stages, its stream up" "$(rv "$CLIVE" cap_held) $(rv "$CLIVE" tx_up)" "3f 1"
-check "live: the codec holds no output, one MCLK user (capture)" \
-	"$(rv "$DLIVE" held)$(rv "$DLIVE" spk_held)$(rv "$DLIVE" ear_held)$(rv "$DLIVE" lo_held) $(rv "$DLIVE" mclk_users)" "000000000 1"
-check "live: capture is recording DMIC$CAPN" "$(rv "$CLIVE" cap_dmic)" "$CAPN"
+if [ "$OUTPUT" = i2s ]; then
+	check "live: the loudspeaker path up (rail, pins, BCLK)" \
+		"$(rv "$ILIVE" supply_on) $(rv "$ILIVE" pins_active) $(rv "$ILIVE" bclk_on)" "1 1 1"
+	check "live: the codec holds no output; MCLK and prereq capture's alone" \
+		"$(held4 "$DLIVE") $(rv "$CLIVE" mclk_users) $(rv "$CLIVE" prereq_owners)" "000000000 1 2"
+else
+	check "live: the headphones path up (nine stages, both PAs)" \
+		"$(rv "$DLIVE" held) $(rv "$DLIVE" pa_on) $(rv "$DLIVE" pa_r_on)" "1ff 1 1"
+	check "live: MCLK shared (2 users), prereq owners output | capture" \
+		"$(rv "$CLIVE" mclk_users) $(rv "$CLIVE" prereq_owners)" "2 3"
+fi
+check "live: capture holds all six stages, its stream up, DMIC$CAPN" \
+	"$(rv "$CLIVE" cap_held) $(rv "$CLIVE" tx_up) $(rv "$CLIVE" cap_dmic)" "3f 1 $CAPN"
+OBC=$(( $(rv "$CEND" out_beside_cap) - ${OBC0:-0} )); CBO=$(( $(rv "$CEND" cap_beside_out) - ${CBO0:-0} ))
+if [ "$OUTPUT" = i2s ]; then
+	check "duplex counters: none (the loudspeaker is not a codec output)" "$OBC $CBO" "0 0"
+elif [ "$ORDER" = cap-first ]; then
+	check "duplex counters: the output started beside capture" "$([ "$OBC" -ge 1 ] && [ "$CBO" = 0 ] && echo ok)" "ok"
+else
+	check "duplex counters: capture started beside the output" "$CBO" "1"
+fi
+check "no refusals this run (outputs, capture)" \
+	"$(( $(rv "$DEND" refusals) - ${DREF0:-0} )) $(( $(rv "$CEND" refusals) - ${CREF0:-0} ))" "0 0"
 check "capture runner: exit 0" "$CAPRC" "0"
 check "capture runner: verdict" "$(grep -c '^VERDICT: PASS (wcd9320-capture)' "$CAPLOG" 2>/dev/null)" "1"
 check "capture runner: a WAV for this tag" "$([ -n "$CAPWAV" ] && [ -s "$CAPWAV" ] && echo yes)" "yes"
-check "after: the loudspeaker path down" "$(rv "$IEND" supply_on) $(rv "$IEND" bclk_on)" "0 0"
-check "after: the codec holds nothing" \
-	"$(rv "$DEND" held)$(rv "$DEND" spk_held)$(rv "$DEND" ear_held)$(rv "$DEND" lo_held) $(rv "$DEND" mclk_users) $(rv "$CEND" cap_held)" "000000000 0 00"
-check "after: every pin off" \
-	"$(ctl_get "$SPK_PIN")$(ctl_get "Handset Mic Switch")$(ctl_get "Headphones Switch")" "000"
-check "after: the playback mixers as found" "$(ctl_get "$I2S_MIXER") $(ctl_get "$SLIM_MIXER")" "$I2S_MIX_PRE $SLIM_MIX_PRE"
-check "after: Loudspeaker Volume as found" "$(ctl_get "$SPK_VOL")" "$SPK_VOL_PRE"
-check "after: the fail-safe is not armed" \
-	"$(systemctl is-active "$FAILSAFE.timer" 2>/dev/null || true)" "inactive"
+check "after: the output down" "$(out_down "$DEND" && echo down)" "down"
+check "after: the codec holds nothing (outputs, MCLK, capture, prereq)" \
+	"$(held4 "$DEND") $(rv "$DEND" mclk_users) $(rv "$CEND" cap_held) $(rv "$CEND" prereq_owners)" "000000000 0 00 0"
+check "after: the output and mic pins off" "$(ctl_get "$OUT_PIN")$(ctl_get "Handset Mic Switch")" "00"
+check "after: the playback mixers as found" "$(ctl_get "$MIXER") $(ctl_get "$OTHER_MIXER")" "$MIX_PRE $OMIX_PRE"
+check "after: the output volumes as found" "$(vols_get)" "$VOL_PRE"
+check "after: the fail-safe is not armed" "$(systemctl is-active "$FAILSAFE.timer" 2>/dev/null || true)" "inactive"
+ctl_set "Headphones Switch" "$HP_PIN_PRE" || echo "the Headphones pin did not go back to $HP_PIN_PRE"
+check "after: the Headphones pin as found" "$(ctl_get "Headphones Switch")" "$HP_PIN_PRE"
 echo "checks : $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ] && echo "VERDICT: PASS (wcd9320-duplex-probe)" || echo "VERDICT: FAIL (wcd9320-duplex-probe)"
 echo "wav: $CAPWAV"
@@ -275,7 +396,7 @@ echo "capture evidence: $CAPTXT"
 } > "$OUT" 2>&1
 rm -f "$CAPLOG" /tmp/wcd9320-duplex-"$STAMP".tone*
 trap - INT TERM HUP
-grep -E '^(  FAIL|checks :|VERDICT|wav:|play [0-9]|capture path up|I2S path down|ABORT|THE I2S)' "$OUT"
+grep -E '^(  FAIL|checks :|VERDICT|wav:|play [0-9]|capture path up|output (up|down)|ABORT|THE OUTPUT|capture was not)' "$OUT"
 echo "evidence: $OUT"
 [ "$ABORTED" = 1 ] && exit 3
-grep -q '^VERDICT: PASS' "$OUT" && exit 0 || exit 1
+grep -q '^VERDICT: PASS (wcd9320-duplex-probe)' "$OUT" && exit 0 || exit 1
