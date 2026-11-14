@@ -292,6 +292,32 @@
 };
 
 /*
+ * The cellular modem (MSS, Hexagon v5) -- docs/msm8974-modem-mapping.md.
+ *
+ * The Windows Phone images load exactly into msm8974.dtsi's regions:
+ * qcdsp1v28974.mbn (the MBA) at 0x0d100000 and qcdsp28974.mbn (the modem)
+ * across 0x08000000..0x0d100000, neither relocatable. They are split on the
+ * device into /lib/firmware/mba.b00 and modem.mdt + .bNN, the driver's
+ * default names, and never redistributed.
+ *
+ * The supplies are the Fairphone 2 / Nexus 5 ones; all three rails are
+ * already up on this board (PM8841 S1 675 mV, S3 1.05 V, PM8941 L12 1.8 V).
+ * On msm8974 the driver makes no TrustZone call -- the Hexagon boot ROM
+ * checks the MBA and the MBA checks the modem -- so the PAS refusals that
+ * keep Pronto off should not apply here. Untested until the first start.
+ *
+ * The driver never boots the modem by itself (auto_boot = false): it starts
+ * only on "echo start > /sys/class/remoteproc/<mss>/state", after the
+ * modem file systems are backed up (done, M0) and rmtfs is serving them.
+ */
+&remoteproc_mss {
+	status = "okay";
+	mss-supply = <&pm8841_s3>;
+	mx-supply = <&pm8841_s1>;
+	pll-supply = <&pm8941_l12>;
+};
+
+/*
  * PM8941 SMBB charger -- battery presence/health, charge status and
  * USB/DC power detection (/sys/class/power_supply/smbb-*).
  *
