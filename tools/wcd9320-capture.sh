@@ -13,6 +13,7 @@
 #   EXPECT_VERSION=duplex-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
 # r201: CAP_HPF=0|1|2 sets Capture HPF Cut-off (4/75/150 Hz) for the run;
 #       DUPLEX=1 lets the run start beside one DAPM output (the duplex probe)
+#       CAP_PERIOD=frames CAP_PERIODS=n size pcm-capture's buffer (default 960 x 4)
 # Output: /var/log/wcd9320-capture-<stamp>-<tag>.wav and .txt
 # Exit: 0 PASS, 1 FAIL, 2 refused before anything changed.
 
@@ -32,6 +33,7 @@ GAINCTL="Capture Digital Volume"
 CAPH="${CAP_HPF:-}"
 HPFCTL="Capture HPF Cut-off"
 DUPLEX="${DUPLEX:-0}"
+CAPP="${CAP_PERIOD:-}"; CAPN_P="${CAP_PERIODS:-}"
 # r198: CAP_DMIC=1..4 -- which DMIC the run records (cap_dmic in the codec);
 # DMIC n goes through decimator n, SLIM TXn, TX port n-1, channel 128+n-1,
 # on MICBIAS1 (1/2) or MICBIAS3 (3/4)
@@ -86,6 +88,9 @@ GPRE=$(ctl_get "$GAINCTL")
 HPRE=$(ctl_get "$HPFCTL")
 [ -n "$HPRE" ] || bad="$bad no-capture-hpf"
 case "$CAPH" in ''|0|1|2) ;; *) bad="$bad cap-hpf=$CAPH" ;; esac
+case "$CAPP" in ''|*[!0-9]*) [ -z "$CAPP" ] || bad="$bad cap-period=$CAPP" ;; esac
+case "$CAPN_P" in ''|2|3|4|5|6|7|8) ;; *) bad="$bad cap-periods=$CAPN_P" ;; esac
+BUFARGS=""; [ -n "$CAPP" ] && BUFARGS="$BUFARGS -p $CAPP"; [ -n "$CAPN_P" ] && BUFARGS="$BUFARGS -n $CAPN_P"
 case "$CAPG" in '') ;; *[!0-9]*) bad="$bad cap-gain=$CAPG" ;; *) [ "$CAPG" -le 124 ] || bad="$bad cap-gain=$CAPG" ;; esac
 [ -e "$PGD/cap_dmic" ] || bad="$bad no-cap_dmic"
 DMPRE=$(rv "$(cat "$PGD/cap_dmic" 2>/dev/null)" dmic)
@@ -128,7 +133,7 @@ echo "pre:  $CPRE"
 [ "$RUN_OK" = 1 ] && { ctl_set "$MIXER" 1 || { abort "the capture mixer did not read back 1"; RUN_OK=0; }; }
 [ "$RUN_OK" = 1 ] && { ctl_set "$PIN" 1 || { abort "the Handset Mic pin did not read back 1"; RUN_OK=0; }; }
 if [ "$RUN_OK" = 1 ]; then
-	"$CAP" -D "$PCMDEV" -s "$SECS" -o "$WAV" > "$TLOG" 2>&1 &
+	"$CAP" -D "$PCMDEV" -s "$SECS" -o "$WAV" $BUFARGS > "$TLOG" 2>&1 &
 	CPID=$!
 	# poll, don't sleep: the path takes ~1 s to come up (MCLK switch,
 	# LDO_H, the 20 ms bias settle), and a fixed 1 s sample caught it at

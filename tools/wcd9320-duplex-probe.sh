@@ -197,6 +197,7 @@ trap 'dp_abort signal; exit 3' INT TERM HUP
 start_capture() {
 	env EXPECT_VERSION="$EXPECT_VERSION" CARD_VERSION="$CARD_VERSION" CAP_DMIC="$CAPN" \
 		CAP_GAIN="$CAPG" CAP_SECONDS="$CAPS" DUPLEX=1 \
+		CAP_PERIOD="${CAP_PERIOD:-}" CAP_PERIODS="${CAP_PERIODS:-}" \
 		sh "$DIR/wcd9320-capture.sh" "$TAG" > "$CAPLOG" 2>&1 &
 	CAPPID=$!
 }

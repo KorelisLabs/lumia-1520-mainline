@@ -13,7 +13,12 @@
  * xruns, and the peak and mean-square of the samples -- so the runner can
  * record them; the analysis proper happens on the PC.
  *
- * Usage: pcm-capture -D /dev/snd/pcmC0D1c -s 5 -o /tmp/cap.wav [-c 1]
+ * r201: -p and -n choose the period (frames) and the number of periods; the
+ * defaults are r197's 960 x 4 (80 ms). q6asm-dai allows 320..4096 bytes per
+ * period and 2..8 periods, so mono S16 tops out at 2048 x 8 (341 ms). Each
+ * overrun prints its CLOCK_BOOTTIME (= /proc/uptime, = dmesg's clock).
+ *
+ * Usage: pcm-capture -D /dev/snd/pcmC0D1c -s 5 -o /tmp/cap.wav [-c 1] [-p 960] [-n 4]
  * Exit: 0 when every requested frame was read, non-zero otherwise.
  */
 #include <errno.h>
@@ -32,6 +37,11 @@
 #define CAP_MAX_S	30
 #define PERIOD_FRAMES	960
 #define N_PERIODS	4
+/* r201: q6asm-dai's capture limits */
+#define CAP_MIN_PERIOD_BYTES	320
+#define CAP_MAX_PERIOD_BYTES	4096
+#define CAP_MIN_PERIODS		2
+#define CAP_MAX_PERIODS		8
 
 static void mask_set(struct snd_pcm_hw_params *p, int n, unsigned int bit)
 {
@@ -113,6 +123,8 @@ int main(int argc, char **argv)
 {
 	const char *dev = NULL, *out = NULL;
 	unsigned int seconds = 0, channels = 1, period_frames, frame_bytes;
+	unsigned int want_period = PERIOD_FRAMES, want_periods = N_PERIODS;
+	struct timespec ts;
 	unsigned long want, got = 0, xruns = 0, i, n;
 	struct snd_pcm_hw_params hw;
 	struct snd_pcm_sw_params sw;
@@ -123,22 +135,28 @@ int main(int argc, char **argv)
 	short *buf;
 	FILE *f;
 
-	while ((opt = getopt(argc, argv, "D:s:o:c:")) != -1) {
+	while ((opt = getopt(argc, argv, "D:s:o:c:p:n:")) != -1) {
 		switch (opt) {
 		case 'D': dev = optarg; break;
 		case 's': seconds = (unsigned int)strtoul(optarg, NULL, 10); break;
 		case 'o': out = optarg; break;
 		case 'c': channels = (unsigned int)strtoul(optarg, NULL, 10); break;
+		case 'p': want_period = (unsigned int)strtoul(optarg, NULL, 10); break;
+		case 'n': want_periods = (unsigned int)strtoul(optarg, NULL, 10); break;
 		default:
-			fprintf(stderr, "usage: %s -D /dev/snd/pcmCxDyc -s N -o out.wav [-c 1|2]\n", argv[0]);
+			fprintf(stderr, "usage: %s -D /dev/snd/pcmCxDyc -s N -o out.wav [-c 1|2] [-p frames] [-n periods]\n", argv[0]);
 			return 2;
 		}
 	}
 	dl = dev ? strlen(dev) : 0;
 	if (!dl || dev[dl - 1] != 'c' || !out || seconds < 1 ||
-	    seconds > CAP_MAX_S || channels < 1 || channels > 2) {
-		printf("error=bad_arguments (capture device ending in 'c', 1..%d s, 1..2 ch)\n",
-		       CAP_MAX_S);
+	    seconds > CAP_MAX_S || channels < 1 || channels > 2 ||
+	    want_period * 2 * channels < CAP_MIN_PERIOD_BYTES ||
+	    want_period * 2 * channels > CAP_MAX_PERIOD_BYTES ||
+	    want_periods < CAP_MIN_PERIODS || want_periods > CAP_MAX_PERIODS) {
+		printf("error=bad_arguments (capture device ending in 'c', 1..%d s, 1..2 ch, %d..%d bytes per period, %d..%d periods)\n",
+		       CAP_MAX_S, CAP_MIN_PERIOD_BYTES, CAP_MAX_PERIOD_BYTES,
+		       CAP_MIN_PERIODS, CAP_MAX_PERIODS);
 		return 2;
 	}
 	want = (unsigned long)seconds * CAP_RATE;
@@ -168,8 +186,8 @@ int main(int argc, char **argv)
 	mask_set(&hw, SNDRV_PCM_HW_PARAM_SUBFORMAT, SNDRV_PCM_SUBFORMAT_STD);
 	iv_set(&hw, SNDRV_PCM_HW_PARAM_RATE, CAP_RATE);
 	iv_set(&hw, SNDRV_PCM_HW_PARAM_CHANNELS, channels);
-	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, PERIOD_FRAMES);
-	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIODS, N_PERIODS);
+	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, want_period);
+	iv_set(&hw, SNDRV_PCM_HW_PARAM_PERIODS, want_periods);
 	rc = ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &hw);
 	printf("hw_params_rc=%d\n", rc == 0 ? 0 : -errno);
 	if (rc < 0)
@@ -221,6 +239,9 @@ int main(int argc, char **argv)
 		if (rc < 0) {
 			if (errno == EPIPE) {		/* overrun: count it, recover */
 				xruns++;
+				clock_gettime(CLOCK_BOOTTIME, &ts);
+				printf("xrun_%lu_uptime=%ld.%03ld\nxrun_%lu_at_frame=%lu\n",
+				       xruns, (long)ts.tv_sec, ts.tv_nsec / 1000000L, xruns, got);
 				if (ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, 0) < 0 ||
 				    ioctl(fd, SNDRV_PCM_IOCTL_START, 0) < 0)
 					break;
