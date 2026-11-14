@@ -189,7 +189,13 @@ failsafe_arm() {
 # r202: the codec's normal-path messages are dev_dbg
 [ -f "$DIR/wcd9320-trace-lib.sh" ] && . "$DIR/wcd9320-trace-lib.sh"
 command -v wcd_trace_on >/dev/null 2>&1 && wcd_trace_on
-CODEC_LINES0=$(dmesg | grep -c 'wcd9320 217:')
+# by TIMESTAMP, not line count: once the ring buffer is full a line-count
+# delta goes negative as old lines scroll out (r187's lesson, r202's quiet run)
+DMESG_T0=$(dmesg | tail -n1 | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p')
+dmesg_since() {
+	dmesg | awk -v t="${1:-0}" 'match($0, /^\[ *[0-9.]+\]/) {
+		if (substr($0, 2, RLENGTH - 2) + 0 > t + 0) print }'
+}
 ABORTED=0
 CAPPID=""; TPID=""
 dp_abort() {	# dp_abort <reason>
@@ -411,8 +417,9 @@ check "after: the fail-safe is not armed" "$(systemctl is-active "$FAILSAFE.time
 ctl_set "Headphones Switch" "$HP_PIN_PRE" || echo "the Headphones pin did not go back to $HP_PIN_PRE"
 check "after: the Headphones pin as found" "$(ctl_get "Headphones Switch")" "$HP_PIN_PRE"
 # r202: what the run wrote to the kernel log from the codec
-CODEC_LINES=$(( $(dmesg | grep -c 'wcd9320 217:') - ${CODEC_LINES0:-0} ))
-echo "codec lines added to the kernel log this run: $CODEC_LINES (debug messages: run found them ${WCD_TRACE_WAS:-?})"
+CODEC_LINES=$(dmesg_since "$DMESG_T0" | grep -c 'wcd9320 217:')
+CARD_LINES=$(dmesg_since "$DMESG_T0" | grep -c 'wcd9320-lumia-q6 ')
+echo "codec lines added to the kernel log this run: $CODEC_LINES since $DMESG_T0 s (debug messages: run found them ${WCD_TRACE_WAS:-?}); card lines: $CARD_LINES (not in r202's scope)"
 if [ "${WCD_TRACE:-1}" = 0 ]; then
 	check "quiet: the run added no codec lines to the kernel log (WCD_TRACE=0)" "$CODEC_LINES" "0"
 fi
