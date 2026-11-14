@@ -194,3 +194,11 @@ The gate runners all run those hooks with DAPM idle, so they are unaffected.
 | teardown (PA down → MCLK down) | ~0.6 s | 0.11 s |
 
 **Next for daily use:** a boot command line without `ignore_loglevel`, with a quiet console level. Then demote the driver's per-write info logging on the normal DAPM paths to debug level, keeping the evidence tools working through dynamic debug.
+
+**The quiet console made permanent (d650fb5), verified 2026-11-14.**
+- **The build:** `build-wcd9320-kernel.sh` now swaps `ignore_loglevel` for `loglevel=4` in its cmdline step, and `--debug-console` keeps the verbose console. `deviceinfo` is unchanged.
+- **The test image:** r201's image with the same transform (`boot-1520-duplex-rc1-quiet.img`, identical outside the cmdline field). It booted with `console=tty0 loglevel=4`, `ignore_loglevel=N` and printk `4 4 1 7`.
+- **The gates:** digital 83/0, MCLK ownership 90/0, vm 57/0, cache 0 mismatches. None depends on the console. The card registered at 47 s, against 50 s.
+- **Headphones + DMIC1, cap-first, 341 ms buffer (r201quiet):** PASS 50/50 + 17/17.
+  - Stream open → SLIMbus RX up: **0.31 s / 0.18 s**, against ~2.76 s.
+  - Capture first stage → TX stream start: 0.13 s, against more than 1 s.
