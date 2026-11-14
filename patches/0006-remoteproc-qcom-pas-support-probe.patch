@@ -1,0 +1,129 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] remoteproc: qcom: add a PAS peripheral-support probe
+
+The Lumia 1520's Windows Phone modem images (MBA and modem) are encrypted
+with Qualcomm SSD (AES-128-CBC, key wrapped to a TrustZone-held RSA key), so
+mainline's self-authenticating MSS path cannot run them: the Hexagon boot
+ROM is handed ciphertext and returns an error status. The ADSP's images are
+encrypted the same way and do boot, because TrustZone decrypts them inside
+PAS. Whether this TrustZone supports PAS for the modem decides how the
+modem can be brought up -- docs/msm8974-modem-mapping.md, section 9.
+
+This adds a default-off module that, when loaded, asks TrustZone
+(qcom_scm_pas_supported(), i.e. QCOM_SCM_PIL_PAS_IS_SUPPORTED) about ids
+0..15 and logs the answers; the ADSP's id is the positive control. It is a
+pure query: nothing is loaded, authenticated, reset or assigned.
+
+Not upstream material: this is a bring-up instrument.
+
+---
+
+diff -uNr orig/drivers/remoteproc/Kconfig new/drivers/remoteproc/Kconfig
+--- a/drivers/remoteproc/Kconfig	2026-11-14 16:33:19.953233550 -0500
++++ b/drivers/remoteproc/Kconfig	2026-11-14 16:33:20.025136761 -0500
+@@ -213,6 +213,21 @@
+ 	  subsystem based on Hexagon V5. The TrustZone based system is
+ 	  handled by QCOM_Q6V5_PAS driver.
+ 
++config QCOM_PAS_PROBE
++	tristate "Qualcomm PAS peripheral-support probe (developers only)"
++	depends on QCOM_SCM
++	default n
++	help
++	  Bring-up instrument, not remoteproc architecture. When loaded,
++	  asks TrustZone which PAS peripheral ids it supports
++	  (QCOM_SCM_PIL_PAS_IS_SUPPORTED, a query with no side effects) and
++	  logs one line per id. Used to learn whether a firmware's TrustZone
++	  can authenticate a subsystem through PAS before writing a driver
++	  description for it.
++
++	  Say N unless you are bringing up a Qualcomm subsystem. If unsure,
++	  say N.
++
+ config QCOM_Q6V5_PAS
+ 	tristate "Qualcomm Peripheral Authentication Service support"
+ 	depends on OF && ARCH_QCOM
+diff -uNr orig/drivers/remoteproc/Makefile new/drivers/remoteproc/Makefile
+--- a/drivers/remoteproc/Makefile	2026-11-14 16:33:19.953881962 -0500
++++ b/drivers/remoteproc/Makefile	2026-11-14 16:33:20.025504780 -0500
+@@ -27,6 +27,7 @@
+ obj-$(CONFIG_QCOM_Q6V5_ADSP)		+= qcom_q6v5_adsp.o
+ obj-$(CONFIG_QCOM_Q6V5_MSS)		+= qcom_q6v5_mss.o
+ obj-$(CONFIG_QCOM_Q6V5_PAS)		+= qcom_q6v5_pas.o
++obj-$(CONFIG_QCOM_PAS_PROBE)		+= qcom_pas_probe.o
+ obj-$(CONFIG_QCOM_Q6V5_WCSS)		+= qcom_q6v5_wcss.o
+ obj-$(CONFIG_QCOM_SYSMON)		+= qcom_sysmon.o
+ obj-$(CONFIG_QCOM_WCNSS_PIL)		+= qcom_wcnss_pil.o
+diff -uNr orig/drivers/remoteproc/qcom_pas_probe.c new/drivers/remoteproc/qcom_pas_probe.c
+--- a/drivers/remoteproc/qcom_pas_probe.c	1969-12-31 19:00:00.000000000 -0500
++++ b/drivers/remoteproc/qcom_pas_probe.c	2026-11-14 16:33:19.964843708 -0500
+@@ -0,0 +1,69 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * qcom_pas_probe -- ask TrustZone which PAS peripheral ids it supports.
++ *
++ * A bring-up instrument for the Lumia 1520 (docs/msm8974-modem-mapping.md).
++ * Its Windows Phone modem images are SSD-encrypted, so mainline's
++ * self-authenticating MBA path cannot run them: the Hexagon boot ROM is
++ * handed ciphertext. The ADSP's images are encrypted the same way and boot,
++ * because TrustZone decrypts them inside PAS. Whether this TrustZone also
++ * supports PAS for the modem decides how the modem can be brought up.
++ *
++ * qcom_scm_pas_supported() is QCOM_SCM_PIL_PAS_IS_SUPPORTED: a query with no
++ * side effects. Nothing is loaded, authenticated, reset or assigned. The
++ * query runs once, at module load, for ids 0..15; the ADSP's id (1) is the
++ * positive control, since mainline's PAS driver already asks for it and the
++ * ADSP runs. Downstream's numbering: 0 modem, 1 Q6 (ADSP), 2 DSPS,
++ * 3 TZ apps, 4 modem SW, 5 modem FW, 6 WCNSS, 7 secure app, 8 GSS, 9 video.
++ *
++ * Result: one kernel-log line per id, and the same summary in
++ * /sys/module/qcom_pas_probe/parameters/result. Not upstream material.
++ */
++#include <linux/firmware/qcom/qcom_scm.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++
++#define PAS_PROBE_IDS	16
++
++static char result[160] = "not run";
++module_param_string(result, result, sizeof(result), 0444);
++MODULE_PARM_DESC(result, "PAS ids TrustZone reported as supported");
++
++static int __init qcom_pas_probe_init(void)
++{
++	unsigned int id, n = 0, yes = 0;
++	int len = 0;
++	bool ok;
++
++	if (!qcom_scm_is_available()) {
++		pr_err("qcom_pas_probe: SCM is not available\n");
++		scnprintf(result, sizeof(result), "scm unavailable");
++		return -ENODEV;
++	}
++
++	len = scnprintf(result, sizeof(result), "supported:");
++	for (id = 0; id < PAS_PROBE_IDS; id++) {
++		ok = qcom_scm_pas_supported(id);
++		n++;
++		pr_info("qcom_pas_probe: PAS id %2u: %s\n", id,
++			ok ? "SUPPORTED" : "not supported");
++		if (ok) {
++			yes++;
++			len += scnprintf(result + len, sizeof(result) - len,
++					 " %u", id);
++		}
++	}
++	if (!yes)
++		scnprintf(result + len, sizeof(result) - len, " none");
++	pr_info("qcom_pas_probe: %u of %u ids supported (%s)\n", yes, n, result);
++	return 0;
++}
++module_init(qcom_pas_probe_init);
++
++static void __exit qcom_pas_probe_exit(void)
++{
++}
++module_exit(qcom_pas_probe_exit);
++
++MODULE_DESCRIPTION("Qualcomm PAS peripheral-support probe (bring-up instrument)");
++MODULE_LICENSE("GPL");
