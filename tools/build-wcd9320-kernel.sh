@@ -45,6 +45,12 @@
 #                     needs no sudo, so it is safe in CI or on a workstation
 #                     that cannot build
 #   --force-build     rebuild even if a matching package already exists
+#   --debug-console   keep deviceinfo's ignore_loglevel. By default the cmdline
+#                     step swaps it for loglevel=4: with ignore_loglevel every
+#                     driver info line is drawn synchronously on fbcon, which
+#                     made playback start take 2.8 s instead of 0.2 s
+#                     (docs/audio/wcd9320-duplex-mapping.md, section 10). The
+#                     full log is still in dmesg either way.
 #
 # Environment overrides, all with sane defaults:
 #
@@ -86,6 +92,7 @@ FORCE_BUILD=0
 EXTRA_GUARDS=""
 EXPECT_ASOC=0
 EXPECT_DAIS=""
+DEBUG_CONSOLE=0
 
 die()  { printf '\nFAILED: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n=== %s ===\n' "$*"; }
@@ -106,6 +113,7 @@ ${2:-}"; shift 2 ;;
 	--force-build) FORCE_BUILD=1; shift ;;
 	--expect-asoc) EXPECT_ASOC=1; shift ;;
 	--expect-dais) EXPECT_DAIS="${2:-}"; shift 2 ;;
+	--debug-console) DEBUG_CONSOLE=1; shift ;;
 	-h|--help)    usage 0 ;;
 	*) printf 'unknown argument: %s\n' "$1" >&2; usage 1 ;;
 	esac
@@ -427,6 +435,20 @@ print(d[64:576].rstrip(b'\0').decode())
 	*"$ROOT_UUID"*) ;;
 	*) die "root UUID substitution did not take" ;;
 	esac
+	# The console: quiet unless --debug-console (see the usage above).
+	if [ "$DEBUG_CONSOLE" = "0" ]; then
+		NEW=$(printf ' %s ' "$NEW" | sed 's/ ignore_loglevel / /g; s/ loglevel=[0-9]* / /g;
+			s/^ *//; s/ *$//')
+		NEW="$NEW loglevel=4"
+		case " $NEW " in
+		*" ignore_loglevel "*) die "ignore_loglevel survived the quiet-console step" ;;
+		*" loglevel=4 "*) ;;
+		*) die "the quiet-console step did not take" ;;
+		esac
+		echo "console: quiet (loglevel=4; --debug-console keeps ignore_loglevel)"
+	else
+		echo "console: debug (deviceinfo's cmdline, ignore_loglevel kept)"
+	fi
 	python3 "$REPO/tools/patch-cmdline.py" "$BUILT" "$OUTIMG" = "$NEW" ||
 		die "cmdline patch failed"
 
