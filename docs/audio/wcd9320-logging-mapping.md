@@ -104,3 +104,25 @@ Most of these are shared with the research tools, which call the same mapped fun
 3. The same with `WCD_TRACE=0`, which must add no codec lines.
 
 **Not in scope:** the card driver (`wcd9320-lumia-q6`) still logs about 3 info lines per stream (`BE hw_params`). That is a card change, for later.
+
+## 6. r202 result (2026-11-14): the normal path is silent
+
+**Boot.**
+- The build's quiet console took effect: `console=tty0 loglevel=4`, no `ignore_loglevel`.
+- The codec debug messages were `off`. The codec wrote **0** lines to the kernel log in the first 87 s.
+
+**Gates.** Digital 83/0, MCLK ownership 90/0, vm 57/0, cache 0 mismatches. Each switched the debug output on in `find_devices()`, and it was `off` again after.
+
+**Headphones + DMIC1, cap-first, 341 ms buffer:**
+
+| run | debug output | codec lines in the run | result |
+|---|---|---|---|
+| r202trace2 | on (the probe enabled it; the capture runner found it on and left it) | 461 (406 in the 8 s window) | PASS 50/50 + 17/17 |
+| r202quiet3 | off (`WCD_TRACE=0`) | **0** (the card: 3, `BE hw_params`) | PASS 50/50 + **18/18**, the quiet check included |
+
+**On the way there:**
+- **The install script** had re-sent r197's `pcm-capture`, which has no `-p`/`-n`, so the first run refused at setup. The script now sends r201b's, as do the old install scripts it was copied from.
+- **The PC helper** did not pass `WCD_TRACE` to the phone, so one "quiet" run was a debug-on run. Fixed.
+- **The probe's first quiet count read −4.** The ring buffer was full after the debug-on runs, so a line-count delta went negative. It now counts lines newer than its start timestamp (r187's lesson, 51693ed). The raw log for that run held 0 codec lines.
+
+**Open:** the card driver's per-stream info lines (3 per duplex run: one per stream start). That is a card change (`lumia1520-q6.c`, patch 0005), for later.
