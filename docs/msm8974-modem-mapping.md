@@ -230,3 +230,24 @@ The SSD service uses crypto engine 1. The msm8974 `scm` node already lists `GCC_
 | **E2** | the MSS loader decrypts the MBA before loading it | the MBA boots ("MBA booted ..., loading mpss") |
 | **E3** | pin 0x1C08 (its callers in `qcpil8974.sys`, or an experiment) and decrypt each modem segment before loading | the modem authenticates and starts |
 | then | M4 (rmtfs), M5 (QMI without a SIM) | |
+
+## 13. E1 result (r205, 2026-11-14): TrustZone decrypts the MBA for Linux
+
+`tools/msm8974-ssd-probe.sh` loaded `qcom_ssd_probe` once. The phone did not reset, the modem stayed offline, and the buffer was wiped:
+
+```
+parse_md(len 128)  -> ret 0 status 6        (incomplete; also at 256, 512, 1024)
+parse_md(len 2048) -> ret 0 status 0 ctx 1 md_end = buffer + 0x6e4
+metadata 1764 bytes, ciphertext 236400 bytes (a multiple of 16)
+decrypt_img_frag(ctx 1, last 1, len 236400) -> ret 0 status 0
+```
+
+The plaintext is a genuine image:
+- 61 506 of 236 400 bytes are zero (the ciphertext was uniform), and it carries 2 DER certificates.
+- Its first words are the **80-byte header the boot ROM loads**: codeword `0x844BDCD1`, magic `0x73D71034`, two reserved `0xFFFFFFFF`, image offset `0x50`, destination `0xFCC08000` (the Hexagon's internal memory), image size `0x39B20`, code size `0x38220`, then the signature and certificate pointers.
+- The probe printed those under 40-byte header names, so its labels are off; the values are what matter.
+
+**So the SSD route works:** this TrustZone parses and decrypts Nokia's images on Linux's behalf, using the key it already holds, and the decrypted MBA is in the boot ROM's own format.
+
+**E2, next:** in `qcom_q6v5_mss`, recognise an SSD MBA (`<?xml` at its start), have TrustZone decrypt it in the MBA region (parse at `mba_phys`, decrypt at `md_end`), move the plaintext down to `mba_phys`, then boot it.
+- **Expected:** "MBA booted …, loading mpss". The encrypted modem segments will then fail authentication, which is E3's job (0x1C08).
