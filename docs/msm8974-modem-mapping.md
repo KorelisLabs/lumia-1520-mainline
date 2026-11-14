@@ -92,3 +92,21 @@ The phone has those rails up already: PM8841 S1 at 675 mV, PM8841 S3 at 1.05 V, 
 - **Where the backups are:** private, on the PC, outside the repository. They hold this phone's identifiers and are never committed or uploaded. Restoring is a `dd` of each image back to its partition label.
 
 **There is no SIM and no service for this phone.** Steps M1–M4 (the modem starts and serves its file system) and the QMI part of M5 (the modem is visible, IMEI and firmware readable, no-SIM state) can be done. Network registration and real calls cannot. M6, call audio, can be built, but end-to-end it can only be proven with a network. Emergency numbers are never to be dialled as a test.
+
+## 8. M1 and M2 done (2026-11-14)
+
+**M1, the firmware on the phone.**
+- `mba.b00` is the MBA's single segment, 238 164 bytes; it runs at 0x0D100000.
+- `modem.mdt` (b00 + the hash segment, 10 112 bytes) and `modem.b00`–`b28` (43.4 MB in all) come from `tools/pil-split.py`.
+- All 31 files were copied as one tar and checksum-verified in `/lib/firmware`.
+
+**M2, r203 (pkgrel 203).** A device-tree-only change: `&remoteproc_mss` okay, with the three supplies.
+- `dtc` printed no new warnings (the same 14 as before). Verifier 742/0; build gate 746/0.
+- The audio gates on r203: digital 83/0, MCLK ownership 90/0, vm 57/0, cache 0 mismatches. The modem node changes nothing for audio.
+
+**One more problem on the way: stale modules on the phone.**
+- The build script installs only the audio modules. The rest of `/lib/modules` comes from the original rootfs install, built when `qcom_common`, `qcom_q6v5`, `qcom_pil_info`, `qcom_q6v5_pas`, `qmi_helpers`, `qrtr` and `qrtr-smd` were modules. The current config builds them all in.
+- So the phone's old `qcom_q6v5_mss.ko` wanted those modules, and `depmod`, which cannot see built-in symbols without System.map, kept that dependency even for the new module. The load failed with `qcom_common: exports duplicate symbol qcom_add_glink_subdev (owned by kernel)`.
+- **Fix, on the phone:** `qcom_q6v5_mss`, `qcom_bam_dmux` and `rpmsg_wwan_ctrl` were installed from the r203 package (their dependencies are built-ins only), with the old files kept. The seven now-built-in stale files were moved aside (none was loaded), and `depmod` was re-run.
+- **Result:** `modprobe qcom_q6v5_mss` binds, and **`remoteproc1` (`fc880000.remoteproc`) is `offline` with firmware `mba.b00`**. The modem does not start by itself.
+- **For the future:** after a config change that moves code into or out of the kernel, compare the phone's module tree with the package's.
