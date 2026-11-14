@@ -110,3 +110,42 @@ The phone has those rails up already: PM8841 S1 at 675 mV, PM8841 S3 at 1.05 V, 
 - **Fix, on the phone:** `qcom_q6v5_mss`, `qcom_bam_dmux` and `rpmsg_wwan_ctrl` were installed from the r203 package (their dependencies are built-ins only), with the old files kept. The seven now-built-in stale files were moved aside (none was loaded), and `depmod` was re-run.
 - **Result:** `modprobe qcom_q6v5_mss` binds, and **`remoteproc1` (`fc880000.remoteproc`) is `offline` with firmware `mba.b00`**. The modem does not start by itself.
 - **For the future:** after a config change that moves code into or out of the kernel, compare the phone's module tree with the package's.
+
+## 9. M3 result (2026-11-14): the Windows Phone images are SSD-encrypted
+
+**The first start** (`tools/msm8974-modem-start.sh`; recovery off; no rmtfs) failed safely, with no reset:
+
+```
+remoteproc remoteproc1: Booting fw image mba.b00, size 238164
+qcom-q6v5-mss fc880000.remoteproc: PBL returned unexpected status -283311616   (0xef1d0200)
+remoteproc remoteproc1: Boot failed: -22
+```
+
+**Why: the MBA is encrypted.** Its single segment does not begin with an MBN signing header but with Qualcomm **SSD** ("Secure Software Download") metadata:
+
+```
+<?xml version="1.0" encoding="UTF-8"?> <SSD_METADATA> <MD_SIGN> <MD_VERSION>2.0</MD_VERSION>
+<MFG_ID>Nokia</MFG_ID> ... <IMG_ENC_ALGO>AES-128-ENCRYPT</IMG_ENC_ALGO> ... <IMG_ENC_OPERATION_MODE>CBC_MODE</IMG_ENC_OPERATION_MODE>
+<IEK_ENC_ALGO>RSA-2048</IEK_ENC_ALGO> <IEK_ENC_PUB_KEY_ID>0iWmeuUN…</IEK_ENC_PUB_KEY_ID> ...
+<MD_SIG_ALGO>RSA-2048</MD_SIG_ALGO> <MD_SIG_DGST_ALGO>SHA-256</MD_SIG_DGST_ALGO> ...
+```
+
+- **The scheme:** the image is AES-128-CBC. Its key is RSA-wrapped to a key only the device's TrustZone holds. The metadata is signed with the OEM key, and the payload's entropy is 7.997 bits/byte.
+- **What the PBL saw:** it was handed ciphertext, so its status is an error, not a stale register.
+- **Windows' loader** (`qcpil8974.sys`: `PIL_MSA_LOAD_STATE_MBA`, `scm_api.c`, `_DEP` on `SCM0`) does the decryption through TrustZone first.
+
+**The modem is encrypted the same way.**
+- Every code segment has entropy 7.999 and no readable text.
+- The plaintext hash segment (`b01`) carries the signed MBN header (certificates from "Nokia Windows Bootloader Trustroot CA"). It is followed by 1 764 bytes of SSD metadata with the same image-key ID; the metadata is signed with OEM key `P8stssAu…`.
+
+**So is the ADSP, and it boots.**
+- `adsp.b01` ends in SSD metadata, and its code segments have entropy 7.999.
+- It starts through PAS (`qcom_scm_pas_auth_and_reset`). So this TrustZone decrypts SSD images itself when it authenticates them through PAS.
+
+**What this means.** Mainline's msm8974 modem driver uses the self-authenticating MBA path. That path bypasses TrustZone, so it cannot run these images unchanged (section 3's "no TrustZone call" was true of the driver, not of what these images need). Two ways forward:
+
+1. **PAS (preferred: the ADSP's proven path).** Give `modem.mdt` to TrustZone (`pas_init_image`, `mem_setup`, `auth_and_reset`) and let it decrypt, authenticate and start the modem, with no Linux-loaded MBA.
+   - This works only if this TrustZone supports PAS for the modem.
+   - Downstream PAS ids: modem 0, Q6/ADSP 1 (the one in use), modem SW 4, modem FW 5, WCNSS 6.
+   - `qcom_scm_pas_supported(id)` asks TrustZone without side effects.
+2. **SSD from Linux.** Use TrustZone's SSD service (protect keystore, parse metadata, decrypt fragments; open-source reference: Qualcomm LK `platform/msm_shared/scm.c`) to decrypt the MBA and the modem segments, then take the normal MBA path. This is more work, and it may need the keystore from the `SSD` partition loaded first.
