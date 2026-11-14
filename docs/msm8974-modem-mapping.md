@@ -149,3 +149,18 @@ remoteproc remoteproc1: Boot failed: -22
    - Downstream PAS ids: modem 0, Q6/ADSP 1 (the one in use), modem SW 4, modem FW 5, WCNSS 6.
    - `qcom_scm_pas_supported(id)` asks TrustZone without side effects.
 2. **SSD from Linux.** Use TrustZone's SSD service (protect keystore, parse metadata, decrypt fragments; open-source reference: Qualcomm LK `platform/msm_shared/scm.c`) to decrypt the MBA and the modem segments, then take the normal MBA path. This is more work, and it may need the keystore from the `SSD` partition loaded first.
+
+## 10. r204 (pkgrel 204): the PAS support probe, staged 2026-11-14
+
+- **What it is:** patch 0006 adds `qcom_pas_probe` (`CONFIG_QCOM_PAS_PROBE=m`, default off). When loaded by hand, it asks `qcom_scm_pas_supported()` about PAS ids 0–15 and logs one line per id; the summary is in `/sys/module/qcom_pas_probe/parameters/result`.
+- **The ids:** the ADSP's id 1 is the positive control (mainline's PAS driver already asks for it, and the ADSP runs). 0, 4 and 5 are the modem candidates.
+- **A pure query:** nothing is loaded, authenticated, reset or assigned.
+- **The runner:** `tools/msm8974-pas-probe.sh` loads it once from the tools directory. It is never installed in `/lib/modules`, so nothing autoloads it.
+- **Checks:**
+  - The patch was generated against the package's own source tarball and dry-run-applies to it.
+  - The module compiles `W=1` clean.
+  - Both APKBUILDs list 0006 with computed sums, and the three config copies agree.
+  - Verifier 742/0. The codec module is unchanged (`quietlog-rc1`).
+- **What the answer decides:**
+  - If the modem ids are supported, the next step is a PAS description of the modem (TrustZone decrypts, authenticates and starts it, as for the ADSP).
+  - If none is, the SSD route of section 9.
