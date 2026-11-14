@@ -77,3 +77,28 @@ That gives a no-build first test of duplex at the DSP level: two ASM sessions, S
    - **The voltmeter and zdet** refuse while capture holds anything.
    - **Test:** headphones playing while DMIC1 records.
 3. **Track B/C mapping:** the modem bring-up (PAS like the ADSP, plus rmtfs and QMI), then `q6voice`. postmarketOS carries an out-of-tree `q6voice` for MSM8916; whether it fits MSM8974's ADSP is the first question.
+
+## 8. Probe 0 result (r200, 2026-11-14): speakerphone duplex works with no build
+
+One run of `tools/wcd9320-duplex-probe.sh`:
+- **Setup:** DMIC4 (the speakerphone mic) at +30 dB for 8 s, while the loudspeaker played the 1 kHz stimulus twice at −40 dBFS (Loudspeaker Volume 22, +15 dB).
+- **Checks:** the capture runner passed 49/49 and the probe 15/15.
+- **Live, mid-stimulus:** the I2S path was up (rail, pins, BCLK) and capture held all six stages. The codec held no output and one MCLK user (capture).
+- **After:** everything was down, and every control was back as found.
+
+The recording:
+- **Both plays are there:** at about 1.3 s and 3.45 s, each with its tone/silence/tone shape.
+- **The 1 kHz bin** sits about 48 dB above its neighbours, at −47.6 dBFS. On quiet stretches the pattern score is 0.2 dB. This is the first acoustic loop with a source we control.
+
+**A floor finding, from r200.** The floor between sounds is −45 dBFS broadband, against −56 in r199's quiet runs. The excess is entirely infrasonic:
+
+| band | r199 floor (75 Hz HPF) | r200 floor (4 Hz after the settle) |
+|---|---|---|
+| < 20 Hz | −58.5 | **−46.1** |
+| 20–75 Hz | −59.8 | **−51.6** |
+| 75–150 Hz | −70.9 | −69.2 |
+| 300 Hz–3 kHz | −73.0 | −77.1 |
+
+- **What it is:** the r200 settle restores the reset cut-off (4 Hz), as downstream does, so room and handling rumble below 75 Hz now passes. The audible band is unchanged.
+- **How downstream handles it:** the restored value is whatever its "TX HPF cut off" control holds, so the use-case configuration picks the corner.
+- **Proposed for r201:** a "Capture HPF Cut-off" control (4 / 75 / 150 Hz) that the settle restores to. The driver default stays at the measured value, and the UCM picks 75 or 150 Hz for voice.
