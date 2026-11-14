@@ -10,7 +10,7 @@
 # stimulus (or nothing, for the floor) and analyses the WAV afterwards.
 #
 # Usage (as root on the phone):
-#   EXPECT_VERSION=capsel-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
+#   EXPECT_VERSION=hpfsettle-rc1 CAP_DMIC=1..4 CAP_SECONDS=5 sh wcd9320-capture.sh <tag>
 # Output: /var/log/wcd9320-capture-<stamp>-<tag>.wav and .txt
 # Exit: 0 PASS, 1 FAIL, 2 refused before anything changed.
 
@@ -21,7 +21,7 @@ STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 OUTDIR="${OUTDIR:-/var/log}"
 TAG="${1:-run}"
 SECS="${CAP_SECONDS:-5}"
-EXPECT_VERSION="${EXPECT_VERSION:-capgain-rc1}"
+EXPECT_VERSION="${EXPECT_VERSION:-hpfsettle-rc1}"
 # r199: CAP_GAIN=0..124 -- "Capture Digital Volume" for the run (-84..+40 dB,
 # 84 = 0 dB); unset leaves the control as found
 CAPG="${CAP_GAIN:-}"
@@ -122,6 +122,14 @@ if [ "$RUN_OK" = 1 ]; then
 		_w=$((_w + 1))
 	done
 	echo "path up after ~$((_w * 100)) ms"
+	# r200: the HPF settle ends 300 ms after the decimator is up; wait it out
+	_h=0
+	while [ "$_h" -lt 10 ]; do
+		[ "$(rv "$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')" hpf_armed)" = "0" ] && break
+		sleep 0.1
+		_h=$((_h + 1))
+	done
+	echo "HPF settle done ~$((_h * 100)) ms after that"
 	sleep 0.2
 	CLIVE=$(cat "$PGD/capture_state" 2>/dev/null | tr '\n' ' ')
 	DLIVE=$(cat "$PGD/dapm_state" 2>/dev/null)
@@ -161,7 +169,16 @@ check "live: MICBIAS$MBN on, on CFILT1 (& e0)" "$(hexand "$(rv "$CLIVE" micb)" 0
 check "live: the pair's clock DIV_4 and on (0x304 & ${CKM#0x})" "$(hexand "$(rv "$CLIVE" dmicclk_0x304)" $CKM)" "$CKW"
 check "live: DEC$CAPN DMIC rate DIV_4 (& 07)" "$(hexand "$(rv "$CLIVE" txdmic)" 0x07)" "02"
 check "live: DEC$CAPN input DMIC$CAPN (0x393 field)" "$(( (0x$(rv "$CLIVE" conntx_0x393) >> FSH) & 3 ))" "1"
-check "live: DEC$CAPN DMIC sel, HPF 150 Hz on (& 39)" "$(hexand "$(rv "$CLIVE" mux)" 0x39)" "11"
+check "live: DEC$CAPN DMIC sel, HPF on (& 09)" "$(hexand "$(rv "$CLIVE" mux)" 0x09)" "01"
+# r200: 150 Hz (0x20) only while the decimator settles, then the cut-off the
+# run found; r197-r199 wrote 0x10 (75 Hz) here and called it 150 Hz
+HPFPRE=$(hexand "$(rv "$CPRE" mux)" 0x30)
+check "live: DEC$CAPN HPF cut-off back as found after the settle (& 30)" "$(hexand "$(rv "$CLIVE" mux)" 0x30)" "$HPFPRE"
+if [ "$HPFPRE" = "20" ]; then HPFN=0; else HPFN=1; fi
+HS0=$(rv "$CPRE" hpf_settles); HS1=$(rv "$CLIVE" hpf_settles)
+HE0=$(rv "$CPRE" hpf_errors); HE1=$(rv "$CLIVE" hpf_errors)
+check "live: the HPF settle ran $HPFN time(s), disarmed, no errors" \
+	"$(( ${HS1:-0} - ${HS0:-0} )) $(rv "$CLIVE" hpf_armed) $(( ${HE1:-0} - ${HE0:-0} ))" "$HPFN 0 0"
 check "live: DEC$CAPN unmuted (b0)" "$(hexand "$(rv "$CLIVE" volcfg)" 0x01)" "00"
 check "live: DEC$CAPN gain = Capture Digital Volume ($(( ${GRUN:-84} - 84 )) dB)" "$(rv "$CLIVE" gain)" "$(printf '%02x' $(( (${GRUN:-84} - 84) & 0xff )))"
 check "live: DEC$CAPN clock on (0x30a bit $((CAPN - 1)))" "$(( (0x$(rv "$CLIVE" txclk_0x30a) >> (CAPN - 1)) & 1 ))" "1"

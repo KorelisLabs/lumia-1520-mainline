@@ -3223,7 +3223,7 @@ def main():
         '{ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03 << fsh, 0x01 << fsh,',
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x01, 0x01,',
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x01,',
-        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x30, 0x10,',
+        '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), WCD9320_CAP_HPF_MASK,',
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x08, 0x00,',
         '{ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, dbit, dbit,',
         '{ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x00,',
@@ -3273,6 +3273,40 @@ def main():
           and "(u8)(s8)((int)wcd->cap_gain - WCD9320_CAP_GAIN_0DB)," in cb
           and cb.find('"decimator unmute" };') < cb.find('"decimator gain (Capture Digital Volume)" };'),
           "taiko_codec_enable_dec; r199: the gain is the post table's last write")
+    # r200: 0x10 is 75 Hz (CF_MIN_3DB_75HZ); downstream holds 150 Hz (0x20)
+    # only while the decimator settles, then tx_hpf_work restores what it found
+    ha = func_body("wcd9320_cap_hpf_arm")
+    hd = func_body("wcd9320_cap_hpf_disarm")
+    hw = func_body("wcd9320_cap_hpf_work")
+    pb = func_body("wcd9320_probe")
+    check("decimator HPF: a true 150 Hz for the settle, the found cut-off back after 300 ms (tx_hpf_work)",
+          "#define WCD9320_CAP_HPF_MASK\t\t\t0x30" in ptext_all
+          and "#define WCD9320_CAP_HPF_150HZ\t\t\t0x20" in ptext_all
+          and "#define WCD9320_CAP_HPF_SETTLE_MS\t\t300" in ptext_all
+          and "WCD9320_CAP_HPF_150HZ, \"decimator HPF cut-off 150 Hz while it settles\" };" in cb
+          and "wcd->cap_base[WCD9320_CAP_DEC][ARRAY_SIZE(wcd->cap_dec_pre_tb)] &" in ha
+          and "if (wcd->cap_hpf_found == WCD9320_CAP_HPF_150HZ)" in ha
+          and 0 <= ha.find("wcd->cap_hpf_armed = true;") < ha.find("mod_delayed_work(system_wq, &wcd->cap_hpf_work,")
+          and 0 <= dc.find("wcd->cap_dec_post_tb,") < dc.find("wcd9320_cap_hpf_arm(wcd);") < dc.find("down:")
+          < dc.find("wcd9320_cap_hpf_disarm(wcd);") < dc.find("wcd9320_cap_restore(wcd, WCD9320_CAP_DEC, tbs, ns, 2);"),
+          "armed after the post table, disarmed before the restore")
+    check("HPF settle work: under c3_lock, only while armed and the decimator is held, never early",
+          0 <= hw.find("mutex_lock(&wcd->c3_lock);")
+          < hw.find("if (!wcd->cap_hpf_armed || !(wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)))")
+          < hw.find("left = (long)(wcd->cap_hpf_due - jiffies);") < hw.find("if (left > 0) {")
+          < hw.find("WCD9320_CAP_HPF_MASK, wcd->cap_hpf_found,") < hw.find("wcd->cap_hpf_armed = false;")
+          < hw.find("mutex_unlock(&wcd->c3_lock);")
+          and hw.count("mutex_unlock(&wcd->c3_lock);") == 1,
+          "a stale run reschedules to the new deadline")
+    check("HPF settle work: disarm never waits (the work takes c3_lock); unbind cancels it synchronously",
+          "wcd->cap_hpf_armed = false;" in hd and "cancel_delayed_work(&wcd->cap_hpf_work);" in hd
+          and "_sync" not in hd
+          and "cancel_delayed_work_sync(&wcd->cap_hpf_work);" in func_body("wcd9320_cap_hpf_teardown")
+          and "INIT_DELAYED_WORK(&wcd->cap_hpf_work, wcd9320_cap_hpf_work);" in pb
+          and 0 <= pb.find("wcd->regmap = devm_regmap_init_slimbus(sdev, &wcd9320_regmap_config);")
+          < pb.find("ret = devm_add_action_or_reset(dev, wcd9320_cap_hpf_teardown, wcd);")
+          < pb.find("ret = devm_snd_soc_register_component(dev, &wcd9320_soc_component,"),
+          "unwinds after the component, before power and the regmap")
     cgp = func_body("wcd9320_cap_gain_put")
     check("Capture Digital Volume: 0..124 (-84..+40 dB), 0 dB at probe, live under c3_lock while the decimator is up",
           "if (v < 0 || v > WCD9320_CAP_GAIN_STEPS)" in cgp

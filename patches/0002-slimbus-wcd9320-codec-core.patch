@@ -346,8 +346,8 @@ diff -uprN orig/drivers/slimbus/lumia-mclk-experiment.c new/drivers/slimbus/lumi
 +}
 diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.c
 --- orig/drivers/slimbus/wcd9320-core.c	2026-07-31 16:05:21.716822880 -0400
-+++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 07:51:12.402581123 -0500
-@@ -0,0 +1,14803 @@
++++ new/drivers/slimbus/wcd9320-core.c	2026-11-14 10:57:23.440001790 -0500
+@@ -0,0 +1,14902 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * WCD9320 ("Taiko") codec core -- supplies, reset, SLIMbus binding, regmap.
@@ -2086,6 +2086,15 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	struct wcd9320_cap_w cap_dec_pre_tb[4], cap_dec_post_tb[5], cap_sb_tb[1];
 +	/* r199: Capture Digital Volume, 0..124 = -84..+40 dB, 84 = 0 dB */
 +	u8 cap_gain;
++	/*
++	 * r200: the HPF settle. Armed by the decimator stage, run once after
++	 * WCD9320_CAP_HPF_SETTLE_MS, disarmed at teardown; all under c3_lock.
++	 */
++	struct delayed_work cap_hpf_work;
++	unsigned long cap_hpf_due;
++	bool cap_hpf_armed;
++	u8 cap_hpf_found;
++	unsigned int cap_hpf_settles, cap_hpf_errors;
 +	/* r188: the line outputs */
 +	bool lo_prep_on, lo_dac_on, lo_pa_on, lo_bias_held;
 +	u8 lo_gain_base[4];
@@ -12612,6 +12621,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +/* r199: the decimator gain, downstream's DECn Volume range */
 +#define WCD9320_CAP_GAIN_STEPS			124	/* -84 .. +40 dB */
 +#define WCD9320_CAP_GAIN_0DB			84
++/*
++ * r200: the decimator HPF cut-off, TXn_MUX_CTL [5:4]: 0 = 4 Hz, 1 = 75 Hz,
++ * 2 = 150 Hz (downstream CF_MIN_3DB_*). 150 Hz only while it settles.
++ */
++#define WCD9320_CAP_HPF_MASK			0x30
++#define WCD9320_CAP_HPF_150HZ			0x20
++#define WCD9320_CAP_HPF_SETTLE_MS		300	/* taiko tx_hpf_work */
 +#define WCD9320_A_CDC_TX1_VOL_CTL_GAIN		0x221
 +#define WCD9320_A_CDC_TX1_VOL_CTL_CFG		0x222
 +#define WCD9320_A_CDC_TX1_MUX_CTL		0x223
@@ -12668,7 +12684,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->cap_dec_pre_tb[1] = (struct wcd9320_cap_w){ WCD9320_A_CDC_CONN_TX_B1_CTL, 0x03 << fsh, 0x01 << fsh, "decimator input = DMIC n" };
 +	wcd->cap_dec_pre_tb[2] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x01, 0x01, "decimator DMIC (not ADC) select" };
 +	wcd->cap_dec_pre_tb[3] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x01, "decimator digital mute" };
-+	wcd->cap_dec_post_tb[0] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x30, 0x10, "decimator HPF cut-off 150 Hz" };
++	wcd->cap_dec_post_tb[0] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), WCD9320_CAP_HPF_MASK,
++							  WCD9320_CAP_HPF_150HZ, "decimator HPF cut-off 150 Hz while it settles" };
 +	wcd->cap_dec_post_tb[1] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n), 0x08, 0x00, "decimator HPF on" };
 +	wcd->cap_dec_post_tb[2] = (struct wcd9320_cap_w){ WCD9320_A_CDC_CLK_TX_CLK_EN_B1_CTL, dbit, dbit, "decimator clock on" };
 +	wcd->cap_dec_post_tb[3] = (struct wcd9320_cap_w){ WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_VOL_CTL_CFG, n), 0x01, 0x00, "decimator unmute" };
@@ -12787,10 +12804,76 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +
 +/*
-+ * Decimator n, taiko_codec_enable_dec: digital mute, a reset pulse, HPF at
-+ * 150 Hz and on, the TX clock, unmute, and the gain register rewritten so
-+ * it latches. The pulse is outside the tables: restoring it would assert
-+ * the reset again on the way down.
++ * r200: THE HPF SETTLE, as downstream's tx_hpf_work. The decimator stage
++ * measured the cut-off before forcing 150 Hz; unless it was 150 Hz already,
++ * the work puts it back WCD9320_CAP_HPF_SETTLE_MS after the decimator came
++ * up. Arm and disarm run under c3_lock, inside the decimator stage.
++ */
++static void wcd9320_cap_hpf_arm(struct wcd9320 *wcd)
++{
++	wcd->cap_hpf_found = wcd->cap_base[WCD9320_CAP_DEC][ARRAY_SIZE(wcd->cap_dec_pre_tb)] &
++			     WCD9320_CAP_HPF_MASK;
++	if (wcd->cap_hpf_found == WCD9320_CAP_HPF_150HZ)
++		return;
++	wcd->cap_hpf_due = jiffies + msecs_to_jiffies(WCD9320_CAP_HPF_SETTLE_MS);
++	wcd->cap_hpf_armed = true;
++	mod_delayed_work(system_wq, &wcd->cap_hpf_work,
++			 msecs_to_jiffies(WCD9320_CAP_HPF_SETTLE_MS));
++}
++
++/*
++ * Never a sync cancel here: the work takes c3_lock, which the caller holds.
++ * A run already waiting on the lock finds cap_hpf_armed false and writes
++ * nothing; teardown restores the cut-off from the decimator table anyway.
++ */
++static void wcd9320_cap_hpf_disarm(struct wcd9320 *wcd)
++{
++	wcd->cap_hpf_armed = false;
++	cancel_delayed_work(&wcd->cap_hpf_work);
++}
++
++static void wcd9320_cap_hpf_work(struct work_struct *work)
++{
++	struct wcd9320 *wcd = container_of(to_delayed_work(work),
++					   struct wcd9320, cap_hpf_work);
++	unsigned int n;
++	long left;
++
++	mutex_lock(&wcd->c3_lock);
++	if (!wcd->cap_hpf_armed || !(wcd->dapm_held_cap & BIT(WCD9320_CAP_DEC)))
++		goto out;
++	/* a run left over from an earlier stream must not cut a new settle short */
++	left = (long)(wcd->cap_hpf_due - jiffies);
++	if (left > 0) {
++		mod_delayed_work(system_wq, &wcd->cap_hpf_work, left);
++		goto out;
++	}
++	n = wcd->cap_built ? wcd->cap_built : 1;
++	if (wcd9320_c2b_write(wcd, WCD9320_CAP_DEC_REG(WCD9320_A_CDC_TX1_MUX_CTL, n),
++			      WCD9320_CAP_HPF_MASK, wcd->cap_hpf_found,
++			      "decimator HPF cut-off back as found, the settle done"))
++		wcd->cap_hpf_errors++;
++	else
++		wcd->cap_hpf_settles++;
++	wcd->cap_hpf_armed = false;
++out:
++	mutex_unlock(&wcd->c3_lock);
++}
++
++/* devm: registered after the regmap and before the component, so it unwinds between them */
++static void wcd9320_cap_hpf_teardown(void *data)
++{
++	struct wcd9320 *wcd = data;
++
++	cancel_delayed_work_sync(&wcd->cap_hpf_work);
++}
++
++/*
++ * Decimator n, taiko_codec_enable_dec: digital mute, a reset pulse, the HPF
++ * at 150 Hz and on, the TX clock, unmute, and the gain. The pulse is outside
++ * the tables: restoring it would assert the reset again on the way down.
++ * r200: 150 Hz is a true 150 Hz now, held only for the settle; r197-r199
++ * wrote 75 Hz under that name and kept it for the whole stream.
 + */
 +static int wcd9320_cap_dec(struct wcd9320 *wcd, bool on)
 +{
@@ -12814,9 +12897,13 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	if (!ret)
 +		ret = wcd9320_cap_apply(wcd, WCD9320_CAP_DEC, wcd->cap_dec_post_tb,
 +					ARRAY_SIZE(wcd->cap_dec_post_tb));
-+	if (!ret)
++	if (!ret) {
++		/* r200: the cut-off it was found at goes back after the settle */
++		wcd9320_cap_hpf_arm(wcd);
 +		return 0;
++	}
 +down:
++	wcd9320_cap_hpf_disarm(wcd);
 +	wcd9320_cap_restore(wcd, WCD9320_CAP_DEC, tbs, ns, 2);
 +	return on ? ret : 0;
 +}
@@ -13111,12 +13198,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	regs[nr].reg = WCD9320_CDC_CLK_OTHR_CTL; regs[nr++].key = "othr_0x30c";
 +	regs[nr].reg = WCD9320_A_CDC_CONN_TX_B1_CTL; regs[nr++].key = "conntx_0x393";
 +	regs[nr].reg = WCD9320_A_CDC_CONN_TX_SB_B1_CTL + (n - 1); regs[nr++].key = "sbtx";
-+	k = sysfs_emit(buf, "cap_dmic=%u tx_port=%u cap_held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u prereq=%d tx_port_on=%u tx_up=%u tx_ups=%u tx_downs=%u tx_rc_prepare=%d tx_rc_enable=%d tx_port_writes=%u\n",
++	k = sysfs_emit(buf, "cap_dmic=%u tx_port=%u cap_held=%02x ups=%u downs=%u refusals=%u failures=%u mclk_users=%u prereq=%d tx_port_on=%u tx_up=%u tx_ups=%u tx_downs=%u tx_rc_prepare=%d tx_rc_enable=%d tx_port_writes=%u hpf_armed=%d hpf_found=%02x hpf_settles=%u hpf_errors=%u\n",
 +		       n, n - 1, wcd->dapm_held_cap, wcd->cap_ups, wcd->cap_downs,
 +		       wcd->cap_refusals, wcd->cap_failures, wcd->mclk_users,
 +		       wcd->clk_prereq_on, wcd->tx_port_on, wcd->tx_stream_up,
 +		       wcd->tx_stream_ups, wcd->tx_stream_downs,
-+		       wcd->tx_rc_prepare, wcd->tx_rc_enable, wcd->tx_port_writes);
++		       wcd->tx_rc_prepare, wcd->tx_rc_enable, wcd->tx_port_writes,
++		       wcd->cap_hpf_armed, wcd->cap_hpf_found, wcd->cap_hpf_settles,
++		       wcd->cap_hpf_errors);
 +	for (i = 0; i < nr; i++) {
 +		if (regmap_read_bypassed(wcd->regmap, regs[i].reg, &v))
 +			k += sysfs_emit_at(buf, k, "%s=-- ", regs[i].key);
@@ -14674,6 +14763,8 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +	wcd->lo_gain_field = WCD9320_LINE_GAIN_MIN;
 +	wcd->lo_select = WCD9320_LINE_ALL;
 +	INIT_DELAYED_WORK(&wcd->sampler, wcd9320_sampler_work);
++	/* r200: the HPF settle */
++	INIT_DELAYED_WORK(&wcd->cap_hpf_work, wcd9320_cap_hpf_work);
 +	dev_set_drvdata(dev, wcd);
 +
 +	/*
@@ -14926,6 +15017,14 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +		return ret;
 +
 +	/*
++	 * r200: the HPF settle work is stopped after the component goes (its
++	 * teardown only disarms) and before power and the regmap do.
++	 */
++	ret = devm_add_action_or_reset(dev, wcd9320_cap_hpf_teardown, wcd);
++	if (ret)
++		return ret;
++
++	/*
 +	 * The control function only -- the interface function returned above,
 +	 * and giving it a component too would put a second, mute codec into
 +	 * any card that later binds this one.
@@ -15148,7 +15247,7 @@ diff -uprN orig/drivers/slimbus/wcd9320-core.c new/drivers/slimbus/wcd9320-core.
 +}
 +module_exit(wcd9320_module_exit);
 +
-+MODULE_VERSION("capgain-rc1");
++MODULE_VERSION("hpfsettle-rc1");
 +MODULE_DESCRIPTION("WCD9320 codec core: supplies, reset, SLIMbus binding, regmap, ASoC component and RX DAI");
 +MODULE_LICENSE("GPL");
 diff -uprN orig/drivers/slimbus/wcd9320-lumia-card.c new/drivers/slimbus/wcd9320-lumia-card.c

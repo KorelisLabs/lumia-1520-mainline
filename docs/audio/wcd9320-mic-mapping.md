@@ -155,7 +155,7 @@ For one microphone (DMIC1, the call mic), in DAPM order:
 2. **The DMIC clock:** `CDC_CLK_DMIC_B1_CTL` bit 0, refcounted with DMIC2.
 3. **The decimator input:** `CDC_CONN_TX_B1` [1:0] = 1 selects DMIC1 for decimator 1 (choices ZERO, DMIC1, ADC6). Then `CDC_TX1_MUX_CTL` bit 0 = 1 selects DMIC rather than ADC.
 4. **The decimator** (`taiko_codec_enable_dec`):
-   - PRE_PMU: TX digital mute on (`TX1_VOL_CTL_CFG` bit 0), a reset pulse on `CDC_CLK_TX_RESET_B1` bit n, the HPF cut-off forced to 150 Hz (`TX1_MUX_CTL` [5:4] = 1) and the HPF enabled (bit 3 = 0);
+   - PRE_PMU: TX digital mute on (`TX1_VOL_CTL_CFG` bit 0), a reset pulse on `CDC_CLK_TX_RESET_B1` bit n, the HPF cut-off forced to 150 Hz (`TX1_MUX_CTL` [5:4] = **2**; downstream's own comment says 0x1, but `CF_MIN_3DB_150HZ` is 2 and 1 is 75 Hz — corrected in r200) and the HPF enabled (bit 3 = 0);
    - the TX clock, `CDC_CLK_TX_CLK_EN_B1` bit n;
    - POST_PMU: mute off, the HPF cut-off restored after 300 ms, and the digital gain (`TXn_VOL_CTL_GAIN`) rewritten.
 5. **The SLIMbus TX port:** `CDC_CONN_TX_SB_B1` = 8 routes DEC1 to SLIM TX1. Windows writes the same mux values 1–8 and 1–0x11.
@@ -225,7 +225,7 @@ does for RX.
   2. cap prereq, the proven `cdc_clk_prereq`;
   3. MIC BIAS1, which turns LDO_H on at 3.0 V, then a 1 ms settle, then CFILT1 at k = 24 (1.8 V), the bias on CFILT1 and the bias on, then a 20 ms settle;
   4. the DMIC1/2 clock at DIV_4 (2.4 MHz), with DEC1's DMIC rate set to DIV_4;
-  5. DEC1: CDC_CONN, the input set to DMIC1, the DMIC select, mute, a reset pulse, the HPF at 150 Hz and on, the TX clock, unmute, and the gain rewritten;
+  5. DEC1: CDC_CONN, the input set to DMIC1, the DMIC select, mute, a reset pulse, the HPF at 150 Hz and on (in fact 75 Hz, kept for the whole stream; see section 15), the TX clock, unmute, and the gain rewritten;
   6. SLIM TX1 = DEC1.
 
   Every field is measured first and restored masked in reverse at teardown. The reset pulse sits outside the tables.
@@ -359,3 +359,48 @@ The idle floor is −86 dBFS on every line, with the same DC offset of −0.48.
 **Test:** DMIC1 at `CAP_GAIN=114` (+30 dB), with tap-and-blow and then the PC tone.
 - **If the gain is what was missing:** both scale up cleanly, and the tone appears.
 - **If they do not:** the mics are not in their normal mode, and the DMIC clock pin or pad mode is next.
+
+## 15. r199 result, and r200 (`hpfsettle-rc1`, pkgrel 200): staged 2026-11-14
+
+**r199 on the phone.**
+- **Gates:** digital 83/0, MCLK ownership 90/0, vm 57/0, cache 0 mismatches. "Capture Digital Volume" is present and reads 84 (0 dB).
+- **Recordings:** five, each at `CAP_GAIN=114` (+30 dB) and 6 s, and every run passed 47/47.
+
+| run | line | result |
+|---|---|---|
+| tap and blow | DMIC1 | Floor −88 → −56.6 dBFS, the same +30 dB. Blowing reaches −20 dBFS RMS (22 samples touch full scale). Taps arrive about 190 ms apart, each decaying over roughly 100 ms. |
+| PC tone, twice | DMIC1 | Not detectable, either before or after the phone was moved back to its usual spot. The 1 kHz bin stays within ±10 dB of its neighbours. |
+| claps, ~15 cm, no contact | DMIC1 | Clear: peaks of −26 to −34 dBFS against −55 to −58, with 60% of the energy at 300 Hz–3 kHz and 33% at 3–8 kHz. |
+| counting, normal voice, ~15 cm | DMIC1 | Median −40 dBFS, peak −31.5, 15–25 dB above the floor. |
+| counting, normal voice, ~15 cm | DMIC4 | Median −44.7 dBFS, peak −36, about 4 dB below DMIC1 and weighted more to low frequencies. |
+
+The user listened to the normalised voice and clap recordings and reported they "sound great".
+
+**What the runs establish:**
+- **The DMICs work.** r198's 40–50 dB shortfall was the decimator gain.
+- **Windows likely runs at +30 dB.** The ACDB decimator element (0x1005) carries 30 for DMIC_1, which fits a +30 dB setting.
+- **The PC speakers can't serve as a mic test source.** They are far too quiet at the phone; use voice or claps.
+- **Not yet decided:** the default gain belongs to the UCM, not the driver.
+
+**A bug the recordings exposed: the HPF cut-off.**
+- `TXn_MUX_CTL` [5:4] is the decimator's high-pass corner: 0 = 4 Hz, 1 = 75 Hz, 2 = 150 Hz (downstream `CF_MIN_3DB_*`).
+- r197–r199 wrote 1 under the label "150 Hz", taken from downstream's comment ("CF_MIN_3DB_150HZ (0x1)"). That gave 75 Hz, kept for the whole stream.
+- Downstream does something different in `taiko_codec_enable_dec`. It forces 150 Hz only while the decimator settles; 300 ms after POST_PMU, `tx_hpf_work` restores the cut-off it found. The reset default is 0, which is 4 Hz.
+
+**r200, "the HPF settle":**
+- **The value:** the post table's first row writes a true 150 Hz (`WCD9320_CAP_HPF_150HZ` = 0x20). It is still measured first and restored at teardown.
+- **Arming:** after the post table, the decimator stage arms a 300 ms delayed work. If the measured cut-off was already 150 Hz, there is nothing to restore and it doesn't arm.
+- **The work:** under `c3_lock`, it writes the measured cut-off back, only while still armed and while the decimator is held. A leftover run from an earlier stream sees the new deadline and reschedules, so it cannot cut a new settle short.
+- **Disarm:** at decimator teardown, a non-waiting cancel. The work takes `c3_lock`, which teardown already holds, so a waiting cancel could deadlock.
+- **Unbind:** a devm action cancels synchronously, unwinding after the component and before power and the regmap.
+- **Observable:** `capture_state` adds `hpf_armed`, `hpf_found`, `hpf_settles` and `hpf_errors`.
+- **The runner** waits out the settle, then checks:
+  - the HPF is on;
+  - the cut-off came back as found;
+  - the settle ran once, with no errors.
+- **The verifier:**
+  - the builder row is updated;
+  - two new HPF fences cover the value, the arm/disarm order and the work;
+  - a third covers the cancel discipline and the devm order.
+- **Copies corrected:** the 150 Hz statements in sections 7 and 12.
+- **Unchanged:** the card, `pcm-capture`, the DT and the pin (146). No new baseline reads.
