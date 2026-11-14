@@ -164,3 +164,24 @@ remoteproc remoteproc1: Boot failed: -22
 - **What the answer decides:**
   - If the modem ids are supported, the next step is a PAS description of the modem (TrustZone decrypts, authenticates and starts it, as for the ADSP).
   - If none is, the SSD route of section 9.
+
+## 11. The PAS probe's answer (r204, 2026-11-14): no PAS for the modem
+
+`tools/msm8974-pas-probe.sh` (`qcom_pas_probe`, loaded once and unloaded; nothing started):
+
+```
+qcom_pas_probe: PAS id  1: SUPPORTED      (ADSP -- the positive control)
+qcom_pas_probe: PAS id  6: SUPPORTED      (WCNSS)
+qcom_pas_probe: PAS id  7: SUPPORTED      (secure app)
+qcom_pas_probe: PAS id  9: SUPPORTED      (video)
+qcom_pas_probe: 4 of 16 ids supported (supported: 1 6 7 9)
+```
+
+- **Ids 0, 4 and 5 (the modem candidates) and every other id: not supported.**
+- **So the modem cannot be booted through PAS on this TrustZone.** It has to take the MBA (MSA) path, as Windows' `PIL_MSA_LOAD_STATE_MBA` says, with the SSD decryption done through TrustZone first.
+- **For later:** WCNSS (6) and video (9) are PAS-supported. That fits Pronto's `auth_and_reset` succeeding before its ready timeout, and it matters for hardware video decoding.
+
+**Next: map the SSD route.**
+- **The interface:** TrustZone's SSD service. Qualcomm's open-source LK (`platform/msm_shared/scm.c`) carries the calls: protect the keystore, parse the metadata, decrypt image fragments. Windows' `qcpil8974.sys` can confirm the ids (analysis only).
+- **The keystore:** where it comes from. The 16 KB `SSD` partition, backed up in M0, is the candidate, which is what LK loads.
+- **The Linux shape:** decrypt the MBA and each modem segment in place before the normal MSA path. That means new `qcom_scm` SSD calls and a decrypt step in the MSS loader; physically contiguous buffers are handed to TrustZone.
