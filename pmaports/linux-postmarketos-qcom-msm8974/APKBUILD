@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=206
+pkgrel=207
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -44,6 +44,7 @@ source="
 	0006-remoteproc-qcom-pas-support-probe.patch
 	0007-firmware-qcom-scm-ssd-decrypt-calls-and-probe.patch
 	0008-remoteproc-qcom-q6v5-mss-decrypt-an-ssd-mba.patch
+	0009-remoteproc-qcom-q6v5-mss-decrypt-ssd-modem-segments.patch
 "
 builddir="$srcdir/linux-${_tag#v}"
 
@@ -98,4 +99,5 @@ db5f2718bb05f659fb9d356ba14dc7be6040b301c459fcb255431c57cb10faa8720b8fb818ed4b2d
 ce2840e21264ab7efe7768b29a88560f01adf7094d41c8affb2654abee32c3c42b2722675c827cd1f254b68d4725bbbea7e60ffcf5b7b98e18d6c6b9bd8d3900  0006-remoteproc-qcom-pas-support-probe.patch
 83d66a0d7ae91968d8f57f96b42443ca35c0ed2ecbfde912e6522824963b530e8b653ef54c3aafe8fc0cb0c5714378b3f26419b006951331dc299d12846b4d69  0007-firmware-qcom-scm-ssd-decrypt-calls-and-probe.patch
 4840c0ad9adbdc5bcb2334b09b0619d7f38c2083c56f2df7a4f60a4cd5d161e86bba0fcbc983a1451bc118a8ec1426000fe03db53f08e1638dc43a2ad30f670e  0008-remoteproc-qcom-q6v5-mss-decrypt-an-ssd-mba.patch
+54f3360b9e8c8b0bfb1803bbab7e2854eb266f4e40ead7b0b1913c159076ab413826e44837cb514bd5ba0feb0d29de51cc3b04d15c0e123e64566fd89979f82a  0009-remoteproc-qcom-q6v5-mss-decrypt-ssd-modem-segments.patch
 "

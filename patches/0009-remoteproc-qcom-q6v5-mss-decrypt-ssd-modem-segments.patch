@@ -1,0 +1,317 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] remoteproc: qcom_q6v5_mss: have TrustZone decrypt SSD-encrypted modem segments
+
+The Lumia 1520's Windows Phone modem image is SSD-encrypted like its MBA:
+the hash segment ends in SSD metadata and every code segment is
+ciphertext. With the MBA decrypted (patch 0008) the MBA boots and accepts
+the image's headers, then rejects the first segment it hashes.
+
+qcom_scm gains qcom_scm_ssd_decrypt_elf_seg_frag() (SSD service, cmd 0x08):
+{context, segment index, last segment, last fragment, length, address} --
+not in Qualcomm's public sources; the layout is the one the phone's
+Windows loader sends.
+
+On MSM8974, when the hash segment carries SSD metadata, the MSS loader
+does what that loader does: parse the metadata once over the whole hash
+segment (retrying only while TrustZone is busy), then have TrustZone
+decrypt every segment that has data, in place in the modem region, after
+it is copied and before RMB_PMI_CODE_LENGTH grows over it, numbered by its
+position among the non-hash PT_LOAD segments, the last one flagged. On a
+failure the context is released with an empty last fragment. Images
+without SSD metadata load exactly as before.
+
+docs/msm8974-modem-mapping.md, section 16 (step E3).
+
+---
+
+diff -uNr orig/drivers/firmware/qcom/qcom_scm.c new/drivers/firmware/qcom/qcom_scm.c
+--- a/drivers/firmware/qcom/qcom_scm.c	2026-11-15 13:01:07.079738487 -0500
++++ b/drivers/firmware/qcom/qcom_scm.c	2026-11-15 13:01:07.214414520 -0500
+@@ -896,6 +896,53 @@
+ }
+ EXPORT_SYMBOL_GPL(qcom_scm_ssd_decrypt_img_frag);
+ 
++/**
++ * qcom_scm_ssd_decrypt_elf_seg_frag() - decrypt one segment of an SSD ELF image
++ * @ctx_id:	the context qcom_scm_ssd_parse_md() returned for the image's
++ *		metadata (for an ELF image, the whole hash segment)
++ * @seg_num:	the segment's index: its position among the image's PT_LOAD
++ *		segments other than the hash segment, counting from 0
++ * @last_seg:	1 for the last segment that is decrypted, else 0
++ * @last_frag:	1 for the segment's last (or only) fragment
++ * @frag_phys:	physical address of the ciphertext, decrypted in place
++ * @frag_len:	its length in bytes
++ * @status:	TrustZone's answer, 0 on success
++ *
++ * Not in Qualcomm's public sources. The request layout -- {context, segment,
++ * last segment, last fragment, length, address} -- is the one the Lumia
++ * 1520's Windows Phone loader sends for its ELF images.
++ *
++ * Return: 0 when TrustZone answered (see @status), negative on a call error.
++ */
++int qcom_scm_ssd_decrypt_elf_seg_frag(u32 ctx_id, u32 seg_num, u32 last_seg,
++				      u32 last_frag, phys_addr_t frag_phys,
++				      u32 frag_len, u32 *status)
++{
++	struct qcom_scm_desc desc = {
++		.svc = QCOM_SCM_SVC_SSD,
++		.cmd = QCOM_SCM_SSD_DECRYPT_ELF_SEG_FRAG,
++		.arginfo = QCOM_SCM_ARGS(6, QCOM_SCM_VAL, QCOM_SCM_VAL,
++					 QCOM_SCM_VAL, QCOM_SCM_VAL,
++					 QCOM_SCM_VAL, QCOM_SCM_RW),
++		.args[0] = ctx_id,
++		.args[1] = seg_num,
++		.args[2] = last_seg,
++		.args[3] = last_frag,
++		.args[4] = frag_len,
++		.args[5] = frag_phys,
++		.owner = ARM_SMCCC_OWNER_SIP,
++	};
++	struct qcom_scm_res res;
++	int ret;
++
++	ret = qcom_scm_ssd_call(&desc, &res);
++	if (ret)
++		return ret;
++	*status = res.result[0];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_ssd_decrypt_elf_seg_frag);
++
+ static int __qcom_scm_pas_mss_reset(struct device *dev, bool reset)
+ {
+ 	struct qcom_scm_desc desc = {
+diff -uNr orig/drivers/firmware/qcom/qcom_scm.h new/drivers/firmware/qcom/qcom_scm.h
+--- a/drivers/firmware/qcom/qcom_scm.h	2026-11-15 13:01:07.101242583 -0500
++++ b/drivers/firmware/qcom/qcom_scm.h	2026-11-15 13:01:07.213033266 -0500
+@@ -116,6 +116,7 @@
+ #define QCOM_SCM_SVC_SSD		0x07	/* Secure Software Download */
+ #define QCOM_SCM_SSD_PARSE_MD		0x06
+ #define QCOM_SCM_SSD_DECRYPT_IMG_FRAG	0x07
++#define QCOM_SCM_SSD_DECRYPT_ELF_SEG_FRAG	0x08
+ 
+ #define QCOM_SCM_SVC_MP				0x0c
+ #define QCOM_SCM_MP_RESTORE_SEC_CFG		0x02
+diff -uNr orig/drivers/remoteproc/qcom_q6v5_mss.c new/drivers/remoteproc/qcom_q6v5_mss.c
+--- a/drivers/remoteproc/qcom_q6v5_mss.c	2026-11-15 13:01:07.150506090 -0500
++++ b/drivers/remoteproc/qcom_q6v5_mss.c	2026-11-15 13:01:07.219106453 -0500
+@@ -1210,6 +1210,165 @@
+ 	return true;
+ }
+ 
++/*
++ * The Lumia 1520's Windows Phone modem image is SSD-encrypted too: the hash
++ * segment ends in SSD metadata, and every code segment is ciphertext. The
++ * MBA hashes each segment as RMB_PMI_CODE_LENGTH grows over it, so each one
++ * must be plaintext by then. As Windows' loader does: parse the metadata once
++ * over the whole hash segment (TrustZone finds the XML at its tail; retry
++ * only while TrustZone is busy), then have TrustZone decrypt every segment
++ * that has data, in place in the modem region, numbered by its position among
++ * the non-hash PT_LOAD segments, the last one flagged. On any failure the
++ * context is released with an empty last fragment, again as Windows does.
++ */
++#define SSD_PMD_NOT_ENCRYPTED	1
++#define SSD_PMD_NO_MD		3
++#define SSD_PMD_BUSY		4
++#define SSD_PMD_TRIES		5
++
++struct q6v5_mpss_ssd {
++	void *md;
++	dma_addr_t md_phys;
++	size_t md_len;
++	u32 ctx;
++	int last;	/* the phdr that carries the last-segment flag, or -1 */
++	int done;
++	bool active;
++	bool finished;
++};
++
++static bool q6v5_ssd_seg_wanted(const struct elf32_phdr *phdr)
++{
++	return phdr->p_type == PT_LOAD &&
++	       (phdr->p_flags & QCOM_MDT_TYPE_MASK) != QCOM_MDT_TYPE_HASH &&
++	       phdr->p_vaddr && phdr->p_filesz;
++}
++
++static int q6v5_mpss_ssd_begin(struct q6v5 *qproc, const struct firmware *fw,
++			       struct q6v5_mpss_ssd *ssd)
++{
++	const struct elf32_hdr *ehdr = (const struct elf32_hdr *)fw->data;
++	const struct elf32_phdr *phdrs = (const struct elf32_phdr *)(fw->data + ehdr->e_phoff);
++	u32 status = ~0u, md_end = 0;
++	size_t size, hash_size = 0, k;
++	void *metadata;
++	const u8 *hash;
++	int i, tries, ret;
++
++	for (i = 0; i < ehdr->e_phnum; i++) {
++		if (!hash_size &&
++		    (phdrs[i].p_flags & QCOM_MDT_TYPE_MASK) == QCOM_MDT_TYPE_HASH)
++			hash_size = phdrs[i].p_filesz;
++		if (q6v5_ssd_seg_wanted(&phdrs[i]))
++			ssd->last = i;
++	}
++	if (!hash_size || ssd->last < 0)
++		return 0;
++
++	metadata = qcom_mdt_read_metadata(fw, &size, qproc->hexagon_mdt_image, qproc->dev);
++	if (IS_ERR(metadata))
++		return PTR_ERR(metadata);
++	if (size < hash_size) {
++		kfree(metadata);
++		return -EINVAL;
++	}
++	hash = (const u8 *)metadata + size - hash_size;
++	for (k = 0; k + 5 <= hash_size; k++)
++		if (!memcmp(hash + k, "<?xml", 5))
++			break;
++	if (k + 5 > hash_size) {
++		kfree(metadata);
++		return 0;	/* no SSD metadata: load as before */
++	}
++
++	ssd->md = dma_alloc_coherent(qproc->dev, hash_size, &ssd->md_phys, GFP_KERNEL);
++	if (!ssd->md) {
++		kfree(metadata);
++		return -ENOMEM;
++	}
++	ssd->md_len = hash_size;
++	memcpy(ssd->md, hash, hash_size);
++	kfree(metadata);
++
++	for (tries = 0; tries < SSD_PMD_TRIES; tries++) {
++		ret = qcom_scm_ssd_parse_md(ssd->md_phys, hash_size, &status,
++					    &ssd->ctx, &md_end);
++		if (ret || status != SSD_PMD_BUSY)
++			break;
++		msleep(10);
++	}
++	if (!ret && (status == SSD_PMD_NOT_ENCRYPTED || status == SSD_PMD_NO_MD)) {
++		dev_info(qproc->dev, "SSD MPSS: TrustZone reports no encryption (status %u), loading as is\n",
++			 status);
++		goto free_md;
++	}
++	if (ret || status != SSD_PMD_ENCRYPTED) {
++		dev_err(qproc->dev, "SSD MPSS: metadata not parsed (ret %d, status %u)\n",
++			ret, status);
++		ret = ret ?: -EINVAL;
++		goto free_md;
++	}
++
++	ssd->active = true;
++	dev_info(qproc->dev, "SSD MPSS: metadata parsed (context %u, at +0x%zx of the %zu-byte hash segment)\n",
++		 ssd->ctx, k, hash_size);
++	return 0;
++
++free_md:
++	dma_free_coherent(qproc->dev, ssd->md_len, ssd->md, ssd->md_phys);
++	ssd->md = NULL;
++	return ret;
++}
++
++static int q6v5_mpss_ssd_segment(struct q6v5 *qproc, struct q6v5_mpss_ssd *ssd,
++				 const struct elf32_phdr *phdrs, int i,
++				 phys_addr_t phys)
++{
++	const struct elf32_phdr *phdr = &phdrs[i];
++	u32 status = ~0u;
++	int j, idx = 0, ret;
++
++	if (!ssd->active || !q6v5_ssd_seg_wanted(phdr))
++		return 0;
++	for (j = 0; j < i; j++)
++		if (phdrs[j].p_type == PT_LOAD &&
++		    (phdrs[j].p_flags & QCOM_MDT_TYPE_MASK) != QCOM_MDT_TYPE_HASH)
++			idx++;
++
++	/* the segment's bytes are in DDR before TrustZone reads them */
++	wmb();
++	ret = qcom_scm_ssd_decrypt_elf_seg_frag(ssd->ctx, idx, i == ssd->last, 1,
++						phys, phdr->p_filesz, &status);
++	if (ret || status) {
++		dev_err(qproc->dev, "SSD MPSS: segment %d (index %d, %u bytes at %pa) not decrypted (ret %d, status %u)\n",
++			i, idx, phdr->p_filesz, &phys, ret, status);
++		return ret ?: -EINVAL;
++	}
++	ssd->done++;
++	if (i == ssd->last) {
++		ssd->finished = true;
++		dev_info(qproc->dev, "SSD MPSS: decrypted by TrustZone (%d segments)\n",
++			 ssd->done);
++	}
++	return 0;
++}
++
++static void q6v5_mpss_ssd_end(struct q6v5 *qproc, struct q6v5_mpss_ssd *ssd)
++{
++	u32 status = ~0u;
++	int ret;
++
++	if (ssd->active && !ssd->finished) {
++		ret = qcom_scm_ssd_decrypt_img_frag(ssd->ctx, 1, 0, 0, &status);
++		dev_info(qproc->dev, "SSD MPSS: context %u released after %d segment(s) (ret %d, status %u)\n",
++			 ssd->ctx, ssd->done, ret, status);
++	}
++	if (ssd->md)
++		dma_free_coherent(qproc->dev, ssd->md_len, ssd->md, ssd->md_phys);
++	ssd->md = NULL;
++	ssd->active = false;
++}
++
+ static int q6v5_mba_load(struct q6v5 *qproc)
+ {
+ 	int ret;
+@@ -1495,6 +1654,7 @@
+ 	void *ptr;
+ 	int ret;
+ 	int i;
++	struct q6v5_mpss_ssd ssd = { .last = -1 };
+ 
+ 	fw_name_len = strlen(qproc->hexagon_mdt_image);
+ 	if (fw_name_len <= 4)
+@@ -1517,6 +1677,12 @@
+ 	if (ret)
+ 		goto release_firmware;
+ 
++	if (qproc->version == MSS_MSM8974) {
++		ret = q6v5_mpss_ssd_begin(qproc, fw, &ssd);
++		if (ret)
++			goto release_firmware;
++	}
++
+ 	ehdr = (struct elf32_hdr *)fw->data;
+ 	phdrs = (struct elf32_phdr *)(ehdr + 1);
+ 
+@@ -1637,6 +1803,11 @@
+ 		memunmap(ptr);
+ 		size += phdr->p_memsz;
+ 
++		ret = q6v5_mpss_ssd_segment(qproc, &ssd, phdrs, i,
++					    qproc->mpss_phys + offset);
++		if (ret)
++			goto release_firmware;
++
+ 		code_length = readl(qproc->rmb_base + RMB_PMI_CODE_LENGTH_REG);
+ 		if (!code_length) {
+ 			boot_addr = relocate ? qproc->mpss_phys : min_addr;
+@@ -1672,6 +1843,7 @@
+ 	qcom_pil_info_store("modem", qproc->mpss_phys, qproc->mpss_size);
+ 
+ release_firmware:
++	q6v5_mpss_ssd_end(qproc, &ssd);
+ 	release_firmware(fw);
+ out:
+ 	kfree(fw_name);
+diff -uNr orig/include/linux/firmware/qcom/qcom_scm.h new/include/linux/firmware/qcom/qcom_scm.h
+--- a/include/linux/firmware/qcom/qcom_scm.h	2026-11-15 13:01:07.121396733 -0500
++++ b/include/linux/firmware/qcom/qcom_scm.h	2026-11-15 13:01:07.213729068 -0500
+@@ -84,6 +84,9 @@
+ int qcom_scm_ssd_decrypt_img_frag(u32 ctx_id, u32 last_frag,
+ 				  phys_addr_t frag_phys, u32 frag_len,
+ 				  u32 *status);
++int qcom_scm_ssd_decrypt_elf_seg_frag(u32 ctx_id, u32 seg_num, u32 last_seg,
++				      u32 last_frag, phys_addr_t frag_phys,
++				      u32 frag_len, u32 *status);
+ 
+ int qcom_scm_io_readl(phys_addr_t addr, unsigned int *val);
+ int qcom_scm_io_writel(phys_addr_t addr, unsigned int val);

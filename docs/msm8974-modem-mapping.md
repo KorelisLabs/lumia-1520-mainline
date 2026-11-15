@@ -348,3 +348,31 @@ Windows decrypts every segment before the MBA hashes it. Mainline's `q6v5_mpss_l
 4. **Calls:** a new `qcom_scm_ssd_decrypt_elf_seg_frag()` in `qcom_scm.c` beside the E1 pair, with the same clocks and bandwidth.
 
 **Expected:** the MBA authenticates the plaintext segments, and the driver waits for the modem's start. With no rmtfs running (M4), the modem may then wait or crash over its file systems. That is safe: only the rmtfs daemon writes the `MODEM_FS*` partitions, and recovery is off for the run.
+
+## 17. r207 (pkgrel 207): E3 staged, 2026-11-15
+
+**Patch 0009** builds section 16's design:
+
+- **`qcom_scm_ssd_decrypt_elf_seg_frag()`** (svc 7, cmd 8, six words).
+- **`q6v5_mpss_ssd_begin()`:** runs after the MBA accepts the headers. It copies the hash segment from `qcom_mdt_read_metadata()` into a DMA buffer and parses it once over its full length, retrying while TrustZone is busy.
+- **`q6v5_mpss_ssd_segment()`:** for each segment with data, after the copy and before `RMB_PMI_CODE_LENGTH`, it decrypts the segment in place at `mpss_phys + offset`. The index and last flag are Windows', and a `wmb()` goes before the call.
+- **`q6v5_mpss_ssd_end()`:** on every exit it releases an unfinished context with an empty 0x1C07 and frees the buffer.
+
+An MDT whose hash segment carries no SSD metadata, or that TrustZone reports as unencrypted, loads as before.
+
+**Checks:** generated on top of 0007 and 0008, and 0006-0009 apply in order on the package's sources. `qcom_scm.c` and the driver compile W=1 clean.
+
+**New log lines:**
+- `SSD MPSS: metadata parsed (context N, at +0x1cc8 of the 9132-byte hash segment)`
+- `SSD MPSS: decrypted by TrustZone (17 segments)`
+- on a failure: which segment, TrustZone's status, and the release of the context.
+
+**The run** (same runner):
+
+| outcome | what it means |
+|---|---|
+| **E3 passes** | no "MPSS authentication failed", and the remoteproc reaches `running` |
+| fails at the first segment | TrustZone could not reach the modem region, or the index or flag conventions are off. The status says which |
+| fails at the final wait | the MBA rejected the image as a whole |
+
+Without rmtfs, a running modem may then crash over its file systems. Recovery is off, and nothing writes `MODEM_FS*`.
