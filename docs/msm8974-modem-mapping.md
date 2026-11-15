@@ -468,3 +468,8 @@ These are in the phone's configured repositories (postmarketOS edge / Alpine edg
 **Passes if:** the modem opens and reads `/boot/modem_fs1`, `fs2`, `fsc` and `fsg`, stays running, and every partition hash is unchanged.
 
 **Then:** M5, QMI without a SIM over the services the modem publishes. Write-enabling rmtfs is a separate decision for later, made only once the EFS traffic is understood. The M0 backup is the fallback.
+
+**Prepared (2026-11-15):**
+- **Packages:** `qrtr-libs` 1.2-r1, `qrtr` 1.2-r1 and `rmtfs` 1.3-r0, fetched on the PC from Alpine edge `community` (sizes match the index). Installed with `apk add --no-network` and their signatures verified against the phone's keys. No service is installed or enabled (`rmtfs-systemd` not pulled in).
+- **QRTR check:** `qrtr-lookup` already lists the ADSP's 12 services on node 5.
+- **The runner:** `tools/msm8974-rmtfs-start.sh [watch-seconds]`. Exit codes: 0 pass, 1 not, 2 refused, **3 a partition changed**.
