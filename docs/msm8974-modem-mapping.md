@@ -291,3 +291,60 @@ remoteproc remoteproc1: Boot failed: -19
 - **Afterwards:** the driver reclaimed, and the modem went back to offline. There was no reset and no new kernel warning, and recovery was restored.
 
 **E3, next:** decrypt the modem segments before they are copied, with TrustZone's ELF-segment call 0x1C08 (section 12). Its arguments are not public. Map them from the callers in Windows' `qcpil8974.sys` before building anything. The metadata to parse first is at the tail of hash segment b01 (section 9).
+
+## 16. E3 mapped (2026-11-15): TrustZone call 0x1C08 and how Windows decrypts the modem
+
+From the disassembly of Windows' `qcpil8974.sys` (analysis only; nothing from it is committed). The addresses are the driver's virtual addresses, image base 0x400000.
+
+### The call chain
+
+| function | role |
+|---|---|
+| 0x4041c4 | modem load state: loads the image (0x40888c, 0x408fec), **then** the SSD pass (0x406198), then the MBA steps |
+| 0x403ea4 | MBA load state: the same order, flat image |
+| 0x406198 | SSD pass: finds the metadata (0x4060d8), builds the segment list (0x405f88), runs 0x407a30 |
+| 0x407a30 | SSD driver logic: SCM clocks on, parse metadata (0x4077b4), decrypt (0x4073f4) per list entry, clocks off |
+| 0x4073f4 | fills the decrypt request: 0x1C07 for a flat image, 0x1C08 for ELF (image flag at +8 == 1) |
+| 0x4063c8 | SCM command-buffer header per call id |
+
+### Parse metadata (0x1C06)
+
+- **Flat MBA:** metadata = {first segment's address, its size}. The XML is at the start.
+- **ELF modem:** metadata = {the **hash segment's** `p_paddr`, its `p_filesz`}: the whole hash segment, with the XML at its tail (here +0x1cc8 of 0x23ac, 1764 bytes).
+- **One call with the full length, no growing loop:** TrustZone finds the metadata within the buffer itself. The call is retried only while the status is 4 (busy), up to 5 times.
+- **Status 0** = encrypted: go on. **1** (not encrypted) and **3** (no metadata) = skip decryption and load as is. Anything else is an error.
+
+### Decrypt ELF segment (0x1C08)
+
+The command header is {len 0x38, request at 0x10, response at 0x28}: 6 request words, then the legacy 3-word response header and one status word. The request:
+
+| word | value | source |
+|---|---|---|
+| 0 | metadata context id | from parse metadata |
+| 1 | segment index | list node |
+| 2 | last segment: 1 on the final list entry, else 0 | 0x407a30 |
+| 3 | 1 | preset by the header builder, never overwritten (last fragment: each segment goes as one fragment) |
+| 4 | length = `p_filesz` | list node |
+| 5 | address = `p_paddr`, the segment **in place** in the modem region | list node |
+
+- **Response:** status 0 = success.
+- **Same pattern for 0x1C07:** the header builder presets `last_frag` = 1 there too, and Windows never sends anything else, as E1/E2 did.
+
+**The segment list** (0x405f88) walks the program headers:
+- **Index:** every `PT_LOAD` that is not the hash segment (Qualcomm type 2 in `p_flags` bits 24-26) advances it from 0.
+- **List entry:** only segments with a nonzero `p_vaddr` and `p_filesz` get one.
+- **For this modem:** the index is phdr − 2. Entries are 0-5, 8-9, 11-20 and 23-25; phdr 27 (index 25) carries the last flag.
+- **Skipped:** the empty phdrs 6, 7, 9, 12 and the bss-only 23, 24, 28.
+
+**On a failure,** 0x407a30 sends 0x1C07 with length 0, address 0 and last 1 on the same context, presumably to release it.
+
+### What this means for Linux (E3 design)
+
+Windows decrypts every segment before the MBA hashes it. Mainline's `q6v5_mpss_load()` streams instead: after each segment it raises `RMB_PMI_CODE_LENGTH`, and the MBA hashes as it goes (E2's -19 came on the first segment). So E3 slots into that loop:
+
+1. **Before the loop:** if the hash segment in `modem.mdt` carries SSD metadata, copy it into a DMA buffer (E1's buffer type) and call parse metadata once with its full length (retry on busy) to get the context. Keep the buffer until the last segment is done.
+2. **For each segment with data, after it is copied into the modem region and before the code length is raised:** 0x1C08 {ctx, Windows index, last, 1, `p_filesz`, the segment's physical address}, in place, exactly as Windows does.
+3. **On any failure:** release the context (0x1C07 with length 0, address 0, last 1) and fail the load.
+4. **Calls:** a new `qcom_scm_ssd_decrypt_elf_seg_frag()` in `qcom_scm.c` beside the E1 pair, with the same clocks and bandwidth.
+
+**Expected:** the MBA authenticates the plaintext segments, and the driver waits for the modem's start. With no rmtfs running (M4), the modem may then wait or crash over its file systems. That is safe: only the rmtfs daemon writes the `MODEM_FS*` partitions, and recovery is off for the run.
