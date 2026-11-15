@@ -407,3 +407,64 @@ remoteproc remoteproc1: stopped remote processor fc880000.remoteproc        (30 
 **Next:**
 - **M4, rmtfs:** serve `MODEM_FS1/FS2/FSC/FSG` to the modem. Read-only first, so EFS can be read while the partitions stay byte-identical.
 - **M5:** the QMI services over QRTR without a SIM: device ids, firmware version, operating mode, and the SIM-absent state.
+
+## 19. M4 mapped (2026-11-15): rmtfs on the WP partitions, read-only
+
+### What Windows does
+
+WP's `qcremotefs8974.sys` (MainOS `system32\DRIVERS`, analysis only) registers the QMI remote-storage service, `qmi_rmtfs_register_service`. It serves exactly four paths and finds their partitions by walking the GPT (`EFI PART`, `\Device\Harddisk0\Partition0`, `PartitionNum`):
+
+```
+/boot/modem_fs1   /boot/modem_fs2   /boot/modem_fsc   /boot/modem_fsg
+```
+
+The partitions carry Qualcomm's standard type GUIDs, so their roles are certain:
+
+| WP label | device | type GUID | Qualcomm role |
+|---|---|---|---|
+| `MODEM_FS1` | mmcblk0p3, 1.5 MiB | `ebbeadaf-22c9-e33b-8f5d-0e81686a68cb` | modemst1 |
+| `MODEM_FS2` | mmcblk0p4, 1.5 MiB | `0a288b1f-22c9-e33b-8f5d-0e81686a68cb` | modemst2 |
+| `MODEM_FSC` | mmcblk0p5, 16 KiB | `57b90a16-22c9-e33b-8f5d-0e81686a68cb` | fsc |
+| `MODEM_FSG` | mmcblk0p2, 1.5 MiB | `638ff8e2-22c9-e33b-8f5d-0e81686a68cb` | fsg |
+
+The driver also runs **RFSA**, a file service for the modem and ADSP rooted at `C:\Program Files\Qualcomm\RFSA\{MPSS,aDSP}\`. That directory is not on MainOS: it lived on the old Data partition, which is now postmarketOS's root, so the modem's runtime files there are gone. rmtfs does not serve RFSA. E3's modem ran 30 s without it or rmtfs. M4 will show whether the modem asks for it.
+
+### The Linux side
+
+**Kernel, already in place:**
+- `CONFIG_QCOM_RMTFS_MEM=y`: `rmtfs@fd80000` (0x180000, client id 1, matching WP's `RFS0`) is `/dev/qcom_rmtfs_mem1`.
+- `CONFIG_QRTR=y` / `QRTR_SMD=y`, with the in-kernel name service. E3 brought up the modem's `IPCRTR` channel.
+
+**Userspace (not installed; the phone has no internet):**
+- `rmtfs` 1.3: 12 235 bytes, needs `libqrtr` + `libudev`. `libudev` is present.
+- `qrtr-libs` 1.2: 6 951 bytes.
+- `qrtr` 1.2: 7 242 bytes, for `qrtr-lookup`, which lists the modem's QMI services (M5).
+
+These are in the phone's configured repositories (postmarketOS edge / Alpine edge).
+
+**rmtfs 1.3** (upstream source, `linux-msm/rmtfs`):
+
+- **Path table:** the same four paths, to partlabels `modemst1`, `modemst2`, `fsc` and `fsg`. An unknown path is rejected with an error to the modem.
+- **Partition lookup:** `-P -o <dir>` opens `<dir>/<partlabel>`, case-sensitively, with no fallback. So the WP labels need no renaming: a directory of four symlinks maps them.
+  ```
+  /run/rmtfs-parts/modemst1 -> /dev/disk/by-partlabel/MODEM_FS1
+  /run/rmtfs-parts/modemst2 -> /dev/disk/by-partlabel/MODEM_FS2
+  /run/rmtfs-parts/fsc      -> /dev/disk/by-partlabel/MODEM_FSC
+  /run/rmtfs-parts/fsg      -> /dev/disk/by-partlabel/MODEM_FSG
+  ```
+- **`-r` read-only:** never opens a partition for writing. Each open reads the partition into an in-memory shadow, the modem's writes go into the shadow so it reads back what it wrote, and the shadow is discarded on close. The disk is never written.
+- **Startup:** writes nothing until the modem asks. It publishes QMI service 14 (version 1, instance 0) over QRTR.
+- **Not used:** `-s` would let rmtfs start and stop the remoteproc itself. The runner keeps doing that, as in E3.
+
+### The M4 run (proposed)
+
+`tools/msm8974-rmtfs-start.sh`, one run, with recovery off as in E3:
+
+1. **Preflight:** the four partitions and `DPP`/`SSD` are hashed on the phone, and the modem must be offline.
+2. **Start:** make the symlink directory and start `rmtfs -r -P -o /run/rmtfs-parts -v` in the background, logging to a file. Wait for its QMI service to be published, then start the modem.
+3. **Watch:** N seconds. Record which paths the modem opens, the reads and shadowed writes per file, the services `qrtr-lookup` lists, and any RFSA request.
+4. **Stop:** stop the modem, then rmtfs. Hash the partitions again; they must be identical.
+
+**Passes if:** the modem opens and reads `/boot/modem_fs1`, `fs2`, `fsc` and `fsg`, stays running, and every partition hash is unchanged.
+
+**Then:** M5, QMI without a SIM over the services the modem publishes. Write-enabling rmtfs is a separate decision for later, made only once the EFS traffic is understood. The M0 backup is the fallback.
