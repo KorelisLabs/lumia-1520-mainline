@@ -1,0 +1,156 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] remoteproc: qcom_q6v5_mss: have TrustZone decrypt an SSD-encrypted MBA
+
+The Lumia 1520's Windows Phone MBA is encrypted with Qualcomm SSD: XML
+metadata, then AES-128-CBC ciphertext only TrustZone can decrypt. Loaded
+as it is, the Hexagon boot ROM rejects it ("PBL returned unexpected
+status"), and this TrustZone offers no PAS for the modem.
+
+On MSM8974, when the MBA starts with SSD metadata, decrypt it with the
+SSD SCM calls (patch 0007) in a DMA buffer -- parse the metadata with a
+growing length, then decrypt the payload in place -- check that the
+plaintext is a boot-ROM image (the 80-byte PBL header: codeword, magic,
+image at offset 80, filling the payload), and only then copy it to the
+start of the MBA region. The buffer is zeroed before it is freed.
+Unencrypted MBAs load exactly as before.
+
+docs/msm8974-modem-mapping.md, sections 12-14 (step E2). The modem image
+itself is still SSD-encrypted; this only gets the MBA running.
+
+---
+
+diff -uNr orig/drivers/remoteproc/qcom_q6v5_mss.c new/drivers/remoteproc/qcom_q6v5_mss.c
+--- a/drivers/remoteproc/qcom_q6v5_mss.c	2026-11-15 07:33:40.370940106 -0500
++++ b/drivers/remoteproc/qcom_q6v5_mss.c	2026-11-15 07:33:40.421335003 -0500
+@@ -500,10 +500,102 @@
+ 
+ #define MSM8974_B00_OFFSET 0x1000
+ 
++/*
++ * The Lumia 1520's Windows Phone MBA is encrypted with Qualcomm SSD ("Secure
++ * Software Download"): XML metadata, then AES-128-CBC ciphertext whose key
++ * only TrustZone can unwrap. The Hexagon boot ROM cannot run it as shipped
++ * ("PBL returned unexpected status"), and this TrustZone has no PAS for the
++ * modem. So have TrustZone decrypt it, the way Qualcomm's LK does: in a DMA
++ * buffer, parse the metadata with a growing length while TrustZone reports
++ * "parsing incomplete", then decrypt the payload in place as one (last)
++ * fragment. The plaintext must be a boot-ROM image -- the 80-byte PBL header
++ * (codeword, magic, image at offset 80, code + signature + certificates
++ * filling the payload) -- or nothing is copied. Only then does it go to the
++ * start of the MBA region, where the boot ROM is pointed at it as usual.
++ * The buffer is zeroed before it is freed.
++ */
++#define SSD_MD_FIRST		128	/* LK's SSD_HEADER_MIN_SIZE */
++#define SSD_MD_MAX		16384
++#define SSD_PMD_ENCRYPTED	0
++#define SSD_PMD_INCOMPLETE	6
++#define PBL_CODEWORD		0x844bdcd1
++#define PBL_MAGIC		0x73d71034
++#define PBL_HDR_SIZE		80
++
++static bool q6v5_mba_is_ssd(const struct firmware *fw)
++{
++	return fw->size > SSD_MD_FIRST && !memcmp(fw->data, "<?xml", 5);
++}
++
++static int q6v5_mba_ssd_load(struct q6v5 *qproc, const struct firmware *fw,
++			     void *mba_region)
++{
++	u32 status = ~0u, ctx = 0, md_end = 0, dstatus = ~0u, md_len;
++	u32 off, len, hdr[8];
++	dma_addr_t phys;
++	void *buf;
++	int ret;
++
++	buf = dma_alloc_coherent(qproc->dev, fw->size, &phys, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++	memcpy(buf, fw->data, fw->size);
++
++	for (md_len = SSD_MD_FIRST; ; md_len *= 2) {
++		md_len = min_t(size_t, md_len, fw->size);
++		ret = qcom_scm_ssd_parse_md(phys, md_len, &status, &ctx, &md_end);
++		if (ret || status != SSD_PMD_INCOMPLETE || md_len >= fw->size ||
++		    md_len >= SSD_MD_MAX)
++			break;
++	}
++	if (ret || status != SSD_PMD_ENCRYPTED) {
++		dev_err(qproc->dev, "SSD MBA: metadata not parsed (ret %d, status %u)\n",
++			ret, status);
++		ret = ret ?: -EINVAL;
++		goto out;
++	}
++	if (md_end <= phys || md_end >= phys + fw->size) {
++		dev_err(qproc->dev, "SSD MBA: metadata end 0x%08x outside the image\n",
++			md_end);
++		ret = -ERANGE;
++		goto out;
++	}
++	off = md_end - phys;
++	len = fw->size - off;
++
++	ret = qcom_scm_ssd_decrypt_img_frag(ctx, 1, md_end, len, &dstatus);
++	if (ret || dstatus) {
++		dev_err(qproc->dev, "SSD MBA: not decrypted (ret %d, status %u)\n",
++			ret, dstatus);
++		ret = ret ?: -EINVAL;
++		goto out;
++	}
++
++	/* codeword, magic, id, 2 reserved, image offset, dest, image size */
++	memcpy(hdr, buf + off, sizeof(hdr));
++	if (len < PBL_HDR_SIZE || hdr[0] != PBL_CODEWORD || hdr[1] != PBL_MAGIC ||
++	    hdr[5] != PBL_HDR_SIZE || hdr[7] > len - PBL_HDR_SIZE) {
++		dev_err(qproc->dev, "SSD MBA: decrypted, but not a boot-ROM image (0x%08x 0x%08x, offset 0x%x, size 0x%x of 0x%x)\n",
++			hdr[0], hdr[1], hdr[5], hdr[7], len);
++		ret = -EINVAL;
++		goto out;
++	}
++
++	memcpy(mba_region, buf + off, len);
++	dev_info(qproc->dev, "SSD MBA: decrypted by TrustZone (metadata %u bytes, image %u bytes)\n",
++		 off, len);
++	ret = 0;
++out:
++	memzero_explicit(buf, fw->size);
++	dma_free_coherent(qproc->dev, fw->size, buf, phys);
++	return ret;
++}
++
+ static int q6v5_load(struct rproc *rproc, const struct firmware *fw)
+ {
+ 	struct q6v5 *qproc = rproc->priv;
+ 	void *mba_region;
++	int ret = 0;
+ 
+ 	/* MBA is restricted to a maximum size of 1M */
+ 	if (fw->size > qproc->mba_size || fw->size > SZ_1M) {
+@@ -518,18 +610,21 @@
+ 		return -EBUSY;
+ 	}
+ 
+-	if ((qproc->version == MSS_MSM8974 ||
+-	     qproc->version == MSS_MSM8226 ||
+-	     qproc->version == MSS_MSM8926) &&
+-	    fw->size > MSM8974_B00_OFFSET &&
+-	    !memcmp(fw->data, ELFMAG, SELFMAG))
++	if (qproc->version == MSS_MSM8974 && q6v5_mba_is_ssd(fw))
++		ret = q6v5_mba_ssd_load(qproc, fw, mba_region);
++	else if ((qproc->version == MSS_MSM8974 ||
++		  qproc->version == MSS_MSM8226 ||
++		  qproc->version == MSS_MSM8926) &&
++		 fw->size > MSM8974_B00_OFFSET &&
++		 !memcmp(fw->data, ELFMAG, SELFMAG))
+ 		memcpy(mba_region, fw->data + MSM8974_B00_OFFSET, fw->size - MSM8974_B00_OFFSET);
+ 	else
+ 		memcpy(mba_region, fw->data, fw->size);
+-	q6v5_debug_policy_load(qproc, mba_region);
++	if (!ret)
++		q6v5_debug_policy_load(qproc, mba_region);
+ 	memunmap(mba_region);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int q6v5_reset_assert(struct q6v5 *qproc)

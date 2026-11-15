@@ -249,5 +249,25 @@ The plaintext is a genuine image:
 
 **So the SSD route works:** this TrustZone parses and decrypts Nokia's images on Linux's behalf, using the key it already holds, and the decrypted MBA is in the boot ROM's own format.
 
-**E2, next:** in `qcom_q6v5_mss`, recognise an SSD MBA (`<?xml` at its start), have TrustZone decrypt it in the MBA region (parse at `mba_phys`, decrypt at `md_end`), move the plaintext down to `mba_phys`, then boot it.
+**E2, next:** in `qcom_q6v5_mss`, recognise an SSD MBA (`<?xml` at its start), have TrustZone decrypt it in the MBA region (parse at `mba_phys`, decrypt at `md_end`), move the plaintext down to `mba_phys`, then boot it. (As staged in r206, it decrypts in a DMA buffer instead: section 14.)
 - **Expected:** "MBA booted …, loading mpss". The encrypted modem segments will then fail authentication, which is E3's job (0x1C08).
+
+## 14. r206 (pkgrel 206): E2 staged, 2026-11-15
+
+Patch 0008 changes `q6v5_load()` in `qcom_q6v5_mss`. On MSM8974, an MBA that starts with `<?xml` is SSD-encrypted and goes through `q6v5_mba_ssd_load()`; any other MBA loads exactly as before.
+
+It decrypts in a DMA buffer, not in the MBA region as section 13 first planned. That is the path E1 proved: the same buffer type, the same growing `parse_md` and the same single-fragment decrypt. It avoids handing TrustZone a no-map carveout it has never been shown.
+
+Before anything goes to the MBA region, the plaintext must be a boot-ROM image:
+
+- codeword `0x844BDCD1` and magic `0x73D71034`;
+- the image at offset 80;
+- its size within the payload.
+
+Otherwise the load fails with an error and nothing is copied. If it passes, the plaintext is copied to the start of the region, and the buffer is zeroed and freed either way. On success the log line is `SSD MBA: decrypted by TrustZone (metadata N bytes, image N bytes)`.
+
+The run uses `tools/msm8974-modem-start.sh`, as M3 did: recovery off, one start, stop. Expected results:
+
+- **E2 passes** if the log shows `MBA booted without debug policy, loading mpss`.
+- **What follows then:** the modem image is still encrypted (E3), so the MBA should reject it ("MPSS header authentication failed" or "MPSS authentication failed"), the driver reclaims, and the modem stays offline.
+- **Worst case:** a phone reset.
