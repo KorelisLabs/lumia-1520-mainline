@@ -333,7 +333,7 @@ The command header is {len 0x38, request at 0x10, response at 0x28}: 6 request w
 **The segment list** (0x405f88) walks the program headers:
 - **Index:** every `PT_LOAD` that is not the hash segment (Qualcomm type 2 in `p_flags` bits 24-26) advances it from 0.
 - **List entry:** only segments with a nonzero `p_vaddr` and `p_filesz` get one.
-- **For this modem:** the index is phdr − 2. Entries are 0-5, 8-9, 11-20 and 23-25; phdr 27 (index 25) carries the last flag.
+- **For this modem:** the index is phdr − 2. Entries are 0-3, 6, 8-9, 11-20 and 23-25 (20 segments); phdr 27 (index 25) carries the last flag.
 - **Skipped:** the empty phdrs 6, 7, 9, 12 and the bss-only 23, 24, 28.
 
 **On a failure,** 0x407a30 sends 0x1C07 with length 0, address 0 and last 1 on the same context, presumably to release it.
@@ -364,7 +364,7 @@ An MDT whose hash segment carries no SSD metadata, or that TrustZone reports as 
 
 **New log lines:**
 - `SSD MPSS: metadata parsed (context N, at +0x1cc8 of the 9132-byte hash segment)`
-- `SSD MPSS: decrypted by TrustZone (17 segments)`
+- `SSD MPSS: decrypted by TrustZone (20 segments)`
 - on a failure: which segment, TrustZone's status, and the release of the context.
 
 **The run** (same runner):
@@ -376,3 +376,34 @@ An MDT whose hash segment carries no SSD metadata, or that TrustZone reports as 
 | fails at the final wait | the MBA rejected the image as a whole |
 
 Without rmtfs, a running modem may then crash over its file systems. Recovery is off, and nothing writes `MODEM_FS*`.
+
+## 18. E3 result (r207, 2026-11-15): the modem boots on Linux
+
+`tools/msm8974-modem-start.sh 30` ran once on r207, with recovery off and no rmtfs:
+
+```
+remoteproc remoteproc1: Booting fw image mba.b00, size 238164
+qcom-q6v5-mss fc880000.remoteproc: SSD MBA: decrypted by TrustZone (metadata 1764 bytes, image 236400 bytes)
+qcom-q6v5-mss fc880000.remoteproc: MBA booted without debug policy, loading mpss
+qcom-q6v5-mss fc880000.remoteproc: SSD MPSS: metadata parsed (context 1, at +0x1cc8 of the 9132-byte hash segment)
+qcom-q6v5-mss fc880000.remoteproc: SSD MPSS: decrypted by TrustZone (20 segments)
+remoteproc remoteproc1: remote processor fc880000.remoteproc is now up
+remoteproc remoteproc1: stopped remote processor fc880000.remoteproc        (30 s later, by the runner)
+```
+
+- **Decrypt:** TrustZone found the metadata exactly where section 16 put it, and decrypted all 20 segments in place in 1.6 s.
+- **Start:** the MBA authenticated the plaintext and started the modem.
+- **Running:** it stayed `running` for the whole 30 s watch. There was no fatal error, watchdog or crash, even without rmtfs.
+- **New SMD channels on `remoteproc1`:**
+  - `IPCRTR`: QRTR, the transport QMI services run over (M5);
+  - `SSM_RTR_MODEM_APPS`.
+- **Stop:** clean, back to offline. Recovery was restored, and there were no new kernel warnings.
+- **The partitions are untouched:** `MODEM_FS1/FS2/FSC/FSG`, `DPP` and `SSD` still hash identical to the M0 backup, read back after the run.
+
+**Correction to sections 16-17:** Windows' list for this modem has 20 entries (indices 0-3, 6, 8-9, 11-20, 23-25), not 17. The driver follows the rule, not the count.
+
+**The modem route is open:** the MBA and modem decrypt and boot on mainline, on the stock Windows Phone firmware.
+
+**Next:**
+- **M4, rmtfs:** serve `MODEM_FS1/FS2/FSC/FSG` to the modem. Read-only first, so EFS can be read while the partitions stay byte-identical.
+- **M5:** the QMI services over QRTR without a SIM: device ids, firmware version, operating mode, and the SIM-absent state.
