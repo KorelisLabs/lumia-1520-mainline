@@ -473,3 +473,33 @@ These are in the phone's configured repositories (postmarketOS edge / Alpine edg
 - **Packages:** `qrtr-libs` 1.2-r1, `qrtr` 1.2-r1 and `rmtfs` 1.3-r0, fetched on the PC from Alpine edge `community` (sizes match the index). Installed with `apk add --no-network` and their signatures verified against the phone's keys. No service is installed or enabled (`rmtfs-systemd` not pulled in).
 - **QRTR check:** `qrtr-lookup` already lists the ADSP's 12 services on node 5.
 - **The runner:** `tools/msm8974-rmtfs-start.sh [watch-seconds]`. Exit codes: 0 pass, 1 not, 2 refused, **3 a partition changed**.
+
+## 20. M4 result (2026-11-15): the modem reads its EFS through rmtfs; partitions unchanged
+
+`tools/msm8974-rmtfs-start.sh 60` ran once on r207. rmtfs ran read-only, and recovery was off.
+
+**What the modem asked for**, from the rmtfs log:
+
+```
+open /boot/modem_fs1 => 0      open /boot/modem_fs2 => 1
+open /boot/modem_fsg => 2      open /boot/modem_fsc => 3
+alloc 0, 1572864 => 0xfd80000            (the whole RFS0 carveout)
+iovec 0: read 1:1      iovec 1: read 1:1  (the header sector of FS1, then of FS2)
+iovec 1: read 2:3070                      (all of FS2: the newer EFS copy)
+iovec 0: write 0:3072                     (a full EFS sync to FS1, the alternate copy: held in rmtfs's shadow, never on disk)
+```
+
+- **Requests:** only the four expected paths. There were no unknown-path requests, no RFSA request and no errors.
+- **The EFS ping-pong:** the modem picked FS2 by its header and wrote its sync to FS1, the standard Qualcomm alternation. Read-only mode absorbed the write.
+- **The modem's 13 QMI services on QRTR (node 0):** subsystem control 43, test 15, thermal 23/24, time 22, persistent device config 36, coexistence 34, SAR 17, QCHAT 13, RF performance 41, location 16 v2, data system determination 42, sensor manager 256.
+- **The SMD channels:** `DATA1-4/12-16/23-26/40` (+`_CNTL`), `DIAG*`, `sys_mon`, `IPCRTR`, `SSM_RTR_MODEM_APPS`, and **`apr_voice_svc`**: the voice path for M6.
+- **The modem control ports:** `rpmsg_wwan_ctrl` attached `wwan0at0`, `wwan0at1` and **`wwan0qmi0`**. The core QMI services (DMS, NAS, WDS, UIM, VOICE) go over QMUX on that port, not QRTR, as on other MSM8974 phones.
+- **Running:** the modem stayed `running` for the full 60 s and stopped cleanly. rmtfs stopped, and the links were removed.
+- **The six partitions** (MODEM_FS1/FS2/FSC/FSG, DPP, SSD) **hash identical before and after.**
+
+**M4 passes** (read-only).
+
+**Next, M5:** QMI over `/dev/wwan0qmi0` with `qmicli` (libqmi), without a SIM: device revision and capabilities, operating mode, card status (absent), and serving system (no service).
+- **Identifiers stay private:** IMEI, MEID and serial numbers are never logged in the repo.
+- **rmtfs:** stays read-only for M5.
+- **Write-enabling EFS** stays a separate decision. The modem would rewrite the whole alternate 1.5 MiB copy on each sync.
