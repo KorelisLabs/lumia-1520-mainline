@@ -271,3 +271,23 @@ The run uses `tools/msm8974-modem-start.sh`, as M3 did: recovery off, one start,
 - **E2 passes** if the log shows `MBA booted without debug policy, loading mpss`.
 - **What follows then:** the modem image is still encrypted (E3), so the MBA should reject it ("MPSS header authentication failed" or "MPSS authentication failed"), the driver reclaims, and the modem stays offline.
 - **Worst case:** a phone reset.
+
+## 15. E2 result (r206, 2026-11-15): the decrypted MBA boots
+
+`tools/msm8974-modem-start.sh` ran once on r206 with recovery off. The log:
+
+```
+remoteproc remoteproc1: Booting fw image mba.b00, size 238164
+qcom-q6v5-mss fc880000.remoteproc: SSD MBA: decrypted by TrustZone (metadata 1764 bytes, image 236400 bytes)
+qcom-q6v5-mss fc880000.remoteproc: MBA booted without debug policy, loading mpss
+qcom-q6v5-mss fc880000.remoteproc: MPSS authentication failed: -19
+remoteproc remoteproc1: Boot failed: -19
+```
+
+- **Decrypt:** 185 ms from "Booting" to the decrypt line.
+- **MBA boot:** the boot ROM accepted the decrypted MBA, and it reported XPU unlocked 89 ms later. E2 passes.
+- **The MPSS header passed:** there was no "MPSS header authentication" error. So the MBA accepted the signed ELF headers and hash table from `modem.mdt` as they are: the hash segment and its signature are not encrypted, or are not checked encrypted.
+- **Then the segments failed:** the MBA's status register went to -19 during the segment loop, not at the final wait. The failure came 156 ms after the MBA booted, far too soon for all 0x5100000 bytes to have been copied. So the MBA hashes each segment as it arrives and rejected the first loaded one. The segments are still SSD ciphertext, and the hashes are presumably over the plaintext.
+- **Afterwards:** the driver reclaimed, and the modem went back to offline. There was no reset and no new kernel warning, and recovery was restored.
+
+**E3, next:** decrypt the modem segments before they are copied, with TrustZone's ELF-segment call 0x1C08 (section 12). Its arguments are not public. Map them from the callers in Windows' `qcpil8974.sys` before building anything. The metadata to parse first is at the tail of hash segment b01 (section 9).
