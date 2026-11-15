@@ -15,7 +15,15 @@
 # recovery off, and stopped at the end; rmtfs is stopped after it, and
 # every setting goes back.
 #
-# Usage (as root on the phone): sh msm8974-rmtfs-start.sh [watch-seconds]
+# M5 (section 21): with QMI_PROBE=1, once the modem is running and
+# /dev/wwan0qmi0 exists, a fixed list of READ-ONLY qmicli queries runs
+# (service versions, revision, capabilities, operating mode, card status,
+# serving system...). Nothing is set. Device identifiers (IMEI, IMEI SV,
+# ESN, MEID, serials) are redacted on the phone before anything is written:
+# only "present, N characters" is logged, and any 14+ digit run anywhere in
+# the QMI output is masked as well.
+#
+# Usage (as root on the phone): [QMI_PROBE=1] sh msm8974-rmtfs-start.sh [watch-seconds]
 # Output: /var/log/msm8974-rmtfs-start-<stamp>.txt (+ the rmtfs log beside it)
 # Exit: 0 the modem ran and read its file systems, partitions unchanged
 #       1 it did not (the evidence says how far it got), partitions unchanged
@@ -47,6 +55,8 @@ command -v qrtr-lookup >/dev/null || bad="$bad no-qrtr-lookup"
 pgrep -x rmtfs >/dev/null 2>&1 && bad="$bad rmtfs-already-running"
 for p in $PARTS; do [ -b "/dev/disk/by-partlabel/$p" ] || bad="$bad no-partition-$p"; done
 case "$WATCH" in ''|*[!0-9]*) bad="$bad watch=$WATCH" ;; esac
+QMI_PROBE="${QMI_PROBE:-0}"
+[ "$QMI_PROBE" = 1 ] && ! command -v qmicli >/dev/null && bad="$bad no-qmicli"
 if [ -n "$bad" ]; then
 	echo "INVALID SETUP:$bad -- nothing changed"
 	exit 2
@@ -56,6 +66,46 @@ hashes() { for p in $PARTS; do printf '%s=%s ' "$p" "$(sha256sum "/dev/disk/by-p
 T0=$(dmesg | tail -n1 | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p')
 since() { dmesg | awk -v t="${T0:-0}" 'match($0, /^\[ *[0-9.]+\]/) { if (substr($0, 2, RLENGTH - 2) + 0 > t + 0) print }'; }
 svc14() { qrtr-lookup 2>/dev/null | awk '$1 == 14' | head -n1; }
+QDEV=/dev/wwan0qmi0
+QMI_OK=0
+# identifiers never reach the log: quoted values on identifier lines become
+# "<present, N chars>", and any run of 14+ digits anywhere is masked
+redact() {
+	sed -E -e "/(IMEI|ESN|MEID|[Ss]erial|ICCID|IMSI|MSISDN|[Ee]id)/ { s/'([^']*)'/'<redacted>'/g; }" \
+	       -e 's/[0-9]{14,}/<redacted-digits>/g'
+}
+idlens() {
+	awk -F"'" '/IMEI|ESN|MEID/ { n = $1; sub(/^[ \t]*/, "", n); sub(/:[ \t]*$/, "", n);
+		v = $2; printf "  %s: %s\n", n, (v == "" || v ~ /^0+$/) ? "absent/empty" : "present, " length(v) " chars" }'
+}
+qmi() {
+	echo "  \$ qmicli $*"
+	timeout 25 qmicli -d "$QDEV" "$@" 2>&1 | redact | sed 's/^/    /'
+}
+qmi_probe() {
+	_w=0
+	while [ ! -c "$QDEV" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
+	if [ ! -c "$QDEV" ]; then echo "  no $QDEV after 30 s -- QMI probe skipped"; return; fi
+	echo "  $QDEV after ${_w} s ($(ls -l "$QDEV" | awk '{print $1, $5, $6}'))"
+	_v=$(timeout 25 qmicli -d "$QDEV" --get-service-version-info 2>&1)
+	echo "  \$ qmicli --get-service-version-info"; echo "$_v" | redact | sed 's/^/    /'
+	echo "$_v" | grep -q -i "supported versions" && QMI_OK=1
+	qmi --dms-get-manufacturer
+	qmi --dms-get-model
+	qmi --dms-get-revision
+	qmi --dms-get-capabilities
+	qmi --dms-get-band-capabilities
+	qmi --dms-get-operating-mode
+	qmi --dms-get-power-state
+	echo "  \$ qmicli --dms-get-ids   (identifiers: presence and length only)"
+	timeout 25 qmicli -d "$QDEV" --dms-get-ids 2>&1 | idlens
+	qmi --uim-get-card-status
+	qmi --nas-get-system-selection-preference
+	qmi --nas-get-serving-system
+	qmi --nas-get-signal-strength
+	qmi --voice-get-config
+	qmi --wds-get-packet-service-status
+}
 REC_PRE=$(cat "$RP/recovery" 2>/dev/null)
 RES=1
 RPID=""
@@ -94,6 +144,11 @@ if kill -0 "$RPID" 2>/dev/null && [ -n "$(svc14)" ]; then
 	echo disabled > "$RP/recovery" 2>/dev/null
 	echo "---- modem start at uptime $(cut -d' ' -f1 /proc/uptime)"
 	timeout 90 sh -c "echo start > '$RP/state'" 2>&1; echo "start write exit $?"
+	if [ "$QMI_PROBE" = 1 ] && [ "$(cat "$RP/state" 2>/dev/null)" = running ]; then
+		echo "---- QMI probe (read-only queries) at uptime $(cut -d' ' -f1 /proc/uptime)"
+		qmi_probe
+		echo "---- QMI probe done at uptime $(cut -d' ' -f1 /proc/uptime); watching the modem for ${WATCH} s more"
+	fi
 	_w=0; _last=""; _ran=0
 	while [ "$_w" -lt "$WATCH" ]; do
 		_s=$(cat "$RP/state" 2>/dev/null)
@@ -142,6 +197,10 @@ if [ "$H0" != "$H1" ]; then
 	RES=3
 elif [ "$RES" = 0 ] && grep -q -F /boot/modem_fs "$RLOG"; then
 	echo "RESULT: the modem ran and read its file systems through rmtfs (read-only); partitions unchanged"
+	if [ "$QMI_PROBE" = 1 ]; then
+		if [ "$QMI_OK" = 1 ]; then echo "RESULT: the modem answered QMI on $QDEV"
+		else echo "RESULT: the modem did NOT answer QMI on $QDEV"; RES=1; fi
+	fi
 else
 	[ "$RES" = 0 ] && echo "RESULT: the modem ran but never asked rmtfs for a file system; partitions unchanged" ||
 		echo "RESULT: the modem did not stay running (last state: ${_last:-not started}); partitions unchanged"

@@ -503,3 +503,34 @@ iovec 0: write 0:3072                     (a full EFS sync to FS1, the alternate
 - **Identifiers stay private:** IMEI, MEID and serial numbers are never logged in the repo.
 - **rmtfs:** stays read-only for M5.
 - **Write-enabling EFS** stays a separate decision. The modem would rewrite the whole alternate 1.5 MiB copy on each sync.
+
+## 21. M5 prepared (2026-11-15): QMI over wwan0qmi0, read-only, identifiers redacted
+
+**Packages:** fetched on the PC from Alpine edge `community` (sizes match the index), installed with `apk add --no-network`, signatures verified. glib was already present, and no service is installed or enabled.
+
+| package | version |
+|---|---|
+| `qmi-utils` (`qmicli` 1.39.1) | 1.38.0_git20261005-r0 |
+| `libqmi` | 1.38.0_git20261005-r0 |
+| `libmbim` | 1.34.0-r1 |
+| `libqrtr-glib` | 1.4.0-r0 |
+| `libgudev` | 238-r1 |
+
+**The runner:** `QMI_PROBE=1 sh tools/msm8974-rmtfs-start.sh 60`. It is the M4 runner, so rmtfs stays read-only and all six partitions are hashed before and after. Once the modem is running and `/dev/wwan0qmi0` exists, it runs these queries:
+
+- **CTL:** `--get-service-version-info`
+- **DMS:** manufacturer, model, revision, capabilities, band capabilities, operating mode, power state
+- **IDs:** `--dms-get-ids`
+- **UIM:** card status
+- **NAS:** system selection preference, serving system, signal strength
+- **VOICE:** config
+- **WDS:** packet service status
+
+Every query is a `get`, so nothing is set and the operating mode is not changed.
+
+**Identifiers never reach the log:**
+- `--dms-get-ids` is reduced on the phone to "present, N chars" per field.
+- Every other answer passes a filter that blanks the quoted values on IMEI/ESN/MEID/serial/ICCID/IMSI/MSISDN/EID lines, and masks any run of 14+ digits.
+- Both filters were tested with made-up values on busybox.
+
+**Passes if:** M4 passes again and the modem answers the CTL service-version query on `wwan0qmi0`. The other answers are evidence for M5's status: the SIM should be absent and the network should show no service.
