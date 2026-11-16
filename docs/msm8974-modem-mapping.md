@@ -595,3 +595,36 @@ What is known:
 **Next, cheapest first:**
 1. **Read-only:** query the operating mode, power state and serving system again at the end of a 60 s run. Then we know whether `shutting-down` is a start-up transient or persists.
 2. **If it persists, and only with the user's consent:** `--dms-set-operating-mode=low-power`. Low-power mode keeps the radio off. This tests whether the modem leaves `shutting-down` when the host asks, which is what ModemManager would do. Going `online` turns the radio on, and is a separate decision.
+
+## 24. Step 1 result: `shutting-down` persists (2026-11-16)
+
+**Conditions.** This is the same boot as M5, the modem's fourth start in it (uptime 26 h). The runner is `QMI_PROBE=1`, with the operating mode sampled every 15 s through the 60 s watch and a read-only re-query at its end. Nothing was set.
+
+**Operating mode:** `shutting-down` at every sample, from 3 s to 65 s after the modem came up (6 reads). It is **not a start-up transient**.
+
+**Power state:** still `external-source`, battery level `0 %`, at the end as at the start.
+
+**NAS:** still `not-registered-searching`, CS/PS detached, no radio interface, -128 dBm. It says "searching" while in `shutting-down`, so the NAS state is probably only the default report.
+
+**UIM changed during the run:**
+- At 2 s the card state was `absent`.
+- At 65 s it was `error: no-atr-received (3)`.
+
+So the UIM powered the slot and tried to activate a card. With no SIM fitted, no answer-to-reset is expected. The card-detect handling is worth a look when a SIM goes in, but nothing is wrong yet.
+
+**Everything else matched M5:**
+- the 20 segments decrypted, and the modem opened and read fs1, fs2, fsg and fsc;
+- one 3072-sector write to FS1 went to the shadow;
+- partitions unchanged;
+- no new kernel warnings;
+- clean stop, recovery restored.
+
+`bam-dmux: Channel already open: 0-7` appeared again, as on every start after the first one in a boot.
+
+**Reading.** The modem holds `shutting-down` on its own. One possible cause, not established: its own low-battery handling. It reports battery 0 %, and WP had a VBATT path (section 23) that Linux does not have. The other possibility is that `shutting-down` is simply this firmware's state until the host sets a mode.
+
+**Next, only with the user's consent:** `--dms-set-operating-mode=low-power` (radio stays off), then re-read the mode. The answer decides between the two readings:
+- **The modem accepts it:** the host just has to set a mode, which is what ModemManager does.
+- **It refuses** (for example "invalid transition"): the modem wants something first, most likely its battery or power state, so the WP VBATT target becomes the lead.
+
+`online` (radio on) is a separate decision.

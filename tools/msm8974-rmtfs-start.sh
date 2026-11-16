@@ -106,6 +106,20 @@ qmi_probe() {
 	qmi --voice-get-config
 	qmi --wds-get-packet-service-status
 }
+# section 23: is "shutting-down" (with "battery 0 %") only how the modem looks
+# right after boot? The operating mode is sampled through the watch and the
+# state queries are repeated at its end -- still read-only, nothing is set.
+qmi_mode() {
+	echo "  [uptime $(cut -d' ' -f1 /proc/uptime)] $(timeout 15 qmicli -d "$QDEV" --dms-get-operating-mode 2>&1 | redact | grep -i -E "mode|error" | tr -s ' \t' ' ' | tr '\n' ';')"
+}
+qmi_late() {
+	echo "---- QMI late re-query (read-only) at uptime $(cut -d' ' -f1 /proc/uptime)"
+	qmi --dms-get-operating-mode
+	qmi --dms-get-power-state
+	qmi --uim-get-card-status
+	qmi --nas-get-serving-system
+	qmi --nas-get-signal-strength
+}
 REC_PRE=$(cat "$RP/recovery" 2>/dev/null)
 RES=1
 RPID=""
@@ -155,8 +169,10 @@ if kill -0 "$RPID" 2>/dev/null && [ -n "$(svc14)" ]; then
 		[ "$_s" != "$_last" ] && echo "  t+${_w}s state $_s" && _last=$_s
 		[ "$_s" = running ] && _ran=1
 		kill -0 "$RPID" 2>/dev/null || { echo "  t+${_w}s rmtfs EXITED"; break; }
+		[ "$QMI_OK" = 1 ] && [ "$_s" = running ] && [ $((_w % 15)) = 0 ] && echo "  t+${_w}s operating mode:" && qmi_mode
 		sleep 1; _w=$((_w + 1))
 	done
+	[ "$QMI_OK" = 1 ] && [ "$(cat "$RP/state" 2>/dev/null)" = running ] && qmi_late
 	echo "qrtr services with the modem up:"; qrtr-lookup 2>&1 | sed 's/^/  /'
 	echo "rpmsg devices: $(ls /sys/bus/rpmsg/devices 2>/dev/null | grep remoteproc1 | tr '\n' ' ')"
 	echo "---- modem stop"
@@ -184,7 +200,11 @@ for f in /boot/modem_fs1 /boot/modem_fs2 /boot/modem_fsc /boot/modem_fsg; do
 done
 echo "  other requested paths: $(grep -o -E "'/[^']*'|/[a-z_]+/[a-z0-9_/]+" "$RLOG" | grep -v -E "^'?/boot/modem_fs[12cg]'?$|^'?/run/rmtfs-parts" | sort -u | tr '\n' ' ')"
 echo "  errors/unknown: $(grep -c -i -E "unknown|fail|error|reject|exceed" "$RLOG")"
-echo "  rmtfs log, head and tail:"; head -n 40 "$RLOG" | sed 's/^/    /'; echo "    ..."; tail -n 40 "$RLOG" | sed 's/^/    /'
+if [ "$(wc -l < "$RLOG")" -le 80 ]; then
+	echo "  rmtfs log:"; sed 's/^/    /' "$RLOG"
+else
+	echo "  rmtfs log, head and tail:"; head -n 40 "$RLOG" | sed 's/^/    /'; echo "    ..."; tail -n 40 "$RLOG" | sed 's/^/    /'
+fi
 
 echo "---- dmesg since the start (remoteproc, mss, rmtfs, qrtr, smd, errors)"
 since | grep -i -E "remoteproc|q6v5|mss|mba|modem|rmtfs|rpmsg|smd|qrtr|sysmon|wwan|bam|fatal|error|fail|crash|wdog" | tail -n 60
