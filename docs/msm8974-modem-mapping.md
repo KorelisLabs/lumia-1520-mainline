@@ -628,3 +628,32 @@ So the UIM powered the slot and tried to activate a card. With no SIM fitted, no
 - **It refuses** (for example "invalid transition"): the modem wants something first, most likely its battery or power state, so the WP VBATT target becomes the lead.
 
 `online` (radio on) is a separate decision.
+
+## 25. Step 2 result: the modem takes `low-power` when asked (2026-11-16)
+
+**Run.** User consent in chat ("yes, go"). Runner `QMI_PROBE=1 SET_LOW_POWER=1`, the modem's fifth start in the same boot. After the read-only probe it ran one `--dms-set-operating-mode=low-power`, then the 60 s watch with the 15 s mode samples and the late re-query.
+
+**Before:** `shutting-down`, read 3 s after the modem came up, as in sections 22 and 24.
+
+**Set:** "Operating mode set successfully" at +3 s.
+- **Read back:** `low-power` at once, 3 s later, and at all five samples to the end of the run (+67 s).
+- **NAS:** went from `not-registered-searching` to `not-registered`, which is what radio-off should report.
+- **Signal:** -128 dBm before and after (no radio interface).
+
+**Unchanged:**
+- **Power state:** `external-source`, battery 0 %. The modem accepts a mode with that report, so **battery level does not gate the operating mode**.
+- **UIM:** `absent`, then `no-atr-received` later in the run (the empty slot), as in section 24.
+- **The rest:**
+  - rmtfs traffic identical; partitions unchanged;
+  - no new kernel warnings;
+  - clean stop; recovery restored.
+
+The mode is not persistent, and the modem started clean at the next start.
+
+**Conclusion.** `shutting-down` is this firmware's state until the host sets a mode. That is ModemManager's normal job: it sets `low-power`, or `online` when the user enables the modem. The WP VBATT path (section 23) does not need to be reproduced to bring the modem up, so it is set aside. The 0 % battery report remains cosmetic, as far as the modem's mode is concerned.
+
+**Still open, for daily use:**
+- **Services:** rmtfs and the modem start at boot (EFS read-only until the write decision), then ModemManager.
+- **bam-dmux:** "Channel already open" on every start after the first one in a boot.
+- **Radio on:** `online` (RF) needs the user's separate decision.
+- **Calls:** M6 call audio.

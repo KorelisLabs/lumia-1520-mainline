@@ -23,7 +23,11 @@
 # only "present, N characters" is logged, and any 14+ digit run anywhere in
 # the QMI output is masked as well.
 #
-# Usage (as root on the phone): [QMI_PROBE=1] sh msm8974-rmtfs-start.sh [watch-seconds]
+# Section 24: with SET_LOW_POWER=1 as well (only with the user's consent), the
+# operating mode is set to low-power once after the probe -- the radio stays
+# off -- and read back. Nothing else is ever set; never "online" here.
+#
+# Usage (as root on the phone): [QMI_PROBE=1 [SET_LOW_POWER=1]] sh msm8974-rmtfs-start.sh [watch-seconds]
 # Output: /var/log/msm8974-rmtfs-start-<stamp>.txt (+ the rmtfs log beside it)
 # Exit: 0 the modem ran and read its file systems, partitions unchanged
 #       1 it did not (the evidence says how far it got), partitions unchanged
@@ -57,6 +61,10 @@ for p in $PARTS; do [ -b "/dev/disk/by-partlabel/$p" ] || bad="$bad no-partition
 case "$WATCH" in ''|*[!0-9]*) bad="$bad watch=$WATCH" ;; esac
 QMI_PROBE="${QMI_PROBE:-0}"
 [ "$QMI_PROBE" = 1 ] && ! command -v qmicli >/dev/null && bad="$bad no-qmicli"
+# section 24: the one state change this runner can make, only on request:
+# operating mode low-power (radio off; not persistent -- gone when the modem stops)
+SET_LOW_POWER="${SET_LOW_POWER:-0}"
+[ "$SET_LOW_POWER" = 1 ] && [ "$QMI_PROBE" != 1 ] && bad="$bad SET_LOW_POWER-needs-QMI_PROBE"
 if [ -n "$bad" ]; then
 	echo "INVALID SETUP:$bad -- nothing changed"
 	exit 2
@@ -161,6 +169,13 @@ if kill -0 "$RPID" 2>/dev/null && [ -n "$(svc14)" ]; then
 	if [ "$QMI_PROBE" = 1 ] && [ "$(cat "$RP/state" 2>/dev/null)" = running ]; then
 		echo "---- QMI probe (read-only queries) at uptime $(cut -d' ' -f1 /proc/uptime)"
 		qmi_probe
+		if [ "$SET_LOW_POWER" = 1 ] && [ "$QMI_OK" = 1 ]; then
+			echo "---- SET_LOW_POWER=1 (user consent, section 24): operating mode -> low-power (radio stays off) at uptime $(cut -d' ' -f1 /proc/uptime)"
+			qmi --dms-set-operating-mode=low-power
+			echo "  read back:"; qmi_mode
+			sleep 3; echo "  3 s later:"; qmi_mode
+			qmi --dms-get-power-state
+		fi
 		echo "---- QMI probe done at uptime $(cut -d' ' -f1 /proc/uptime); watching the modem for ${WATCH} s more"
 	fi
 	_w=0; _last=""; _ran=0
