@@ -534,3 +534,42 @@ Every query is a `get`, so nothing is set and the operating mode is not changed.
 - Both filters were tested with made-up values on busybox.
 
 **Passes if:** M4 passes again and the modem answers the CTL service-version query on `wwan0qmi0`. The other answers are evidence for M5's status: the SIM should be absent and the network should show no service.
+
+## 22. M5 result (2026-11-16): the modem answers QMI without a SIM
+
+`QMI_PROBE=1 tools/msm8974-rmtfs-start.sh 60` ran once on r207:
+- **M4 parts pass again:** the four EFS paths were read, and all six partitions hash unchanged.
+- **QMI:** `wwan0qmi0` appeared 2 s after start, and every query answered.
+
+| query | answer |
+|---|---|
+| CTL services | ctl 1.5, wds 1.36, dms 1.14, nas 1.25, qos, wms 1.10, auth, at, **voice 2.1**, cat2, **uim 1.33**, pbm, test, loc 2.0, sar, ts, tmd, wda 1.11, tsync, **csvt**, coex, pdc, rfrpe, dsd, ssctl |
+| manufacturer / model | `Nokia` / `1520` |
+| revision | `MPSS.DI.2.0.1.c1.10-00039-M8974AAAAANAZM-1`, Oct 17 2014, product `BANDIT_LTE` |
+| capabilities | GSM, UMTS, LTE; non-simultaneous CS/PS; SIM supported; 50 Mbit/s up / 100 Mbit/s down |
+| bands | GSM 850/900E/1800/1900; WCDMA 850/900/1700/1900/2100; LTE 2, 4, 5, 7, 17 |
+| ids | IMEI present (15 characters), MEID present, ESN empty; values redacted, never logged |
+| UIM card status | slot 1 **absent**, no provisioning sessions: as expected, no SIM |
+| system selection | GSM/UMTS/LTE, automatic network selection, voice-centric, voice domain CS-only |
+| serving system | `not-registered-searching`, CS/PS detached, no radio interface |
+| signal | -128 dBm (none) |
+| voice config | TTY off, GSM AMR enabled |
+| WDS | disconnected |
+| **operating mode** | **`shutting-down`**, not HW-restricted |
+| **power state** | external source, **battery level 0 %** |
+
+**Two findings to map before anything is set:**
+
+1. **The operating mode is `shutting-down`**, 2 s after boot, while NAS says it is searching. A healthy modem starts `low-power` or `online`. The battery level the modem sees, **0 %**, is a likely cause, since a Qualcomm modem refuses to go online at a critical battery level. Where WP fed the modem its battery level (a QMI client on the apps side, or the modem reading the PMIC fuel gauge itself) is the next thing to map. Nothing was set to test it.
+2. **bam-dmux reported "Channel already open: 0-7"** when the modem came up. This was the second modem start in this Linux boot (M4 was the first), so the data-path driver likely kept channel state across the restart. It matters for mobile data later, not for QMI.
+
+**Also seen:**
+- **The ADSP's extra services:** with the modem up, the ADSP published 24 more services (instance 50, services 260-299). These are probably its modem-facing audio/voice side, relevant to M6.
+- **The voice path's pieces are present:** the QMI `voice` 2.1 service, the `csvt` service and the `apr_voice_svc` SMD channel.
+
+**M5 passes.**
+
+**Next:**
+- **Map the operating-mode/battery question** from WP (read-only) before any `set-operating-mode`.
+- **For a daily phone:** rmtfs at boot (read-only until a write decision), modem autostart, and ModemManager.
+- **M6:** the call-audio path (q6voice over `apr_voice_svc`), mapped from WP.
