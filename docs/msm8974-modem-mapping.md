@@ -657,3 +657,49 @@ The mode is not persistent, and the modem started clean at the next start.
 - **bam-dmux:** "Channel already open" on every start after the first one in a boot.
 - **Radio on:** `online` (RF) needs the user's separate decision.
 - **Calls:** M6 call audio.
+
+## 26. Daily-use steps 1-2 mapped: rmtfs + modem at boot, then ModemManager (2026-11-16)
+
+**What the phone has now:**
+- **Packages:** `rmtfs` and `qrtr` are binaries only. They were installed offline from files, so the `-systemd` and `-udev` subpackages that `install_if` would add never came with them.
+- **Services:** none run; no ModemManager.
+- **NetworkManager** is installed and enabled, with **WWAN enabled**. It turns on any modem ModemManager reports, which would mean `online`, the radio on.
+- **No UI shell** is installed: no phosh, Plasma Mobile or sxmo.
+
+**How the sibling ports do it** (pmaports: fairphone-fp2, lg-hammerhead and samsung-klte, all MSM8974; and soc-qcom):
+- they depend on Alpine's `msm-modem` (which pulls `msm-modem-uim-selection`) plus ModemManager;
+- rmtfs runs from the packaged `rmtfs.service`;
+- `tqftpserv` and `pd-mapper` are for newer SoCs and are not needed here (E3 and M4 ran without them).
+
+**rmtfs -s.** The binary looks for the MSS remoteproc under `/sys/bus/platform/drivers/qcom-q6v5-mss/` and starts the modem once its service is published, then stops it when rmtfs exits. That replaces the test runner's manual start.
+
+**Step 1, starting at boot. The plan:**
+- `rmtfs-systemd` + `rmtfs-udev` (about 4 KB) for the stock unit and device permissions;
+- a drop-in that creates the `/run/rmtfs-parts` links (modemst1/2, fsc and fsg to MODEM_FS1/FS2/FSC/FSG) and runs `rmtfs -r -P -s -o /run/rmtfs-parts`, **read-only as in M4/M5**;
+- remoteproc recovery stays enabled.
+
+The stock unit is to be read before use. The six partitions are hashed once before enabling it, and again after the first boots.
+
+**Step 2, ModemManager.** The cached pmbootstrap indexes (2026-11-15) resolve against the phone's installed database:
+
+| package | bytes |
+|---|---|
+| modemmanager 1.25.95_git20261005-r0 | 1194971 |
+| modemmanager-systemd | 2007 |
+| modemmanager-udev | 15474 |
+| mobile-broadband-provider-info 20261111-r0 | 80544 |
+| pkgconf 3.0.10-r0 (a dependency of the above) | 80663 |
+
+**Left out:**
+- `modemmanager-lang`: translations.
+- `postmarketos-base-ui-modemmanager`: a meta package via `install_if`, which would pull **fwupd** (2 MB, plus 1 MB of language files) and pipewire extras. fwupd has a ModemManager plugin that can flash modem firmware, and is not wanted near this modem. A later online `apk upgrade` would pull it, so this has to be pinned or masked then.
+- `msm-modem` / `msm-modem-uim-selection`: these select the SIM's USIM application. With no SIM there is nothing to select; they come when a SIM goes in.
+- `msm-modem-wwan-port`: purpose to be read from its source first.
+
+**The radio-off guarantee.** ModemManager on its own leaves a modem disabled, which puts it in `low-power`, as tested in section 25. What would turn the radio on is NetworkManager's WWAN switch, so `nmcli radio wwan off` (NetworkManager keeps it across boots) has to happen **before** ModemManager's first start. That is a settings change: the user's call.
+
+**Checks on the first runs:**
+- MM detects the modem through the qcom-soc plugin: `mmcli -L`, and `mmcli -m 0` shows state `disabled`, power `low`, SIM missing;
+- `qmicli` reads `low-power`;
+- the partition hashes are unchanged;
+- after a reboot, the same with nothing done by hand.
