@@ -573,3 +573,25 @@ Every query is a `get`, so nothing is set and the operating mode is not changed.
 - **Map the operating-mode/battery question** from WP (read-only) before any `set-operating-mode`.
 - **For a daily phone:** rmtfs at boot (read-only until a write decision), modem autostart, and ModemManager.
 - **M6:** the call-audio path (q6voice over `apr_voice_svc`), mapped from WP.
+
+## 23. The operating-mode / battery question, partly mapped (2026-11-16)
+
+**WP components for the cellular and battery side** (MainOS, analysis only):
+- **RIL stack:** `qcmbb8974.sys` (Qualcomm mobile broadband) and `msril.sys` / `WMRil.dll` / `RILAdaptationService.exe`.
+- **Battery:** `qcbms8974.sys` (the BMS fuel gauge and charger, apps side: `IOCTL_BMS_GET_PERCENT_CHARGE`, `IOCTL_BMS_GET_BATTERY_VOLTAGE`, ...).
+- **Subsystems:** `qcsubsys8974.sys` (SSR hooks `ssr:modem:before_shutdown` ..., `sys_mon`, a QMI client).
+
+**Where WP watches the battery voltage.** `qcsubsys8974.sys` keeps a VBATT monitor:
+- **Reading:** it resolves the PMIC ADC channel `"VBATT"` by name and reads it.
+- **Thresholds:** it compares the reading with two registry thresholds, `VbattLowThreshold` and `VbattHighThreshold`, with an above/below state for hysteresis.
+- **On each crossing:** it re-arms the ADC alarm on the other threshold and sends a 16-byte message through a WDF function-table call to an I/O target the driver holds: `{0x01000008, 16, vbatt, threshold}`.
+
+Which target that is (the modem over `sys_mon`, or a Windows power component) is not resolved: that needs the WDF function index and how the target is opened. So it is **not yet shown that WP gave the modem its battery level**.
+
+What is known:
+- **DMS reports** `battery level 0 %` with `external-source` power.
+- **The mode:** `shutting-down`, read **2 s after the modem came up**.
+
+**Next, cheapest first:**
+1. **Read-only:** query the operating mode, power state and serving system again at the end of a 60 s run. Then we know whether `shutting-down` is a start-up transient or persists.
+2. **If it persists, and only with the user's consent:** `--dms-set-operating-mode=low-power`. Low-power mode keeps the radio off. This tests whether the modem leaves `shutting-down` when the host asks, which is what ModemManager would do. Going `online` turns the radio on, and is a separate decision.
