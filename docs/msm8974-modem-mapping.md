@@ -703,3 +703,47 @@ The stock unit is to be read before use. The six partitions are hashed once befo
 - `qmicli` reads `low-power`;
 - the partition hashes are unchanged;
 - after a reboot, the same with nothing done by hand.
+
+## 27. Steps 1-2 installed, held disabled; service test prepared (2026-11-16)
+
+**Downloads** (user approved), Alpine edge armv7. Each file's size matched the current index and starts with the gzip magic, and apk verified the signatures:
+- modemmanager, modemmanager-udev and modemmanager-systemd 1.25.95_git20261005-r0;
+- mobile-broadband-provider-info 20261111-r0 and pkgconf 3.0.11-r0;
+- rmtfs-udev and rmtfs-systemd 1.3-r0;
+- **libmm-glib 1.25.95_git20261005-r0**, approved separately: modemmanager pins its exact version. It upgrades the phone's git20260527-r1, which networkmanager-wwan also uses (same soname).
+
+1.72 MB in total. apk is atomic: the first attempt, without libmm-glib, installed nothing.
+
+**What the packages bring:**
+- **`rmtfs.service`** runs `rmtfs -r -P -s`, `Before=NetworkManager.service`, `Restart=always`. So **the stock unit is read-only too**.
+- **`rmtfs-udev`'s `rmtfs.rules`** wants `rmtfs.service` whenever `qcom_rmtfs_mem*` appears, **whether or not the unit is enabled**.
+- **`ModemManager.service`** is `Type=dbus`, with `Requires=polkit.service` and the D-Bus alias `dbus-org.freedesktop.ModemManager1.service`.
+- **`77-mm-qcom-soc.rules`** matches `wwan` ports under `qcom-q6v5-mss` and `net` ports from `bam-dmux`, under one physdev `qcom-soc`. MSM8974 is named in it.
+- **The pmOS install trigger** applies presets (`enable ModemManager.service`, `enable rmtfs.service`) and **enabled both**. mkinitfs also rebuilt `/boot`, which is irrelevant while the kernel is booted with `fastboot boot`.
+
+**State left on the phone:**
+- **NetworkManager:** `nmcli radio wwan off` (user approved), persistent.
+- **Read-only override:** `/etc/systemd/system/rmtfs.service.d/lumia1520.conf` (repo `tools/modem-services/rmtfs-lumia1520.conf`) does three things:
+  - it requires the four MODEM_FS* device units;
+  - it creates the `/run/rmtfs-parts` links;
+  - it runs `rmtfs -r -P -s -o /run/rmtfs-parts`.
+- **Udev hold:** `/etc/udev/rules.d/rmtfs.rules` is a comment-only override of the udev auto-start (repo `tools/modem-services/rmtfs.rules.hold`). It is removed after the tests.
+- **Services:** `rmtfs` and `ModemManager` are **disabled again**, which also removes the D-Bus alias, so nothing D-Bus-activates ModemManager. Both are inactive and the modem is offline.
+
+**The test:** `tools/msm8974-modem-services-test.sh`.
+- **Preflight:**
+  - the modem is offline and both services are inactive;
+  - the NetworkManager WWAN radio is disabled;
+  - the override is in effect.
+- **Run:**
+  - hash the six partitions;
+  - `systemctl start rmtfs` (the modem must come up on its own through `-s`);
+  - `systemctl start ModemManager`;
+  - `mmcli -L` within 90 s, then `mmcli -m any` (identifiers redacted on the phone);
+  - a 60 s watch of state, power, registration and NM WWAN every 15 s.
+- **Guard:** power `on`, or any enabling, registered or searching state, stops ModemManager and rmtfs at once (exit 4).
+- **Pass:** the state is `disabled`, or `failed` (sim-missing is expected), with power `low` or `off`, and the partitions are unchanged. Then stop both and confirm the modem goes offline through rmtfs.
+
+**After a pass, before enabling at boot:**
+- remove the udev hold and enable both units;
+- a cold boot with the same checks, read-only, with nothing done by hand.

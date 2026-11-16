@@ -1,0 +1,4 @@
+# /etc/udev/rules.d/rmtfs.rules -- TEMPORARY HOLD (docs/msm8974-modem-mapping.md section 27)
+# Overrides /usr/lib/udev/rules.d/rmtfs.rules (rmtfs-udev), which starts
+# rmtfs.service -- and with it the modem -- whenever /dev/qcom_rmtfs_mem1
+# appears, enabled or not. Removed once the service test has passed.
