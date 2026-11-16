@@ -747,3 +747,40 @@ The stock unit is to be read before use. The six partitions are hashed once befo
 **After a pass, before enabling at boot:**
 - remove the udev hold and enable both units;
 - a cold boot with the same checks, read-only, with nothing done by hand.
+
+## 28. Service test 1: rmtfs.service passes; ModemManager finds no net port (2026-11-16)
+
+**Run:** the user's go, same boot, the modem's sixth start in it.
+
+**rmtfs.service: PASS.**
+- **Start:** `systemctl start rmtfs` with the override created the four links, and `rmtfs -r -P -s -o /run/rmtfs-parts` started the modem itself: running after 2 s, `wwan0qmi0` after 1 s more.
+- **Stop:** `systemctl stop rmtfs` stopped the modem (offline at once). The unit was "Deactivated successfully".
+- **Partitions:** unchanged.
+- **Read-only, as in M4:** the modem's file-system traffic matched the earlier runs, so its write again went to the in-memory copy.
+
+**ModemManager: no modem.**
+- **Probe:** it started, and the qcom-soc plugin probed `wwan0qmi0` (QMI) and `wwan0at0`/`wwan0at1` (AT).
+- **Failure:** creating the modem with 3 ports ended in `couldn't create modem for device 'qcom-soc': Failed to find a net port in the QMI modem`.
+- **Radio:** never a modem object, so never any power or state, and NetworkManager WWAN stayed disabled throughout.
+
+**Cause.** bam-dmux registers its net devices (`wwan0`-`wwan7`, under `fc880000.remoteproc:bam-dmux`) **once per boot**, at the first modem start: here, uptime 4419 s. That was before `77-mm-qcom-soc.rules` was installed, so their udev records have no `ID_MM_QCOM_SOC` / `ID_MM_PHYSDEV_UID` (`udevadm info wwan0`: only DEVPATH, INTERFACE and USEC_INITIALIZED).
+- **The control ports work:** they are re-created at every modem start, so they were tagged.
+- **The net devices never re-announce:** on later starts, `bam_dmux_cmd_open()` finds the channel bit still set (`__test_and_set_bit`, "Channel already open"), because the modem never sends CLOSE when it is stopped. So it does nothing: no new device, no uevent.
+
+**This is not a boot-time problem.** On a fresh boot the rules are present before the first start.
+
+**The stale bitmap is a separate kernel issue,** for later and for data:
+- `remote_channels` and the netdevs' attach state survive a modem stop;
+- `pc_state` probably does too.
+
+The fix belongs in qcom_bam_dmux: reset the channel state when the modem goes down (power-collapse off, or an SSR notifier).
+
+**Also seen on stop:** `qcom_sysmon: timeout waiting for ssctl service`. sysmon waits 0.5 s for the SSCTL service before the graceful shutdown request. The modem still stopped cleanly within 0.6 s. Watch whether it recurs.
+
+**Runner changes:**
+- **Preflight** now refuses if any `wwanN` net device lacks `ID_MM_QCOM_SOC=1`.
+- **The run** lists the net ports with operstate and tag.
+
+**Next, two options:**
+1. **Retag in this boot:** `udevadm trigger --action=change` on `/sys/class/net/wwan*` (re-runs the udev rules, changes nothing else), then the same test.
+2. **Or go straight to the cold-boot test** (enable both units, remove the hold, reboot).

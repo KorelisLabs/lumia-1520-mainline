@@ -43,6 +43,14 @@ pgrep -x rmtfs >/dev/null 2>&1 && bad="$bad rmtfs-running"
 [ "$(nmcli radio wwan 2>/dev/null)" = disabled ] || bad="$bad NM-wwan-not-disabled"
 systemctl cat rmtfs 2>/dev/null | grep -q -x 'ExecStart=/usr/bin/rmtfs -r -P -s -o /run/rmtfs-parts' || bad="$bad rmtfs-drop-in-missing"
 command -v mmcli >/dev/null || bad="$bad no-mmcli"
+# section 28: bam-dmux registers its wwanN net devices once per boot (at the
+# first modem start), so on a boot where that happened before the
+# ModemManager udev rules were installed they carry no ID_MM_* tags and MM
+# finds no net port. (udevadm trigger --action=change on them, or reboot.)
+for n in /sys/class/net/wwan*; do
+	[ -e "$n" ] || continue
+	udevadm info -q property "$n" 2>/dev/null | grep -q '^ID_MM_QCOM_SOC=1' || bad="$bad $(basename "$n")-not-tagged-for-MM"
+done
 for p in $PARTS; do [ -b "/dev/disk/by-partlabel/$p" ] || bad="$bad no-partition-$p"; done
 case "$WATCH" in ''|*[!0-9]*) bad="$bad watch=$WATCH" ;; esac
 if [ -n "$bad" ]; then
@@ -93,6 +101,9 @@ echo "  modem $(cat "$RP/state") after ${_w} s"
 _w=0
 while [ ! -c "$QDEV" ] && [ "$_w" -lt 30 ]; do sleep 1; _w=$((_w + 1)); done
 echo "  $QDEV: $([ -c "$QDEV" ] && echo "present after ${_w} s" || echo "absent after 30 s")"
+_w=0
+while [ ! -e /sys/class/net/wwan0 ] && [ "$_w" -lt 15 ]; do sleep 1; _w=$((_w + 1)); done
+echo "  bam-dmux net ports: $(for n in /sys/class/net/wwan*; do [ -e "$n" ] && printf '%s(%s,%s) ' "$(basename "$n")" "$(cat "$n/operstate")" "$(udevadm info -q property "$n" | grep -q '^ID_MM_QCOM_SOC=1' && echo mm-tagged || echo UNTAGGED)"; done)"
 
 if [ "$(cat "$RP/state")" = running ]; then
 	echo "---- systemctl start ModemManager at uptime $(cut -d' ' -f1 /proc/uptime) (NM wwan: $(nmcli radio wwan))"
