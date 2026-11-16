@@ -63,7 +63,7 @@ T0=$(dmesg | tail -n1 | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p')
 since() { dmesg | awk -v t="${T0:-0}" 'match($0, /^\[ *[0-9.]+\]/) { if (substr($0, 2, RLENGTH - 2) + 0 > t + 0) print }'; }
 JSINCE="@$(date +%s)"
 redact() {
-	sed -E -e '/([Ee]quipment id|IMEI|imei|IMSI|imsi|ICCID|iccid|[Oo]wn number|own-numbers|[Ee]id|ESN|MEID|[Ss]erial)/ { s/(: |= ?)[^ ].*/\1<redacted>/; }' \
+	sed -E -e '/([Ee]quipment id|[Dd]evice id|device-identifier|IMEI|imei|IMSI|imsi|ICCID|iccid|[Oo]wn number|own-numbers|[Ee]id|ESN|MEID|[Ss]erial)/ { s/(: |= ?)[^ ].*/\1<redacted>/; }' \
 	       -e 's/[0-9]{14,}/<redacted-digits>/g'
 }
 mm_kv() { mmcli -m any -K 2>/dev/null | grep -E "^modem\.(generic\.(state|state-failed-reason|power-state|plugin|primary-port|ports\.value\[[0-9]+\]|drivers\.value\[[0-9]+\]|sim) |3gpp\.registration-state )" | redact; }

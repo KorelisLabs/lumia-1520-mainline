@@ -784,3 +784,40 @@ The fix belongs in qcom_bam_dmux: reset the channel state when the modem goes do
 **Next, two options:**
 1. **Retag in this boot:** `udevadm trigger --action=change` on `/sys/class/net/wwan*` (re-runs the udev rules, changes nothing else), then the same test.
 2. **Or go straight to the cold-boot test** (enable both units, remove the hold, reboot).
+
+## 29. Service test 2: PASS, ModemManager holds the modem with the radio off; enabled at boot (2026-11-16)
+
+**Run:** the user's go, same boot, the modem's seventh start in it. First `udevadm trigger --action=change` on `/sys/class/net/wwan0..7`. After it, all eight carry `ID_MM_QCOM_SOC=1`, `ID_MM_PHYSDEV_UID=qcom-soc` and `ID_MM_CANDIDATE=1`.
+
+**rmtfs.service:** as in section 28. `rmtfs -r -P -s -o /run/rmtfs-parts`, the modem running after 2 s, `wwan0qmi0` after 2 s more.
+
+**ModemManager:**
+- **Modem created:** `mmcli -L` listed `/org/freedesktop/ModemManager1/Modem/0 [Nokia] 1520` 32 s after the service started. That time includes about 19 s of SIM-lock retries.
+- **Ports:** plugin `qcom-soc`, primary port `wwan0qmi0`, 11 ports in all: `wwan0qmi0` (qmi), `wwan0at0`/`wwan0at1` (at), and `wwan0`-`wwan7` (net). Drivers `bam-dmux`, `qcom-q6v5-mss`.
+- **Hardware:** supported gsm-umts and lte, all 2G/3G/4G mode combinations, the bands from M5, IPv4/IPv6/IPv4v6 supported.
+- **State:** `failed`, reason **`sim-missing`**, **power `off`** (the modem still reports `shutting-down`, and MM sets nothing in the failed state). Registration `--`, no SIM object. It held the same at all five samples over 60 s, with NetworkManager WWAN `disabled` throughout.
+
+**Journal:**
+- "Couldn't get SIM lock status after 7 retries", then locked → failed.
+- "couldn't build device ids: Unsupported subsystem: platform", which is harmless.
+- "couldn't load supported assistance data types", which is GPS assistance data.
+- The mtk/rolling plugins fail to load (missing symbols in this Alpine snapshot; not used here).
+
+**Stop:** clean, with the modem offline at once. The `ssctl` timeout did not recur.
+
+**Partitions:** unchanged. Kernel warnings: none new.
+
+**Redaction:** `mmcli` also prints a `device id` (a SHA1 over hardware data). It is now redacted with the other identifiers.
+
+**Enabled at boot** (the agreed step after a pass):
+- `/etc/udev/rules.d/rmtfs.rules` (the hold) removed;
+- `systemctl enable rmtfs ModemManager` (with the D-Bus alias);
+- NetworkManager WWAN stays `disabled`.
+
+**Cold-boot check:** `tools/msm8974-modem-boot-check.sh`, read-only. It checks:
+- both units active, with rmtfs on the exact read-only command line;
+- the modem running, and the boot sequence from dmesg;
+- the net ports tagged;
+- MM in `disabled`/`failed` with power `low`/`off`;
+- NetworkManager WWAN disabled;
+- the six partition hashes against the M4 reference.
