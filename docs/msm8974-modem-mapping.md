@@ -960,3 +960,27 @@ Afterwards: 0 kernel WARNINGs or Oopses this boot, partitions unchanged, both se
 **bam-dmux status:**
 - Graceful restarts (section 31a) and crash recovery are both clean.
 - Still untested: teardown with the A2 powered and data in flight. That needs `online`.
+
+## 33. fwupd masked, not pinned
+
+**Why:** fwupd has a ModemManager plugin that can flash modem firmware, so it must never act on this modem (section 26).
+
+**Why not a pin:** the current postmarketOS index shows `postmarketos-base-ui` 65 depending on `fwupd` directly. The phone has base-ui 50, which does not. A `!fwupd` constraint in `/etc/apk/world` would therefore make every future `apk upgrade` fail on base-ui.
+
+**What was done (user's choice):** `tools/modem-services/fwupd-mask.sh` masks:
+- `fwupd.service`
+- `fwupd-refresh.service`
+- `fwupd-refresh.timer`
+- `fwupd-offline-update.service`
+
+Each one is linked to `/dev/null` in `/etc/systemd/system`. This works before fwupd exists, so an upgrade may install fwupd, but its daemon cannot start:
+- `systemctl start fwupd.service` reports "Unit fwupd.service is masked".
+- The system bus is **dbus-broker**, which activates bus names only through systemd units. fwupd's D-Bus service file names `SystemdService=fwupd.service`, so D-Bus activation also hits the mask.
+- The masked refresh timer also keeps it from contacting the LVFS.
+
+**Limits and undo:**
+- `fwupdtool` (standalone, no daemon) would still work if someone ran it by hand.
+- Check with `fwupd-mask.sh --check`.
+- Undo with `systemctl unmask` on the four units.
+
+The modem services were unaffected (rmtfs and ModemManager active, modem running, NetworkManager WWAN disabled).
