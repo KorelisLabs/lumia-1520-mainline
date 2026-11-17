@@ -898,3 +898,27 @@ What it leaves alone, and the safety changes:
 **Not yet covered:**
 - A modem crash (true SSR with `recovery enabled`). This test covers graceful stops only.
 - Data traffic across a restart, which needs the radio on (`online`), and that needs separate consent.
+
+### 31a. r208 test: PASS
+
+**Setup:**
+- Module `qcom_bam_dmux.ko` `ssr-rc1` installed (sha256 `10693a650e468c0c`). The old `.ko.zst` is kept in `~/modules-r207-replaced/`.
+- Cold boot into r208 (`boot-1520-quietlog-rc1.img`, sha256 `cee35ed952f6310c`).
+
+**Boot check:** exit 0, the same timeline as section 30. Modem up at 65 s; ModemManager `failed`/`sim-missing`, power `off`; ports tagged; partitions unchanged.
+
+**Restart test, 3 cycles:** exit 0. Each cycle ran the same sequence:
+- **stop:** `modem going down, open channels: 0-7` (the reset ran);
+- **start:** about 4 s after rmtfs starts, `pc: 1`, then `open channel: 0` … `7` accepted;
+- **result:** **no "Channel already open"**, ModemManager back to `failed`/`sim-missing`/power `off` with 11 ports in 24-34 s;
+- **power collapse:** `pc: 0` 2 s after the opens. The modem power-collapses the A2 when nothing votes, so the bam-dmux DMA is already released before each stop.
+
+Afterwards: 0 kernel WARNINGs or Oopses this boot, partitions unchanged, both services running, NetworkManager WWAN disabled.
+
+**New observations:**
+- **The modem announces channels 8 and 10-15 as well** ("Unsupported channel", dev_dbg only). The mainline driver handles 0-7. Downstream maps 8+ to USB tethering/control channels, which are not needed here.
+- **The shutdown path ran with no DMA live,** because the A2 was idle-collapsed every time. Teardown with the A2 powered (traffic in flight) is still untested, and needs `online`.
+
+**Still open for bam-dmux:**
+- a real modem crash (SSR with `recovery enabled`);
+- data across a restart.
