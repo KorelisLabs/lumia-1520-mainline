@@ -821,3 +821,35 @@ The fix belongs in qcom_bam_dmux: reset the channel state when the modem goes do
 - MM in `disabled`/`failed` with power `low`/`off`;
 - NetworkManager WWAN disabled;
 - the six partition hashes against the M4 reference.
+
+## 30. Cold boot: PASS -- the modem comes up by itself
+
+The user power-cycled the phone into fastboot, and the r207 image (`boot-1520-quietlog-rc1.img`, sha256 `76235a06...b5091d2`) was booted with `fastboot boot`. Nothing was started by hand. `msm8974-modem-boot-check.sh` was run once ModemManager had settled, at uptime 106 s. Exit 0.
+
+**Timeline (seconds since boot):**
+- 58.0: `rmtfs.service` active (`/usr/bin/rmtfs -r -P -s -o /run/rmtfs-parts`, links to mmcblk0p3/p4/p5/p2).
+- 58.3: MBA boots, and TrustZone decrypts it at 59.2.
+- 60.2: `ModemManager.service` active.
+- 65.4: MPSS decrypted (20 segments), and the modem is up at 65.5.
+- 67.9: `wwan0qmi0` attached; `wwan0`-`wwan7` registered **already carrying the MM tags** (the udev rules were installed before this boot, so the section-28 problem does not occur on a normal boot).
+- 75.8: MM creates the modem (`qcom-soc`, 11 ports).
+- 95.0: SIM lock status fails after 7 retries, then locked → failed (`sim-missing`), power `off`.
+
+**Checks:**
+- **Kernel:** no "Channel already open" (first modem start of the boot), no ssctl timeout, and **0 kernel WARNINGs** this boot.
+- **NetworkManager WWAN:** `disabled`.
+- **Partitions:** all six unchanged against the M4 reference.
+- **Journal:** the only new line is "Error loading cached location from /var/lib/ModemManager/location.ini", which is harmless and expected on a first start.
+
+**Notes:**
+- Userspace reaches the services only at about 58 s. That is a general boot-time issue (not modem-specific), worth its own look later.
+- The phone's clock read 2026-09-09: there is no RTC sync without network time.
+
+**Daily-use steps 1-2 are complete:** the modem and ModemManager come up at every boot, read-only and with the radio off.
+
+**Still open:**
+- the bam-dmux stale `remote_channels` fix (needed for data, and for restarts and subsystem recovery);
+- pin/mask fwupd before any online `apk upgrade`;
+- the EFS write decision (rmtfs `-r`);
+- `online`/RF only with the user's consent;
+- M6 call audio.
