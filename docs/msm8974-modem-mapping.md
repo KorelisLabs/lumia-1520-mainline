@@ -922,3 +922,41 @@ Afterwards: 0 kernel WARNINGs or Oopses this boot, partitions unchanged, both se
 **Still open for bam-dmux:**
 - a real modem crash (SSR with `recovery enabled`);
 - data across a restart.
+
+## 32. Modem crash recovery: PASS (2 crashes, r208)
+
+**Method:** `tools/msm8974-modem-crash-recovery-test.sh` writes crash type 1 (watchdog) to `/sys/kernel/debug/remoteproc/remoteproc1/crash`.
+- That runs the host side of a real crash: `rproc_report_crash`, then crash handling, then `rproc_boot_recovery` (`rproc_stop(crashed=true)`: no sysmon shutdown request, SSR BEFORE_SHUTDOWN, then a stop request over smp2p, a coredump, then the firmware reloaded and started).
+- The modem firmware itself does not fault.
+- The coredump is `disabled` by default in this kernel, and the test refuses otherwise. A dump would reload the MBA (`qcom_q6v5_dump_segment`) and copy the decrypted modem region into memory.
+- Both TrustZone decrypt hooks are on the recovery path: the MBA in `q6v5_load` (patch 0008) and the modem segments in `q6v5_mpss_load` (patch 0009).
+
+**Result:** exit 0, both crashes the same.
+
+**Timeline of crash 1 (crash 2 the same):**
+
+| Time | Event |
+|---|---|
+| +0 ms | crash reported; handling crash #1; recovering |
+| +1 ms | bam-dmux `modem going down, open channels: 0-7` (patch 0010) |
+| +5-8 ms | `wwan0at0`, `wwan0at1`, `wwan0qmi0` disconnected |
+| +21 ms | stopped |
+| +0.34 s | SSD MBA decrypted |
+| +0.47 s | MBA booted |
+| +0.70 s | SSD MPSS metadata parsed |
+| +2.03 s | 20 segments decrypted |
+| +2.15 s | **modem up** |
+| +3.5 s | ports attached; `pc: 1`; channels 0-7 opened; **no "Channel already open"** |
+| +5.5 s | `pc: 0` (idle power collapse) |
+
+**Userspace:** ModemManager was back at `failed`/`sim-missing`, power `off`, 11 ports, about 25 s after the crash.
+- Transient: the AT ports appear before the QMI port, so ModemManager logs "could not recreate modem: at least a QMI port is required", then creates it 4 s later.
+- **rmtfs and ModemManager kept the same PIDs.** Recovery is transparent to both, and rmtfs logged nothing.
+
+**Afterwards:** 0 kernel warnings or Oopses this boot, partitions unchanged, NetworkManager WWAN disabled, coredump still `disabled`.
+
+**Note:** crash 1 logged `qcom-q6v5-mss: port failed halt` once. One AXI halt request was not acked in time during `q6v5_stop`, and the reset that follows covers it. It did not recur on crash 2 or on any of the graceful stops. Watch for it.
+
+**bam-dmux status:**
+- Graceful restarts (section 31a) and crash recovery are both clean.
+- Still untested: teardown with the A2 powered and data in flight. That needs `online`.
