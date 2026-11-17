@@ -1,0 +1,236 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] net: wwan: qcom_bam_dmux: reset remote channels when the modem goes down
+
+The modem does not send CLOSE commands when it is stopped or crashes, so
+the remote_channels bitmap survives a modem restart. The restarted modem
+opens its channels again, and every OPEN is rejected with "Channel already
+open". The netdevs are never detached and reattached, so userspace is not
+told the data channels went away. On the Lumia 1520 (MSM8974) this
+happens on every rmtfs/ModemManager restart, and it would break mobile
+data and subsystem restart recovery.
+
+Register for the "mpss" SSR notifications, as the IPA driver does. On
+QCOM_SSR_BEFORE_SHUTDOWN, do what the CLOSE commands would have done:
+clear remote_channels and detach the netdevs that were open. Release the
+DMA channels while the BAM (powered by the modem) is still accessible;
+the downstream bam_dmux driver also avoids touching the A2 BAM once the
+modem is in reset. Complete the TX buffers the old modem will never
+finish, so their runtime PM references are dropped.
+
+pc_state is not reset. It tracks the edges of the modem's power control
+bit, which keep toggling consistently across the restart.
+
+If the device was runtime-active when the modem went down, the TX channel
+is gone while the PM core still considers us resumed. Make the TX submit
+paths drop packets in that case instead of dereferencing a NULL channel.
+The next runtime resume requests the channel again.
+
+A mutex serializes the pc interrupt handler and the shutdown path.
+MODULE_VERSION("ssr-rc1") identifies the build on the device.
+---
+--- a/drivers/net/wwan/Kconfig	2026-11-17 06:11:02.092885968 -0500
++++ b/drivers/net/wwan/Kconfig	2026-11-17 06:11:02.105772266 -0500
+@@ -64,6 +64,7 @@
+ config QCOM_BAM_DMUX
+ 	tristate "Qualcomm BAM-DMUX WWAN network driver"
+ 	depends on (DMA_ENGINE && PM && QCOM_SMEM_STATE) || COMPILE_TEST
++	depends on QCOM_RPROC_COMMON || QCOM_RPROC_COMMON=n
+ 	help
+ 	  The BAM Data Multiplexer provides access to the network data channels
+ 	  of modems integrated into many older Qualcomm SoCs, e.g. Qualcomm
+--- a/drivers/net/wwan/qcom_bam_dmux.c	2026-11-17 06:09:02.044697231 -0500
++++ b/drivers/net/wwan/qcom_bam_dmux.c	2026-11-17 06:11:02.083207986 -0500
+@@ -13,9 +13,13 @@
+ #include <linux/interrupt.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/netdevice.h>
++#include <linux/notifier.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/remoteproc/qcom_rproc.h>
++#include <linux/rtnetlink.h>
+ #include <linux/soc/qcom/smem_state.h>
+ #include <linux/spinlock.h>
+ #include <linux/wait.h>
+@@ -74,6 +78,10 @@
+ 	u32 pc_mask, pc_ack_mask;
+ 	wait_queue_head_t pc_wait;
+ 	struct completion pc_ack_completion;
++	struct mutex pc_lock; /* Serializes the pc handler and modem shutdown */
++
++	struct notifier_block ssr_nb;
++	void *ssr_cookie;
+ 
+ 	struct dma_chan *rx, *tx;
+ 	struct bam_dmux_skb_dma rx_skbs[BAM_DMUX_NUM_SKB];
+@@ -189,6 +197,10 @@
+ 	struct bam_dmux *dmux = skb_dma->dmux;
+ 	struct dma_async_tx_descriptor *desc;
+ 
++	/* No TX channel while resumed: the modem went down under us */
++	if (!dmux->tx)
++		return false;
++
+ 	desc = dmaengine_prep_slave_single(dmux->tx, skb_dma->addr,
+ 					   skb_dma->skb->len, DMA_MEM_TO_DEV,
+ 					   DMA_PREP_INTERRUPT);
+@@ -391,6 +403,16 @@
+ 		goto out;
+ 
+ 	dev_dbg(dmux->dev, "pending skbs after wakeup: %#lx\n", pending);
++	if (!dmux->tx) {
++		/* The modem went down while we were resumed, drop them */
++		for_each_set_bit(i, &pending, BAM_DMUX_NUM_SKB) {
++			struct sk_buff *skb = dmux->tx_skbs[i].skb;
++
++			bam_dmux_tx_done(&dmux->tx_skbs[i]);
++			dev_kfree_skb_any(skb);
++		}
++		goto out;
++	}
+ 	for_each_set_bit(i, &pending, BAM_DMUX_NUM_SKB) {
+ 		bam_dmux_skb_dma_submit_tx(&dmux->tx_skbs[i]);
+ 	}
+@@ -680,6 +702,7 @@
+ 
+ 	dev_dbg(dmux->dev, "pc: %u\n", new_state);
+ 
++	mutex_lock(&dmux->pc_lock);
+ 	if (new_state) {
+ 		if (bam_dmux_power_on(dmux))
+ 			bam_dmux_pc_ack(dmux);
+@@ -691,6 +714,7 @@
+ 	}
+ 
+ 	dmux->pc_state = new_state;
++	mutex_unlock(&dmux->pc_lock);
+ 	wake_up_all(&dmux->pc_wait);
+ 
+ 	return IRQ_HANDLED;
+@@ -706,6 +730,79 @@
+ 	return IRQ_HANDLED;
+ }
+ 
++static void bam_dmux_tx_drop_all(struct bam_dmux *dmux)
++{
++	int i;
++
++	atomic_long_set(&dmux->tx_deferred_skb, 0);
++	for (i = 0; i < BAM_DMUX_NUM_SKB; i++) {
++		struct bam_dmux_skb_dma *skb_dma = &dmux->tx_skbs[i];
++		struct sk_buff *skb = skb_dma->skb;
++
++		if (!skb)
++			continue;
++
++		bam_dmux_tx_done(skb_dma);
++		dev_kfree_skb_any(skb);
++	}
++}
++
++/*
++ * The modem does not send CLOSE commands when it is stopped or crashes, and
++ * a restarted modem opens its channels again. Forget the remote state before
++ * it goes down, as the CLOSE commands would have: otherwise every OPEN after
++ * a restart is rejected as "Channel already open" and the netdevs stay in
++ * whatever state the old modem left them. The DMA channels are released here
++ * too, while the BAM (powered by the modem) is still accessible; TX buffers
++ * the old modem will never complete are dropped. pc_state is left alone: it
++ * follows the edges of the modem's power control bit, which keeps toggling
++ * consistently across the restart.
++ */
++static int bam_dmux_ssr_notify(struct notifier_block *nb, unsigned long action,
++			       void *data)
++{
++	struct bam_dmux *dmux = container_of(nb, struct bam_dmux, ssr_nb);
++	struct net_device *netdev;
++	int ch;
++
++	if (action != QCOM_SSR_BEFORE_SHUTDOWN)
++		return NOTIFY_DONE;
++
++	/* Takes rtnl_lock itself */
++	cancel_work_sync(&dmux->register_netdev_work);
++
++	rtnl_lock();
++	for (ch = 0; ch < BAM_DMUX_NUM_CH; ch++) {
++		if (dmux->netdevs[ch])
++			netif_tx_disable(dmux->netdevs[ch]);
++	}
++	cancel_work_sync(&dmux->tx_wakeup_work);
++
++	mutex_lock(&dmux->pc_lock);
++	dev_dbg(dmux->dev, "modem going down, open channels: %*pbl\n",
++		BAM_DMUX_NUM_CH, dmux->remote_channels);
++	bam_dmux_power_off(dmux);
++	bam_dmux_tx_drop_all(dmux);
++
++	for_each_set_bit(ch, dmux->remote_channels, BAM_DMUX_NUM_CH) {
++		__clear_bit(ch, dmux->remote_channels);
++		netdev = dmux->netdevs[ch];
++		if (netdev)
++			netif_device_detach(netdev);
++	}
++	mutex_unlock(&dmux->pc_lock);
++
++	/* Dropping TX buffers may have woken queues again */
++	for (ch = 0; ch < BAM_DMUX_NUM_CH; ch++) {
++		if (dmux->netdevs[ch])
++			netif_tx_disable(dmux->netdevs[ch]);
++	}
++	rtnl_unlock();
++
++	wake_up_all(&dmux->pc_wait);
++	return NOTIFY_DONE;
++}
++
+ static int bam_dmux_runtime_suspend(struct device *dev)
+ {
+ 	struct bam_dmux *dmux = dev_get_drvdata(dev);
+@@ -802,6 +899,9 @@
+ 	init_waitqueue_head(&dmux->pc_wait);
+ 	init_completion(&dmux->pc_ack_completion);
+ 	complete_all(&dmux->pc_ack_completion);
++	ret = devm_mutex_init(dev, &dmux->pc_lock);
++	if (ret)
++		return ret;
+ 
+ 	spin_lock_init(&dmux->tx_lock);
+ 	INIT_WORK(&dmux->tx_wakeup_work, bam_dmux_tx_wakeup_work);
+@@ -812,6 +912,12 @@
+ 		dmux->tx_skbs[i].dmux = dmux;
+ 	}
+ 
++	dmux->ssr_nb.notifier_call = bam_dmux_ssr_notify;
++	dmux->ssr_cookie = qcom_register_ssr_notifier("mpss", &dmux->ssr_nb);
++	if (IS_ERR(dmux->ssr_cookie))
++		return dev_err_probe(dev, PTR_ERR(dmux->ssr_cookie),
++				     "Failed to register SSR notifier\n");
++
+ 	/* Runtime PM manages our own power vote.
+ 	 * Note that the RX path may be active even if we are runtime suspended,
+ 	 * since it is controlled by the remote side.
+@@ -848,6 +954,7 @@
+ err_disable_pm:
+ 	pm_runtime_disable(dev);
+ 	pm_runtime_dont_use_autosuspend(dev);
++	qcom_unregister_ssr_notifier(dmux->ssr_cookie, &dmux->ssr_nb);
+ 	return ret;
+ }
+ 
+@@ -858,6 +965,8 @@
+ 	LIST_HEAD(list);
+ 	int i;
+ 
++	qcom_unregister_ssr_notifier(dmux->ssr_cookie, &dmux->ssr_nb);
++
+ 	/* Unregister network interfaces */
+ 	cancel_work_sync(&dmux->register_netdev_work);
+ 	rtnl_lock();
+@@ -908,3 +1017,4 @@
+ MODULE_LICENSE("GPL v2");
+ MODULE_DESCRIPTION("Qualcomm BAM-DMUX WWAN Network Driver");
+ MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
++MODULE_VERSION("ssr-rc1");

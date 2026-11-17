@@ -853,3 +853,48 @@ The user power-cycled the phone into fastboot, and the r207 image (`boot-1520-qu
 - the EFS write decision (rmtfs `-r`);
 - `online`/RF only with the user's consent;
 - M6 call audio.
+
+## 31. bam-dmux: forget the modem's channels when it goes down (patch 0010, r208)
+
+**The bug** (seen since section 28): `qcom_bam_dmux` records the modem's OPEN commands in `remote_channels`. The modem sends no CLOSE when it is stopped or crashes, so after any modem restart in the same boot, every OPEN is rejected with "Channel already open", and the netdevs are never detached or reattached. That breaks mobile data after a restart and after subsystem-restart recovery.
+
+**Mainline** (torvalds master, checked 2026-11-17): no restart handling at all. `remote_channels` is cleared only by CLOSE, and the last functional change was in 2024.
+
+**Downstream** (msm8974 `arch/arm/mach-msm/bam_dmux.c`, `restart_notifier_cb`):
+- BEFORE_SHUTDOWN only sets `in_global_reset`.
+- AFTER_SHUTDOWN does the cleanup:
+  - power down the uplink and `power_vote(0)`;
+  - clear `BAM_CH_REMOTE_OPEN` on every channel (re-creating the channel devices that were open);
+  - free the TX pool.
+- While in reset it skips every A2 BAM register access (`sps_disconnect` and `sps_device_reset`) and the ACK toggles.
+- The power-control ACK parity is kept across the restart.
+
+**Patch 0010** (`net: wwan: qcom_bam_dmux: reset remote channels when the modem goes down`). The driver registers for the `"mpss"` SSR notifications, like `drivers/net/ipa`. On `QCOM_SSR_BEFORE_SHUTDOWN`, while the modem-powered BAM is still clocked, it:
+- stops every netdev's queues and cancels the TX wakeup work;
+- releases both DMA channels (`bam_dmux_power_off`);
+- completes TX buffers the old modem will never finish, so their runtime-PM references are returned;
+- clears `remote_channels` and detaches the netdevs that were open, which is what the missing CLOSEs would have done.
+
+What it leaves alone, and the safety changes:
+- **`pc_state` is not reset.** It follows the edges of the modem's power-control bit, and those keep toggling consistently across the restart.
+- **TX safety:** if the driver was runtime-active when the modem went down, the TX channel is gone while the PM core still thinks the driver is awake. So the TX submit and wakeup paths drop packets when there is no channel, instead of dereferencing NULL. The next runtime resume requests the channel again.
+- **Locking:** a mutex serializes the pc interrupt thread with the shutdown path. Lock order is rtnl, then `pc_lock`.
+- **Kconfig:** `depends on QCOM_RPROC_COMMON || QCOM_RPROC_COMMON=n`.
+- **Build ID:** `MODULE_VERSION("ssr-rc1")`.
+
+**Checks:**
+- W=1 compile is clean in the r185chk tree.
+- checkpatch `--strict` reports 0/0/0.
+- Staged as pkgrel 208, with every sha512 matching its file in source order.
+- `qcom_bam_dmux` is a module (`=m`), and `MODVERSIONS` and no module signing mean the r208 `.ko` matches the r207 kernel's symbols.
+
+**Why no live module swap:** unloading the old driver with the modem stopped may free a DMA channel on the modem's BAM after the MSS is in reset (the old driver may still hold RX). That register access could hang the bus. So the plan is to install the module, then cold boot.
+
+**Test** (`tools/msm8974-bam-dmux-restart-test.sh`, read-only for the partitions, with the same radio-on guard):
+- bam-dmux dynamic debug is switched on for the run.
+- Each of N cycles stops and restarts ModemManager and rmtfs. Each cycle must show a shutdown reset, channel opens, no "Channel already open", no warnings, ModemManager back at `failed`/`disabled` with power `off`/`low` and 11 ports.
+- All six partitions are hashed before and after.
+
+**Not yet covered:**
+- A modem crash (true SSR with `recovery enabled`). This test covers graceful stops only.
+- Data traffic across a restart, which needs the radio on (`online`), and that needs separate consent.
