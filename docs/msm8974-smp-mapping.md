@@ -110,3 +110,15 @@ GICD at `0xF9000000`, GICC at `0xF9002000` (the same as our DT). There is no PSC
 - with `--suspend`, 4 CPUs still online after one s2idle cycle.
 
 Then rerun the modem tests (bam-dmux restart, crash recovery) and an audio playback check.
+
+### 6a. r209 built and verified (by artefact)
+
+- Package `linux-postmarketos-qcom-msm8974-6.16.12-r209.apk`. The codec artefact gate passed: 729 PASS, 0 FAIL.
+- **Kernel:** the zImage's xz payload decompressed to the raw Image contains `park-rc1`, the new enable method and both boot messages.
+  - The trampoline, as clang built it, is byte-for-byte the instruction sequence of the gcc check build, at Image `+0x12cbc0` (phys `0x10134bc0`).
+  - Its PC-relative literal resolves to Image `+0x10d000` (phys `0x10115000`). That code is `secondary_startup_arm`: `bl __hyp_stub_install_secondary` (ARM_VIRT_EXT=y), then `safe_svcmode_maskall`, then the processor-id read.
+- **DTB:** all four cpu nodes have `enable-method = "microsoft,parking-protocol"` and their `cpu-release-addr`, and `memory@301000` is reserved `no-map`.
+- **Test image** `boot-1520-park-rc1-smp.img`: the r209 image with `nosmp maxcpus=1` removed and `ignore_loglevel` restored, so a hang leaves its last lines on screen. It is otherwise byte-identical to the r209 image.
+- **`tools/check-bootimg.py`:** a cmdline without `nosmp` now passes only if every CPU node uses `microsoft,parking-protocol`.
+  - The test image passes, and the default r209 image (with `nosmp`) passes.
+  - A kpss-acc image with `nosmp` removed still fails, as before.

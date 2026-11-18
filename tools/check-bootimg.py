@@ -301,13 +301,23 @@ def main():
         if good not in cmdline:
             warn(f"cmdline is missing {good} -- first boots on msm8974 "
                  "usually need it")
-    # CONFIRMED by experiment 2026-07-04: the 1520's Windows-Phone TrustZone
-    # rejects the SCM calls mainline uses to start secondary Krait cores; the
-    # SoC resets before any log exists. Single-core is mandatory until an
-    # alternate SMP enable-method is implemented.
-    if "nosmp" not in cmdline.split():
-        fail("cmdline lacks 'nosmp' -- SMP bring-up SCM calls crash the "
-             "WP TrustZone instantly on this device; add 'nosmp maxcpus=1'")
+    # CONFIRMED by experiment 2026-07-04: SMP with the SoC's qcom,kpss-acc-v2
+    # enable-method resets the 1520 before any log exists. The cause is that
+    # the WP UEFI leaves CPUs 1-3 parked in Microsoft Parking Protocol loops
+    # and kpss-acc power-sequences running cores (docs/msm8974-smp-mapping.md).
+    # Without nosmp, every CPU node must therefore use the parking method
+    # (patch 0011); anything else is the configuration that resets the phone.
+    cpus = [n for p, n in nodes.items()
+            if re.fullmatch(r"/cpus/cpu@[0-9a-f]+", p)]
+    methods = sorted({prop_str(n, "enable-method") for n in cpus})
+    park = bool(cpus) and methods == ["microsoft,parking-protocol"]
+    if "nosmp" not in cmdline.split() and park:
+        info(f"SMP: no nosmp, and all {len(cpus)} CPU nodes use "
+             "microsoft,parking-protocol (patch 0011)")
+    elif "nosmp" not in cmdline.split():
+        fail(f"cmdline lacks 'nosmp' and the CPU enable-methods are {methods} "
+             "-- kpss-acc SMP bring-up resets this device instantly; add "
+             "'nosmp maxcpus=1' or use the parking-protocol DT")
     if "cpuidle.off=1" not in cmdline.split():
         warn("cmdline lacks 'cpuidle.off=1' -- deep idle (SPC) also goes "
              "through the WP TrustZone; keep it off until proven safe")
