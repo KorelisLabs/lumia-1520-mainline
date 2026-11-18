@@ -1,0 +1,249 @@
+From: Lumia 1520 mainline port
+Subject: [PATCH] ARM: qcom: boot secondary CPUs through the Microsoft Parking Protocol
+
+The Windows Phone UEFI on Lumia MSM8974 phones powers CPUs 1-3 up itself
+and parks them in a firmware loop, one 4 KiB mailbox per CPU, as listed
+in the stock ACPI MADT (parking protocol version 1). Windows wakes them by
+writing an entry point and the CPU id into the mailbox and sending an
+interrupt. The SoC's qcom,kpss-acc-v2 method instead asks TrustZone for a
+cold boot address and power-sequences cores that are already running,
+which resets the phone; this is why these phones have been booted with
+"nosmp".
+
+Add a "microsoft,parking-protocol" enable method that does what Windows
+does. Each CPU node names its mailbox in cpu-release-addr. At prepare
+time, a CPU whose mailbox is not parked (pending jump address, or no
+firmware code in its page) is marked not present. To boot a CPU, write
+the jump address, then the CPU id, send the wake-up IPI, and wait up to
+100 ms for the firmware to clear the jump field, which it does just
+before it branches. On timeout, disarm the mailbox and fail, so a late
+wake-up cannot enter a CPU nobody waits for. The mailboxes are mapped
+uncached, as the protocol requires.
+
+The firmware branches with the CPU in whatever state it left it, possibly
+with the MMU and caches on. A small ARM trampoline turns the MMU, caches
+and branch predictor off and invalidates the I-cache, branch predictor and
+TLB, then continues in secondary_startup_arm through a PC-relative
+offset. The D-cache is deliberately not cleaned: dirty lines belong to
+the firmware, and __v7_setup invalidates L1 before the caches come back.
+
+A CPU cannot be returned to the firmware loop, so there is no cpu_die and
+the CPUs cannot be offlined. This tree's suspend is s2idle only, which
+does not offline CPUs.
+
+The "park-rc1" tag in the prepare-time message identifies the build.
+---
+--- a/arch/arm/mach-qcom/Makefile	2026-11-18 17:22:38.032682150 -0500
++++ b/arch/arm/mach-qcom/Makefile	2026-11-18 17:22:38.058442575 -0500
+@@ -1,2 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-$(CONFIG_SMP)	+= platsmp.o
++obj-$(CONFIG_SMP)	+= platsmp.o park-entry.o
+--- a/arch/arm/mach-qcom/platsmp.c	2026-11-18 17:22:38.032467302 -0500
++++ b/arch/arm/mach-qcom/platsmp.c	2026-11-18 17:22:38.052476037 -0500
+@@ -14,8 +14,10 @@
+ #include <linux/of_address.h>
+ #include <linux/smp.h>
+ #include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/firmware/qcom/qcom_scm.h>
+ 
++#include <asm/cputype.h>
+ #include <asm/smp_plat.h>
+ 
+ 
+@@ -404,3 +406,142 @@
+ #endif
+ };
+ CPU_METHOD_OF_DECLARE(qcom_smp_kpssv2, "qcom,kpss-acc-v2", &qcom_smp_kpssv2_ops);
++
++/*
++ * Microsoft Multiprocessor Parking Protocol, version 1.
++ *
++ * The Windows Phone UEFI on Lumia MSM8974 phones (e.g. the Lumia 1520)
++ * powers CPUs 1-3 up itself and parks them in a firmware loop, one 4 KiB
++ * mailbox per CPU (listed in the stock ACPI MADT). The kpss-acc-v2 method
++ * above would run the ACC/SAW power-up sequence and ask TrustZone for a
++ * cold boot address for cores that are already running, which resets
++ * these phones. Wake them through the mailbox instead, as Windows does.
++ *
++ * Mailbox layout used here (the rest is reserved):
++ *   0x000  u32 cpu_id     MPIDR affinity of the CPU to wake, ~0 for none
++ *   0x008  u64 jump       entry point; the firmware clears it on wake-up
++ *   0x800  ...            firmware-owned: the parking loop itself
++ *
++ * A woken CPU whose low cpu_id byte matches its MPIDR Aff0 and whose jump
++ * field is non-zero clears the jump field and branches to it. The
++ * mailboxes are mapped uncached, as the protocol requires.
++ *
++ * A CPU cannot be returned to the firmware loop, so there is no cpu_die:
++ * the CPUs cannot be offlined (platform_can_hotplug_cpu() returns 0).
++ */
++#define PARK_VERSION		"park-rc1"
++#define PARK_MBOX_SIZE		0x1000
++#define PARK_MBOX_CPU_ID	0x000
++#define PARK_MBOX_JUMP_LO	0x008
++#define PARK_MBOX_JUMP_HI	0x00c
++#define PARK_MBOX_FW_CODE	0x800
++#define PARK_CPU_ID_NONE	0xffffffff
++#define PARK_TAKE_TIMEOUT_US	100000
++
++extern void qcom_park_secondary_entry(void);
++
++static void __iomem *park_mbox[NR_CPUS];
++
++static int __init qcom_park_map_mailbox(unsigned int cpu)
++{
++	struct device_node *np;
++	void __iomem *mbox;
++	u32 id, lo, hi, code;
++	u64 addr;
++	int ret;
++
++	np = of_get_cpu_node(cpu, NULL);
++	if (!np)
++		return -ENODEV;
++	ret = of_property_read_u64(np, "cpu-release-addr", &addr);
++	of_node_put(np);
++	if (ret) {
++		pr_err("CPU%u: no parking mailbox (cpu-release-addr)\n", cpu);
++		return ret;
++	}
++
++	mbox = ioremap(addr, PARK_MBOX_SIZE);
++	if (!mbox)
++		return -ENOMEM;
++
++	id = readl(mbox + PARK_MBOX_CPU_ID);
++	lo = readl(mbox + PARK_MBOX_JUMP_LO);
++	hi = readl(mbox + PARK_MBOX_JUMP_HI);
++	code = readl(mbox + PARK_MBOX_FW_CODE);
++
++	/*
++	 * A parked CPU has no jump address pending and firmware code in its
++	 * page. Anything else means the firmware did not park this CPU, and
++	 * waking it through the mailbox would do nothing or worse.
++	 */
++	if (lo || hi || !code) {
++		pr_err("CPU%u: mailbox %#llx is not parked (id %#x jump %#x:%#x code %#x)\n",
++		       cpu, addr, id, hi, lo, code);
++		iounmap(mbox);
++		return -ENODEV;
++	}
++
++	park_mbox[cpu] = mbox;
++	pr_info("CPU%u: parked, mailbox %#llx (id %#x) [%s]\n",
++		cpu, addr, id, PARK_VERSION);
++	return 0;
++}
++
++static void __init qcom_park_prepare_cpus(unsigned int max_cpus)
++{
++	unsigned int cpu, this = smp_processor_id();
++
++	for_each_present_cpu(cpu) {
++		if (cpu == this)
++			continue;
++		if (qcom_park_map_mailbox(cpu)) {
++			set_cpu_present(cpu, false);
++			pr_warn("CPU%u: disabled\n", cpu);
++		}
++	}
++}
++
++static int qcom_park_boot_secondary(unsigned int cpu, struct task_struct *idle)
++{
++	void __iomem *mbox = park_mbox[cpu];
++	phys_addr_t entry = __pa_symbol(qcom_park_secondary_entry);
++	u32 hwid = cpu_logical_map(cpu) & MPIDR_HWID_BITMASK;
++	u32 jump;
++	int ret;
++
++	if (!mbox)
++		return -ENODEV;
++	/* the firmware branches with bx: bit 0 would select Thumb state */
++	if (entry & 1)
++		return -EINVAL;
++
++	/* jump address first, then the CPU id that arms it */
++	writel_relaxed(0, mbox + PARK_MBOX_JUMP_HI);
++	writel_relaxed(lower_32_bits(entry), mbox + PARK_MBOX_JUMP_LO);
++	writel(hwid, mbox + PARK_MBOX_CPU_ID);
++	mb();
++
++	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
++
++	/* the firmware clears the jump field just before it branches */
++	ret = readl_poll_timeout_atomic(mbox + PARK_MBOX_JUMP_LO, jump, !jump,
++					10, PARK_TAKE_TIMEOUT_US);
++	if (ret) {
++		/* disarm, so a late wake-up cannot enter a CPU nobody waits for */
++		writel(PARK_CPU_ID_NONE, mbox + PARK_MBOX_CPU_ID);
++		writel(0, mbox + PARK_MBOX_JUMP_LO);
++		pr_err("CPU%u: did not leave the parking loop (jump %#x)\n",
++		       cpu, jump);
++		return -ETIMEDOUT;
++	}
++
++	writel(PARK_CPU_ID_NONE, mbox + PARK_MBOX_CPU_ID);
++	pr_info("CPU%u: left the parking loop\n", cpu);
++	return 0;
++}
++
++static const struct smp_operations qcom_smp_park_ops __initconst = {
++	.smp_prepare_cpus	= qcom_park_prepare_cpus,
++	.smp_boot_secondary	= qcom_park_boot_secondary,
++};
++CPU_METHOD_OF_DECLARE(qcom_smp_park, "microsoft,parking-protocol", &qcom_smp_park_ops);
+--- a/arch/arm/mach-qcom/park-entry.S	1969-12-31 19:00:00.000000000 -0500
++++ b/arch/arm/mach-qcom/park-entry.S	1969-12-31 19:00:00.000000000 -0500
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Entry trampoline for secondary CPUs woken from a Microsoft Parking
++ * Protocol loop (see platsmp.c).
++ *
++ * The firmware's parking loop branches to the jump address as it is, so
++ * the CPU arrives in whatever state the firmware left it: possibly with
++ * the MMU, caches and branch predictor on (UEFI runs identity mapped).
++ * secondary_startup expects them off. Turn them off here, invalidate the
++ * I-cache, branch predictor and TLB, then continue in secondary_startup,
++ * which forces SVC mode with interrupts masked.
++ *
++ * The D-cache is disabled but deliberately not cleaned: any dirty lines
++ * belong to the firmware, and writing them back could corrupt memory
++ * that Linux now owns. __v7_setup invalidates the L1 D-cache before the
++ * caches are turned back on.
++ *
++ * This runs from its physical address, so it must stay position
++ * independent: secondary_startup_arm is reached through a PC-relative
++ * offset, never through an absolute address.
++ */
++#include <linux/linkage.h>
++#include <asm/assembler.h>
++
++	.text
++	.arm
++	.align	5
++ENTRY(qcom_park_secondary_entry)
++	cpsid	aif
++	mrc	p15, 0, r0, c1, c0, 0		@ SCTLR
++	bic	r0, r0, #0x1			@ M: MMU off
++	bic	r0, r0, #0x4			@ C: D-cache off
++	bic	r0, r0, #0x800			@ Z: branch prediction off
++	bic	r0, r0, #0x1000			@ I: I-cache off
++	mcr	p15, 0, r0, c1, c0, 0
++	isb
++	mov	r0, #0
++	mcr	p15, 0, r0, c7, c5, 0		@ ICIALLU
++	mcr	p15, 0, r0, c7, c5, 6		@ BPIALL
++	mcr	p15, 0, r0, c8, c7, 0		@ TLBIALL
++	dsb
++	isb
++	adr	r1, 1f
++	ldr	r2, [r1]
++	add	r2, r2, r1
++	bx	r2				@ secondary_startup_arm, ARM state
++	.align	2
++1:	.long	secondary_startup_arm - 1b
++ENDPROC(qcom_park_secondary_entry)

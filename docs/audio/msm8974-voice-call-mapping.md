@@ -104,7 +104,7 @@ The modem's voice service answers on QMI ("Voice 2.1", section 21 of the modem d
 
 ## 7. Plan
 
-1. **Patch 0011:** port [OOT] q6voice (common, MVM, CVP, CVS, DAI) onto 6.16, with these changes:
+1. **Patch 0012** (0011 went to SMP): port [OOT] q6voice (common, MVM, CVP, CVS, DAI) onto 6.16, with these changes:
    - zero the CVP name;
    - make the topology a module parameter, so the probe can try both pairs without a rebuild;
    - add CVS passive create, as [DS] does.

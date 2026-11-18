@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=208
+pkgrel=209
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -46,6 +46,7 @@ source="
 	0008-remoteproc-qcom-q6v5-mss-decrypt-an-ssd-mba.patch
 	0009-remoteproc-qcom-q6v5-mss-decrypt-ssd-modem-segments.patch
 	0010-net-wwan-qcom-bam-dmux-reset-channels-on-modem-shutdown.patch
+	0011-ARM-qcom-boot-secondary-CPUs-through-the-parking-protocol.patch
 "
 builddir="$srcdir/linux-${_tag#v}"
 
@@ -90,7 +91,7 @@ package() {
 sha512sums="
 6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-$_tag.tar.gz
 18cc988935f2fff40cf31d8fd0c66d7db6538d5d8675c4a71e4a1fa426d5ca7817ae713756f1df7d74e129110029f3359c18606ee8ea9daf29acfc048671b14a  config-postmarketos-qcom-msm8974.armv7
-a3b467644799e0df829f0f074df849207834e9f05c40858807c9c0f6a6142e7fb6de5ddc397001864564f83c1bc5e8eb9bb6bac2f6fdf890f9f9b1c210786d72  qcom-msm8974-microsoft-common.dtsi
+430aebd81e913c2d4c6696fa6808cdf63e97e68eaf3c8910b7cd2803bd4a55cd875abafab80e29bcbdf95040a931094d1be9ebb7eaf30520e1f5990943d30983  qcom-msm8974-microsoft-common.dtsi
 8a15728e5d4bfaae2cbc5fcc8266a040c11f51a4509f1b7c67c03f0096d29fe66bcbfbe74693fd3c701e0db64add20a4518b1d5f0b5590ee15d850781c9dade0  qcom-msm8974-microsoft-rm940.dts
 1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
 ad96107feffcbe19fdcc5223f15dca7410daef7ac630a63837cfdcf5564a45f56e80b09b72a6e6abfe5f4026e2513f16c5d3d83d73c8b05f5016efb00a1101bb  0003-regmap-slimbus-pass-slim_device-as-bus-context.patch
@@ -102,4 +103,5 @@ ce2840e21264ab7efe7768b29a88560f01adf7094d41c8affb2654abee32c3c42b2722675c827cd1
 4840c0ad9adbdc5bcb2334b09b0619d7f38c2083c56f2df7a4f60a4cd5d161e86bba0fcbc983a1451bc118a8ec1426000fe03db53f08e1638dc43a2ad30f670e  0008-remoteproc-qcom-q6v5-mss-decrypt-an-ssd-mba.patch
 54f3360b9e8c8b0bfb1803bbab7e2854eb266f4e40ead7b0b1913c159076ab413826e44837cb514bd5ba0feb0d29de51cc3b04d15c0e123e64566fd89979f82a  0009-remoteproc-qcom-q6v5-mss-decrypt-ssd-modem-segments.patch
 f5bcd0328906230fc6af72ce2b1e6f713ff978bbc2146871b3cfb2f0ed63f9ca74e889899039e7d6a6cb33011a5c4007acd09d179135f7488a60482bd5e3d5f7  0010-net-wwan-qcom-bam-dmux-reset-channels-on-modem-shutdown.patch
+0596cfdbd5918584c9488565dfe4fd893fe28846f9b647296825bb6927c968de88aef5a4f7ae6fd07e6acd8cc803be6399d304533c0aa410e294652984817182  0011-ARM-qcom-boot-secondary-CPUs-through-the-parking-protocol.patch
 "

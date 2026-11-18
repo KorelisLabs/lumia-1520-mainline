@@ -21,7 +21,41 @@
 			reg = <0x00400000 0x00800000>;
 			no-map;
 		};
+
+		/* Parking Protocol mailboxes, one 4 KiB page per CPU (MADT). */
+		park_mailboxes: memory@301000 {
+			reg = <0x00301000 0x4000>;
+			no-map;
+		};
 	};
+};
+
+/*
+ * The Windows Phone UEFI parks CPUs 1-3 in Microsoft Parking Protocol
+ * loops (MADT: protocol version 1, mailboxes below). Wake them through
+ * the mailboxes, as Windows does. The SoC's qcom,kpss-acc-v2 method would
+ * power-sequence cores that are already running, which resets the phone.
+ * See docs/msm8974-smp-mapping.md. CPU0 is the boot CPU and never parked;
+ * its mailbox is listed for completeness.
+ */
+&cpu0 {
+	enable-method = "microsoft,parking-protocol";
+	cpu-release-addr = <0x0 0x00301000>;
+};
+
+&cpu1 {
+	enable-method = "microsoft,parking-protocol";
+	cpu-release-addr = <0x0 0x00302000>;
+};
+
+&cpu2 {
+	enable-method = "microsoft,parking-protocol";
+	cpu-release-addr = <0x0 0x00303000>;
+};
+
+&cpu3 {
+	enable-method = "microsoft,parking-protocol";
+	cpu-release-addr = <0x0 0x00304000>;
 };
 
 /* eMMC -- without this the kernel sees no internal storage and the

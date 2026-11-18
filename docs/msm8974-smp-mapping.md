@@ -1,6 +1,6 @@
 # SMP (all four cores): mapping
 
-**Status:** map only, 2026-11-18. Nothing is built or booted. The phone still runs `nosmp maxcpus=1`.
+**Status:** mapped, and patch 0011 written and staged as r209 (section 6), 2026-11-18. Not built or booted yet. The phone still runs `nosmp maxcpus=1`.
 
 **Sources:**
 - **[ACPI]** the phone's own ACPI tables (`PLAT` partition, `mmcblk0p24:/ACPI/*.acp`, mounted read-only and unmounted after). Copied to WSL `~/winacpi` for analysis only; never committed.
@@ -80,3 +80,33 @@ GICD at `0xF9000000`, GICC at `0xF9002000` (the same as our DT). There is no PSC
    - the modem/audio regressions (rmtfs/MM up, bam-dmux restart, playback), since interrupts and workqueues now spread across cores;
    - a suspend/resume cycle.
 4. **Later:** CPU frequency scaling for the secondaries (they run at whatever clock the firmware left), and hotplug if it is ever needed.
+
+## 6. Patch 0011 (r209): written, compile-checked, staged
+
+`patches/0011-ARM-qcom-boot-secondary-CPUs-through-the-parking-protocol.patch`, pkgrel 209.
+
+- **`arch/arm/mach-qcom/platsmp.c`:** a new `microsoft,parking-protocol` enable method.
+  - At prepare time, each secondary's mailbox is `ioremap`ped (uncached) from `cpu-release-addr` and checked. If a jump address is pending, or there is no firmware code at `+0x800`, that CPU is marked not present and never touched.
+  - To boot a CPU: write the jump address (the trampoline's physical address), then the CPU id, then send the wake-up IPI. Then poll up to 100 ms for the firmware to clear the jump field. If it never clears, disarm the mailbox and fail.
+  - No `cpu_die`, so the CPUs cannot be offlined. Suspend here is s2idle only, which does not offline them.
+  - The prepare-time message carries the tag `[park-rc1]`.
+- **`arch/arm/mach-qcom/park-entry.S`:** the trampoline from section 4.
+  - It masks interrupts, turns the MMU, D-cache, branch predictor and I-cache off, and invalidates the I-cache, branch predictor and TLB.
+  - It then reaches `secondary_startup_arm` through a PC-relative offset (`R_ARM_REL32`).
+  - The D-cache is deliberately not cleaned, because its dirty lines are the firmware's.
+- **DT** (`qcom-msm8974-microsoft-common.dtsi`): the four cpu nodes get the new `enable-method` and `cpu-release-addr`. `0x301000`-`0x304fff` is reserved `no-map`.
+- **Checks done here:**
+  - gcc W=1 compile of both objects in the check tree: no warnings. The real build uses clang; the assembly is plain ARMv7.
+  - Disassembly of the trampoline.
+  - The DT compiles, and the dtb carries the new properties.
+  - The patch applies to a pristine tree.
+  - Every APKBUILD checksum matches its file in order, and the live and repo APKBUILDs are identical.
+- **The default image stays single-core:** deviceinfo still passes `nosmp maxcpus=1`. The test image is the r209 boot image with those two removed by `tools/patch-cmdline.py`.
+
+**Test:** `tools/msm8974-smp-check.sh [--suspend]`, on the phone as `~/wcd9320-tools/msm8974-smp-check.sh`. It refuses on a `nosmp` boot (checked). Pass means:
+- 4 CPUs online, and each one did work in the parallel run;
+- a parallel speedup of at least 3x;
+- no oops, BUG, WARNING or lockup lines in the kernel log;
+- with `--suspend`, 4 CPUs still online after one s2idle cycle.
+
+Then rerun the modem tests (bam-dmux restart, crash recovery) and an audio playback check.
