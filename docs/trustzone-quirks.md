@@ -6,7 +6,7 @@ Android devices, and several routine kernel paths cause an instant,
 log-less SoC reset. The findings below were established by experiment
 on real hardware and by reading the mainline driver source.
 
-## 1. SMP bring-up resets the SoC → `nosmp maxcpus=1` is mandatory
+## 1. SMP bring-up resets the SoC with kpss-acc: solved by the parking method (r209)
 
 Mainline starts secondary Krait cores via SCM calls (set boot address +
 power-up through kpss-acc/SAW). The WP TZ rejects these hard enough to reset
