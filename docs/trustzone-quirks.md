@@ -17,6 +17,14 @@ Until someone implements an alternate enable-method, the device runs
 single-core. Removing `nosmp` produces a boot that dies in the first
 fraction of a second and usually falls through to Windows.
 
+> **Update (2026-11-18), see [msm8974-smp-mapping.md](msm8974-smp-mapping.md):**
+> the reasoning above is outdated. Legacy SCM calls do work on this
+> TrustZone (the ADSP and modem boot through them), and `0x2000601` is only
+> LK's ARMv8-convention probe. The real picture: the firmware parks CPUs 1-3
+> in a Microsoft Parking Protocol loop (mailboxes `0x301000`-`0x304000`,
+> per the MADT), so mainline's power-up sequence hits cores that are already
+> running. The fix is a parking-protocol enable method, not a TrustZone call.
+
 ## 2. The USB PHY `-22` — *not* a TrustZone problem (SOLVED)
 
 For a long time this device looked like it had a hardware/firmware wall:
