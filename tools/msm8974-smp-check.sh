@@ -54,7 +54,8 @@ loglines() {
 	dmesg | grep -E 'parking|parked|CPU[0-9]+: (failed|did not|left|thread)|SMP: |Brought up|smp: '
 }
 errlines() {
-	dmesg | grep -E -i 'oops|BUG[: ]|WARNING:|soft lockup|hard lockup|rcu.*stall|Internal error|Unable to handle'
+	# case-sensitive: "ramoops" and "printk: debug" are not errors
+	dmesg | grep -E 'Oops|BUG:|WARNING:|soft lockup|hard lockup|rcu_(sched|preempt).*stall|Internal error|Unable to handle'
 }
 masks() {
 	echo "  possible $(cat $CPUS/possible)  present $(cat $CPUS/present)  online $(cat $CPUS/online)"
@@ -65,7 +66,7 @@ masks() {
 }
 nonline() { grep -c '^processor' /proc/cpuinfo; }
 
-job() { taskset -c "$1" sh -c "head -c ${MB}M /dev/zero | sha256sum >/dev/null"; }
+job() { taskset -c "$1" sh -c "head -c $((MB * 1048576)) /dev/zero | sha256sum >/dev/null"; }
 
 {
 echo "== SMP check $STAMP ($(uname -r))"

@@ -122,3 +122,32 @@ Then rerun the modem tests (bam-dmux restart, crash recovery) and an audio playb
 - **`tools/check-bootimg.py`:** a cmdline without `nosmp` now passes only if every CPU node uses `microsoft,parking-protocol`.
   - The test image passes, and the default r209 image (with `nosmp`) passes.
   - A kpss-acc image with `nosmp` removed still fails, as before.
+
+### 6b. r209 SMP test boot: PASS (2026-11-18)
+
+Booted `boot-1520-park-rc1-smp.img` (sha256 `fe2a29c1b8496cdf`) by `fastboot boot` from a cold restart. The cmdline has no `nosmp`/`maxcpus=1` and keeps `cpuidle.off=1`.
+
+- **Bring-up:** all three secondaries were parked (`id 0xffffffff`). Each left the parking loop and came online about 1.2 ms after being woken:
+  - CPU1 at 7.7 ms, CPU2 at 9.0 ms, CPU3 at 10.2 ms;
+  - then `SMP: Total of 4 processors activated (153.60 BogoMIPS)`;
+  - possible, present and online are all 0-3.
+- **Boot:** SSH answered 43 s after `fastboot boot`, against about 58 s single-core.
+- **`msm8974-smp-check.sh`: PASS.**
+  - Parallel load: one 48 MiB sha256 job on CPU0 took 5.00 s; one job per CPU took 4.79 s. That is a 4.1x speedup, with 469-480 busy ticks on each CPU.
+  - No Oops, BUG, WARNING or lockup lines.
+- **`msm8974-smp-check.sh --suspend`: PASS.** The load ran again at 4.0x. One s2idle cycle with an RTC wake (suspend 447 s, resume 467 s) came back with 4 CPUs online and no new kernel errors.
+- **Modem, with interrupts now spread over four CPUs:**
+  - bam-dmux restart test, 3 cycles: PASS. Each cycle reset and reopened 8 channels, with 0 "Channel already open" and 0 warnings.
+  - Crash recovery, 2 crashes: PASS. Each was recovered, re-decrypted, bam-dmux reset and reopened, ModemManager came back and the radio stayed off.
+  - The partitions were unchanged in both.
+- **Audio (silent):** wcd9320 `quietlog-rc1` reached core init in the known state (`0 -> 94 -> 95`), and the card registered with 5 links. No audible playback was run.
+- **Whole boot:** 0 Oops, BUG or WARNING lines. Interrupt counts per CPU at about 12 minutes: 79116, 23750, 24000, 20099.
+
+Test-script fixes made during the run:
+- the phone's `head` takes no `M` suffix, so the load test now passes a byte count;
+- the error grep is now case-sensitive, because `ramoops` and `printk: debug` matched it.
+
+Not covered yet:
+- an audible playback check (the acoustic rules apply);
+- CPU frequency scaling, since the secondaries run at the firmware's clock;
+- making SMP the default (deviceinfo still passes `nosmp`).
