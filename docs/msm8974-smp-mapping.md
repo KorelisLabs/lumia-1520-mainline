@@ -189,3 +189,21 @@ Booted the r8 default image `boot-1520-park-default.img` (sha256 `5f17d56ebe2519
   - the modem still reaches `running`.
 
   The stall was timing-dependent, so one clean boot is evidence, not proof. The config check is the hard criterion.
+
+**Build check:** the r210 kernel (`#211`, sha256 `ef4365eee5e081fb`) no longer contains the loader's `Loaded FW: %s, sha256` string. The r209 kernel did. The image (sha256 `00d645455d0eb456`) passes `check-bootimg.py`, with the usual no-UART warning.
+
+**Test boot (2026-11-19): PASS.** `fastboot boot` from a cold restart:
+- **Config:** `/proc/config.gz` reads `# CONFIG_FW_LOADER_DEBUG is not set`.
+- **CPUs:** CPUs 1-3 left the parking loop at 6.8, 8.0 and 9.2 ms. Online is 0-3.
+- **`msm8974-smp-check.sh --suspend`: PASS.**
+  - No kernel-log errors, and 0 RCU stall lines in the whole boot.
+  - Parallel load 3.9x, with 521-538 busy ticks per CPU.
+  - One s2idle cycle came back with 4 CPUs.
+- **Modem:** it reached `running`; rmtfs and ModemManager are active and WWAN is disabled. The MPSS segment load is faster without the hashing:
+
+  | | r209 (6d) | r210 |
+  |---|---|---|
+  | metadata parsed → decrypted | 1.67 s | 1.17 s |
+  | modem up | 33.6 s | 33.1 s |
+
+- **Audio:** the ADSP is up and the Q6 sound card registered.
