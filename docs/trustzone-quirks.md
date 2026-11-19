@@ -17,6 +17,11 @@ Until someone implements an alternate enable-method, the device runs
 single-core. Removing `nosmp` produces a boot that dies in the first
 fraction of a second and usually falls through to Windows.
 
+**Since r209 / device-nokia-rm940 r8 the device runs all four cores** with the
+parking-protocol enable method; `nosmp` is gone from deviceinfo. Removing
+`nosmp` from an image whose DT still uses `qcom,kpss-acc-v2` resets the phone
+exactly as described above, and `tools/check-bootimg.py` refuses such an image.
+
 > **Update (2026-11-18), see [msm8974-smp-mapping.md](msm8974-smp-mapping.md):**
 > the reasoning above is outdated. Legacy SCM calls do work on this
 > TrustZone (the ADSP and modem boot through them), and `0x2000601` is only

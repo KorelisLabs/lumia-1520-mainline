@@ -25,7 +25,7 @@ left intact.
 | PMIC regulators (pm8941) | ✅ | ported from mainline hammerhead (same PMIC) |
 | microSD | ⚠️ partial | controller (`mmc1`) initialises; no card available to test media |
 | Buttons (volume, 2-stage camera) | ✅ | wiring from stock ACPI, verified by press test |
-| SMP (4 cores) | ❌ | WP TrustZone rejects SCM bring-up — **`nosmp` mandatory** |
+| SMP (4 cores) | ✅ | the WP UEFI parks CPUs 1-3; woken through the Parking Protocol mailboxes (patch 0011), see [docs/msm8974-smp-mapping.md](docs/msm8974-smp-mapping.md) |
 | Display panel PM (DPMS/DSI) | ❌ | no DSI panel driver; simpledrm can't power the panel |
 | Suspend/resume (s2idle) | ✅ | `systemctl suspend` + a wake source; 10/10 clean cycles |
 | Wi-Fi (wcnss) | ❌ blocked | Pronto times out after PAS reports success; see quirks doc |
