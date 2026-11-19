@@ -177,3 +177,15 @@ Booted the r8 default image `boot-1520-park-default.img` (sha256 `5f17d56ebe2519
 `CONFIG_RCU_EXP_CPU_STALL_TIMEOUT=20` (20 ms, HZ=100) is what makes it visible. Raising that timeout would only hide the latency.
 
 **Fix (pending, needs a kernel rebuild):** set `CONFIG_FW_LOADER_DEBUG` off. Its only output is a debug line, and turning it off also saves the CPU time of hashing every firmware file at boot. The SMP default stands.
+
+### 6e. r210: `CONFIG_FW_LOADER_DEBUG` off (staged)
+
+- **Config:** `# CONFIG_FW_LOADER_DEBUG is not set` in all three copies: live pmaports, the repo mirror and `patches/`. All three are identical (sha256 `6c720c4d8a8dc45b`).
+- **Packages:** pkgrel 209 -> 210 in both APKBUILDs. The config sha512 is updated, and all 15 source checksums match their files.
+- **No other changes:** patches 0011 and the parking tag `park-rc1` are unchanged, and so is the device package (r8, four cores).
+- **Pass criteria for the test boot:**
+  - `/proc/config.gz` shows the option off;
+  - `msm8974-smp-check.sh --suspend` passes with no RCU stall lines;
+  - the modem still reaches `running`.
+
+  The stall was timing-dependent, so one clean boot is evidence, not proof. The config check is the hard criterion.

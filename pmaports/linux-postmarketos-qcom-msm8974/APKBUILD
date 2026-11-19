@@ -2,7 +2,7 @@ maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-msm8974"
 pkgname=linux-$_flavor
 pkgver=6.16.12
-pkgrel=209
+pkgrel=210
 pkgdesc="Mainline Kernel fork for MSM8974 devices"
 arch="armv7"
 _carch="arm"
@@ -90,7 +90,7 @@ package() {
 
 sha512sums="
 6e67e6c86e36e235bad086ea2984c0885eb2e47264e667aa177df8ed7c29edbb23a866407dc59bdd39cfb95f6677e755a426eff485a93898c01997a6a6fcdd9c  linux-$_tag.tar.gz
-18cc988935f2fff40cf31d8fd0c66d7db6538d5d8675c4a71e4a1fa426d5ca7817ae713756f1df7d74e129110029f3359c18606ee8ea9daf29acfc048671b14a  config-postmarketos-qcom-msm8974.armv7
+0e3c2315c2c644d657642ba27d29b87c50a4a775be4c9cf7253b95bb1b2194d496e078d67c383ddd497e8a927b71dc1ab57a0bf1982fa418bdd6f0fcb6f9f27d  config-postmarketos-qcom-msm8974.armv7
 430aebd81e913c2d4c6696fa6808cdf63e97e68eaf3c8910b7cd2803bd4a55cd875abafab80e29bcbdf95040a931094d1be9ebb7eaf30520e1f5990943d30983  qcom-msm8974-microsoft-common.dtsi
 8a15728e5d4bfaae2cbc5fcc8266a040c11f51a4509f1b7c67c03f0096d29fe66bcbfbe74693fd3c701e0db64add20a4518b1d5f0b5590ee15d850781c9dade0  qcom-msm8974-microsoft-rm940.dts
 1030ce3675c354389c3dba784bd2051e2671f99d98bc385056e8aac22d9de68e950c225a033e83683a7a614db42dc432e3ed42e4ce69dc194900e977ff34227b  0001-slimbus-ngd-late-registration-recovery.patch
