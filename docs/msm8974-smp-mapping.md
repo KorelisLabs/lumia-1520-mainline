@@ -151,3 +151,9 @@ Not covered yet:
 - an audible playback check (the acoustic rules apply);
 - CPU frequency scaling, since the secondaries run at the firmware's clock;
 - making SMP the default (deviceinfo still passes `nosmp`).
+
+### 6c. Four cores by default: device-nokia-rm940 r8
+
+- **deviceinfo:** `nosmp maxcpus=1` is removed from `deviceinfo_kernel_cmdline`. `cpuidle.off=1` stays: deep idle (SPC) is a separate question.
+- **Packages:** pkgrel 7 -> 8, checksums verified, in both live pmaports and the repo.
+- **Safety:** the r209 kernel (patch 0011) is required. An older kernel's DT still uses `qcom,kpss-acc-v2`, and with this cmdline it would reset the phone. `tools/check-bootimg.py` refuses that combination.

@@ -2,7 +2,7 @@ maintainer="Scott <info@korelislabs.com>"
 pkgname=device-nokia-rm940
 pkgdesc="Nokia Lumia 1520"
 pkgver=1
-pkgrel=7
+pkgrel=8
 url="https://postmarketos.org"
 license="MIT"
 arch="armv7"
@@ -56,7 +56,7 @@ package() {
 	ln -s /dev/null "$pkgdir"/etc/systemd/system/sleep-inhibitor.service
 }
 sha512sums="
-3f31d224c16efca2f4b8b8fd05393198465b90063f35235a61b675a576f28c9fdd54d6393c19510c82e0f7858ef4b7965821fc270625215bfb61807190bc9aa3  deviceinfo
+f1f632adbfbc0e4930748ab47b437b6a0e8677cb7de48dcd4462114fe2dee016554d5646f6544e2b2d93d893288d1b55480646f6c4e368efce2d1feaf6522173  deviceinfo
 c0fe8dbea89e19073ac18f5c9ff5f4131c4441e0ea42bbb7e1f2c99c8b9283b81111f9d7fff981d32c85ad902cb177c965c6b7d2ff9a50748d5bbc58d20b120e  kernel-cmdline.conf
 cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e  modules-initfs
 4a86796324f2f2f1ee4761cc713c0dfc382eb645a534610b30ee14b2a07623d6ecb4ff9eb7bf2bd887c234d64745278c5b585662e4e3c40ac0585e1d7139ab02  lumia-usb-gadget.sh
