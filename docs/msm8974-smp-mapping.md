@@ -157,3 +157,23 @@ Not covered yet:
 - **deviceinfo:** `nosmp maxcpus=1` is removed from `deviceinfo_kernel_cmdline`. `cpuidle.off=1` stays: deep idle (SPC) is a separate question.
 - **Packages:** pkgrel 7 -> 8, checksums verified, in both live pmaports and the repo.
 - **Safety:** the r209 kernel (patch 0011) is required. An older kernel's DT still uses `qcom,kpss-acc-v2`, and with this cmdline it would reset the phone. `tools/check-bootimg.py` refuses that combination.
+
+### 6d. Default-image boot (2026-11-19)
+
+Booted the r8 default image `boot-1520-park-default.img` (sha256 `5f17d56ebe251910`) by `fastboot boot` from a cold restart. Its kernel and DTB are byte-identical to the 6b test image. The cmdline has no `nosmp`, and the console is quiet (`loglevel=4`, no `ignore_loglevel`).
+
+- **Bring-up:** CPUs 1-3 left the parking loop at 6.8, 8.0 and 9.2 ms. Online is 0-3.
+- **Parallel load:** 3.9x (5.31 s for one job, 5.33 s for four), with 521-533 busy ticks per CPU.
+- **s2idle:** one cycle with an RTC wake; it came back with 4 CPUs online.
+- **Services:** rmtfs and ModemManager are active, the WWAN radio is disabled, the modem reached `running`, and the Q6 sound card registered.
+- **`msm8974-smp-check.sh --suspend`: FAIL on kernel-log errors only.** There were two RCU expedited-stall reports during modem boot:
+  - `rcu_preempt detected expedited stalls ... { 3-.... } 3 jiffies` at 32.1 s;
+  - the same for CPU 2, 4 jiffies, at 33.2 s.
+
+  Both NMI backtraces show PID 576 `rmtfs` in `sha256_block_data_order_neon`, with IRQs on. Both stalls fall between `SSD MPSS: metadata parsed` and `decrypted by TrustZone (20 segments)`.
+
+**Cause.** The cause is not the parking code. `rmtfs -r` starts the modem, so its process does the `request_firmware` calls for the 20 MPSS segments. The config has `CONFIG_FW_LOADER_DEBUG=y`, so the firmware loader hashes every file it loads with SHA-256, purely for a `dev_dbg` line. On arm32 the NEON SHA-256 code runs each buffer inside one `kernel_neon_begin()` section, which disables preemption for the whole buffer. The segments total about 42 MB, and the largest (`modem.b17`) is 13.9 MB. The single-core image had the same latency, but with one CPU there is no other CPU to ask for an expedited grace period, so nothing reported it. The 6b boot did not hit it: whether it shows depends on another CPU asking for an expedited grace period during the hash.
+
+`CONFIG_RCU_EXP_CPU_STALL_TIMEOUT=20` (20 ms, HZ=100) is what makes it visible. Raising that timeout would only hide the latency.
+
+**Fix (pending, needs a kernel rebuild):** set `CONFIG_FW_LOADER_DEBUG` off. Its only output is a debug line, and turning it off also saves the CPU time of hashing every firmware file at boot. The SMP default stands.
